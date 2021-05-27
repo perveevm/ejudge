@@ -1382,7 +1382,7 @@ msgid "Faculty (short) (En)"
 msgstr "Факультет (сокр.) (Англ.)"
 
 msgid "Failed test"
-msgstr "Ошибка на тесте"
+msgstr "Тест"
 
 #, c-format
 msgid "Failed to add row %d to runlog\n"
@@ -4206,8 +4206,8 @@ msgid "Unknown error %d.\n"
 msgstr "Неизвестная ошибка %d.\n"
 
 #, c-format
-msgid "Unknown: %d"
-msgstr "Unknown: %d"
+msgid "Unknown: hidden"
+msgstr "Отправлено на проверку. Результат скрыт"
 
 msgid "Unlimited"
 msgstr "Не ограничена"

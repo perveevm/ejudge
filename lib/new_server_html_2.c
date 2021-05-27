@@ -871,10 +871,24 @@ ns_write_priv_all_runs(
       }
 
       run_status_str(pe->status, statstr, sizeof(statstr), prob_type, 0);
+      
+
+      struct super_run_status_vector srsv;
+      memset(&srsv, 0, sizeof(srsv));
+      ns_scan_heartbeat_dirs(cs, &srsv);
+      
+      int cur_test = -1;
+      for (int jid = 0; jid < srsv.u; ++jid) {
+        const struct super_run_status *srs = &srsv.v[jid]->status;
+        if (srs->run_id == rid) {
+            cur_test = srs->test_num;
+            break;
+        }
+      }
       write_html_run_status(cs, f, start_time, pe, 0, 1, attempts, disq_attempts, ce_attempts,
                             prev_successes, "b1", 0,
-                            enable_js_status_menu, run_fields, effective_time);
-
+                            enable_js_status_menu, run_fields, effective_time, cur_test);
+      super_run_status_vector_free(&srsv, 0);
       if (run_fields & (1 << RUN_VIEW_SCORE_ADJ)) {
         fprintf(f, "<td%s>%d</td>", cl, pe->score_adj);
       }
@@ -3070,7 +3084,7 @@ ns_download_runs(
     }
     serial++;
   }
-  need_remove = 1;
+  need_remove = 0;
 
   snprintf(name3, sizeof(name3), "contest_%d_%04d%02d%02d%02d%02d%02d",
            cnts->id,
@@ -5745,7 +5759,7 @@ ns_get_user_problems_summary(
       pinfo[prob_id].status |= PROB_STATUS_VIEWABLE;
 
     if (start_time > 0 && cs->current_time >= start_time
-        && (stop_time <= 0 || cs->current_time < stop_time)
+        && (stop_time <= 0 || cs->current_time < stop_time || cs->upsolving_mode)
         && !is_deadlined && cur_prob->disable_user_submit <= 0
         && (cur_prob->disable_submit_after_ok <= 0 || !pinfo[prob_id].solved_flag))
       pinfo[prob_id].status |= PROB_STATUS_SUBMITTABLE;
@@ -6875,11 +6889,24 @@ new_write_user_runs(
       fprintf(f, "<td%s><tt>%s</tt></td>", cl, unparse_abbrev_sha1(re.sha1));
     }
 
+
+    struct super_run_status_vector srsv;
+    memset(&srsv, 0, sizeof(srsv));
+    ns_scan_heartbeat_dirs(state, &srsv);
+    
+    int cur_test = -1;
+    for (int jid = 0; jid < srsv.u; ++jid) {
+        const struct super_run_status *srs = &srsv.v[jid]->status;
+        if (srs->run_id == i) {
+	    cur_test = srs->test_num;
+            break;
+        }
+    }
     write_html_run_status(state, f, start_time, &re, separate_user_score /* user_mode */,
                           0, attempts, disq_attempts, ce_attempts,
                           prev_successes, table_class, 0, 0, RUN_VIEW_DEFAULT,
-                          effective_time);
-
+                          effective_time, cur_test);
+    super_run_status_vector_free(&srsv, 0);
     if (enable_src_view) {
       fprintf(f, "<td%s>", cl);
       fprintf(f, "%s", ns_aref(href, sizeof(href), phr, NEW_SRV_ACTION_VIEW_SOURCE, "run_id=%d", i));

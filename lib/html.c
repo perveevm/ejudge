@@ -283,7 +283,8 @@ write_html_run_status(
         int disable_failed,
         int enable_js_status_menu,
         int run_fields,
-        time_t effective_time)
+        time_t effective_time,
+	int cur_test)
 {
   const struct section_global_data *global = state->global;
   unsigned char status_str[128], score_str[128];
@@ -330,6 +331,17 @@ write_html_run_status(
       || global->score_system == SCORE_OLYMPIAD
       || global->score_system == SCORE_MOSCOW)
     need_extra_col = 1;
+
+  if (status == RUN_RUNNING) {
+    if (cur_test == -1) {
+      cur_test = 1;
+    }
+    fprintf(f, "<td%s>%d</td>", cl, cur_test);
+    if (need_extra_col) {
+      fprintf(f, "<td%s>%s</td>", cl, _("N/A"));
+    }
+    return;
+  }
 
   if (status >= RUN_PSEUDO_FIRST && status <= RUN_PSEUDO_LAST) {
     if (run_fields & (1 << RUN_VIEW_TEST)) {
@@ -384,7 +396,7 @@ write_html_run_status(
         ++test;
       }
       if (!disable_failed) {
-        if (status == RUN_OK || status == RUN_ACCEPTED || status == RUN_PENDING_REVIEW || status == RUN_SUMMONED || test <= 0
+	if (status == RUN_OK || status == RUN_ACCEPTED || status == RUN_PENDING_REVIEW || status == RUN_SUMMONED || test <= 0
             || global->disable_failed_test_view > 0) {
           fprintf(f, "<td%s>%s</td>", cl, _("N/A"));
         } else {
@@ -4522,7 +4534,7 @@ do_write_public_log(
     write_html_run_status(state, f, start_time, pe, user_mode,
                           0, attempts, disq_attempts, ce_attempts,
                           prev_successes, 0, 1, 0, RUN_VIEW_DEFAULT,
-                          effective_time);
+                          effective_time, -1);
 
     fputs("</tr>\n", f);
   }

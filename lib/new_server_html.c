@@ -6307,7 +6307,7 @@ priv_upsolving_operation(
     break;
   case NEW_SRV_ACTION_UPSOLVING_CONFIG_4: // start upsolving
     run_save_times(cs->runlog_state);
-    run_set_duration(cs->runlog_state, 0);
+    // run_set_duration(cs->runlog_state, 0);
     run_stop_contest(cs->runlog_state, 0);
     run_set_finish_time(cs->runlog_state, 0);
     cs->upsolving_mode = 1;

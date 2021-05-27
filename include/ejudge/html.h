@@ -105,7 +105,8 @@ write_html_run_status(
         int disable_failed,
         int enable_js_status_menu,
         int run_fields,
-        time_t effective_time);
+        time_t effective_time,
+	int cur_test);
 
 struct testing_report_xml;
 

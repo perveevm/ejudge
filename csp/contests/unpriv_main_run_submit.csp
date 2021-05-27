@@ -424,8 +424,8 @@
 %><%
       if (global->problem_navigation
           //&& !prob->disable_user_submit
-          && prob->type != PROB_TYPE_SELECT_ONE
-          && pinfo[prob->id].all_attempts) {
+          /*&& prob->type != PROB_TYPE_SELECT_ONE*/
+          /*&& pinfo[prob->id].all_attempts*/) {
         if (pinfo[prob->id].all_attempts <= 15) {
 %><h2><s:_>Previous submissions of this problem</s:_></h2>
 <%

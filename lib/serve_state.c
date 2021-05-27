@@ -265,8 +265,8 @@ serve_set_upsolving_mode(serve_state_t state)
                       &saved_finish_time);
   if (saved_stop_time <= 0) return;
 
-  if (state->upsolving_freeze_standings)
-    state->global->stand_ignore_after = saved_stop_time;
+  // if (state->upsolving_freeze_standings)
+  //  state->global->stand_ignore_after = saved_stop_time;
   if (state->upsolving_disable_clars)
     state->global->disable_team_clars = 1;
   if (state->upsolving_view_source)

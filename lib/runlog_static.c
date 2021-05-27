@@ -76,7 +76,7 @@ run_status_str(
   case RUN_VIRTUAL_STOP:     s = _("Virtual stop");        break;
   case RUN_EMPTY:            s = _("EMPTY");               break;
   default:
-    sprintf(buf, _("Unknown: %d"), status);
+    sprintf(buf, _("Unknown: hidden"));
     s = buf;
     break;
   }
