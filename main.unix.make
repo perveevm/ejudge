@@ -1,6 +1,6 @@
 # -*- Makefile -*-
 
-# Copyright (C) 2014-2020 Alexander Chernov <cher@ejudge.ru> */
+# Copyright (C) 2014-2022 Alexander Chernov <cher@ejudge.ru> */
 
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -45,6 +45,9 @@ C_OBJECTS=$(C_CFILES:.c=.o) libcommon.a libplatform.a libcommon.a
 
 CC_CFILES=bin/ej-compile-control.c
 CC_OBJECTS=$(CC_CFILES:.c=.o) libcommon.a libplatform.a libcommon.a
+
+CA_CFILES=bin/ej-agent.c
+CA_OBJECTS=$(CA_CFILES:.c=.o) libcommon.a libplatform.a libcommon.a libplatform.a
 
 SERVE_CFILES=bin/ej-serve.c version.c
 SERVE_OBJECTS=$(SERVE_CFILES:.c=.o) libcommon.a libuserlist_clnt.a libplatform.a libcommon.a
@@ -106,6 +109,12 @@ CU_OBJECTS = ${CU_CFILES:.c=.o} libcommon.a libuserlist_clnt.a libplatform.a lib
 CR_CFILES = bin/ej-convert-runs.c version.c
 CR_OBJECTS = ${CR_CFILES:.c=.o} libcommon.a libuserlist_clnt.a libplatform.a libcommon.a
 
+CVTS_CFILES = bin/ej-convert-status.c version.c
+CVTS_OBJECTS = ${CVTS_CFILES:.c=.o} libcommon.a libuserlist_clnt.a libplatform.a libcommon.a
+
+CVTX_CFILES = bin/ej-convert-xuser.c version.c
+CVTX_OBJECTS = ${CVTX_CFILES:.c=.o} libcommon.a libuserlist_clnt.a libplatform.a libcommon.a
+
 FIX_DB_CFILES = bin/ej-fix-db.c version.c
 FIX_DB_OBJECTS = ${FIX_DB_CFILES:.c=.o} libcommon.a libuserlist_clnt.a libplatform.a libcommon.a
 
@@ -159,8 +168,8 @@ PB_OBJECTS = $(PB_CFILES:.c=.o) libcommon.a libplatform.a libcommon.a
 
 INSTALLSCRIPT = ejudge-install.sh
 BINTARGETS = ejudge-jobs-cmd ejudge-edit-users ejudge-setup ejudge-configure-compilers ejudge-control ejudge-execute ejudge-contests-cmd ejudge-suid-setup ejudge-change-contests
-SERVERBINTARGETS = ej-compile ej-run ej-nwrun ej-ncheck ej-batch ej-serve ej-users ej-users-control ej-jobs ej-jobs-control ej-super-server ej-super-server-control ej-contests ej-contests-control uudecode ej-convert-clars ej-convert-runs ej-fix-db ej-super-run ej-super-run-control ej-normalize ej-polygon ej-import-contest ej-page-gen ej-parblock
-SUIDBINTARGETS = ej-suid-chown ej-suid-exec ej-suid-ipcrm ej-suid-kill
+SERVERBINTARGETS = ej-compile ej-run ej-nwrun ej-ncheck ej-batch ej-serve ej-users ej-users-control ej-jobs ej-jobs-control ej-super-server ej-super-server-control ej-contests ej-contests-control uudecode ej-convert-clars ej-convert-runs ej-fix-db ej-super-run ej-super-run-control ej-normalize ej-polygon ej-import-contest ej-page-gen ej-parblock ej-convert-status ej-convert-xuser ej-agent
+SUIDBINTARGETS = ej-suid-chown ej-suid-exec ej-suid-ipcrm ej-suid-kill ej-suid-container ej-suid-update-scripts
 CGITARGETS = cgi-bin/users${CGI_PROG_SUFFIX} cgi-bin/serve-control${CGI_PROG_SUFFIX} cgi-bin/new-client${CGI_PROG_SUFFIX}
 TARGETS = ${SERVERBINTARGETS} ${BINTARGETS} ${CGITARGETS} tools/newrevinfo ${SUIDBINTARGETS} ej-compile-control
 STYLEFILES = style/logo.gif style/priv.css style/unpriv.css style/unpriv3.css style/ejudge3.css style/priv.js style/priv_prob_dlg.js style/unpriv.js style/filter_expr.html style/sprintf.js style/ejudge3_ss.css style/ejudge_mobile.css style/jquery.min.js style/jquery.timepicker.css style/jquery.timepicker.min.js style/prism.js style/prism.css style/Roboto-Regular.ttf style/Roboto-Bold.ttf style/Roboto-Italic.ttf style/Roboto-BoldItalic.ttf style/croppie.css style/croppie.js
@@ -186,9 +195,15 @@ subdirs_all:
 	$(MAKE) -C plugins/rundb-mysql DESTDIR="${DESTDIR}" all
 	$(MAKE) -C plugins/common-mongo DESTDIR="${DESTDIR}" all
 	$(MAKE) -C plugins/xuser-mongo DESTDIR="${DESTDIR}" all
+	$(MAKE) -C plugins/xuser-mysql DESTDIR="${DESTDIR}" all
 	$(MAKE) -C plugins/avatar-mongo DESTDIR="${DESTDIR}" all
+	$(MAKE) -C plugins/avatar-mysql DESTDIR="${DESTDIR}" all
 	$(MAKE) -C plugins/status-mongo DESTDIR="${DESTDIR}" all
+	$(MAKE) -C plugins/status-mysql DESTDIR="${DESTDIR}" all
 	$(MAKE) -C plugins/telegram DESTDIR="${DESTDIR}" all
+	$(MAKE) -C plugins/auth-base DESTDIR="${DESTDIR}" all
+	$(MAKE) -C plugins/auth-google DESTDIR="${DESTDIR}" all
+	$(MAKE) -C plugins/auth-vk DESTDIR="${DESTDIR}" all
 	$(MAKE) -C csp/contests DESTDIR="${DESTDIR}" all
 	$(MAKE) -C csp/super-server DESTDIR="${DESTDIR}" all
 
@@ -231,6 +246,7 @@ local_install: ${TARGETS} ejudge-config po mo
 	tar x -C "${DESTDIR}${datadir}/ejudge/style" -f style/jqgrid.tbz
 	install -d "${DESTDIR}${datadir}/ejudge/style/icons"
 	for i in style/icons/*.png; do install -m 0644 $$i "${DESTDIR}${datadir}/ejudge/style/icons"; done
+	for i in style/icons/*.jpeg; do install -m 0644 $$i "${DESTDIR}${datadir}/ejudge/style/icons"; done
 	install -m 0755 style/ejudge-upgrade-web "${DESTDIR}${bindir}"
 	cp -rpd include "${DESTDIR}${prefix}"
 	install -d "${DESTDIR}${prefix}/lib/ejudge/make"
@@ -249,9 +265,15 @@ install: local_install
 	$(MAKE) -C plugins/rundb-mysql DESTDIR="${DESTDIR}" install
 	$(MAKE) -C plugins/common-mongo DESTDIR="${DESTDIR}" install
 	$(MAKE) -C plugins/xuser-mongo DESTDIR="${DESTDIR}" install
+	$(MAKE) -C plugins/xuser-mysql DESTDIR="${DESTDIR}" install
 	$(MAKE) -C plugins/avatar-mongo DESTDIR="${DESTDIR}" install
+	$(MAKE) -C plugins/avatar-mysql DESTDIR="${DESTDIR}" install
 	$(MAKE) -C plugins/status-mongo DESTDIR="${DESTDIR}" install
+	$(MAKE) -C plugins/status-mysql DESTDIR="${DESTDIR}" install
 	$(MAKE) -C plugins/telegram DESTDIR="${DESTDIR}" install
+	$(MAKE) -C plugins/auth-base DESTDIR="${DESTDIR}" install
+	$(MAKE) -C plugins/auth-google DESTDIR="${DESTDIR}" install
+	$(MAKE) -C plugins/auth-vk DESTDIR="${DESTDIR}" install
 	$(MAKE) -C csp/contests DESTDIR="${DESTDIR}" install
 	$(MAKE) -C csp/super-server DESTDIR="${DESTDIR}" install
 	#if [ ! -f "${INSTALLSCRIPT}" ]; then ./ejudge-setup -b; fi
@@ -267,10 +289,13 @@ suid_install : ${SUIDBINTARGETS} ejudge-suid-setup ej-compile-control
 suid_bins : ${SUIDBINTARGETS}
 
 ej-compile$(EXESFX) : $(C_OBJECTS)
-	$(LD) $(LDFLAGS) $(C_OBJECTS) -o $@ $(LDLIBS) ${EXPAT_LIB} ${LIBZIP} ${LIBUUID}
+	$(LD) $(LDFLAGS) $(C_OBJECTS) -pthread -o $@ $(LDLIBS) ${EXPAT_LIB} ${LIBZIP} ${LIBUUID} ${LIBLZMA}
 
 ej-compile-control : $(CC_OBJECTS)
 	$(LD) $(LDFLAGS) $(CC_OBJECTS) -o $@ $(LDLIBS) ${EXPAT_LIB}
+
+ej-agent : $(CA_OBJECTS)
+	$(LD) $(LDFLAGS) $(CA_OBJECTS) -o $@ $(LDLIBS) ${EXPAT_LIB} ${LIBLZMA}
 
 ej-run${EXESFX} : $(RUN_OBJECTS)
 	$(LD) $(LDFLAGS) $(RUN_OBJECTS) -o $@ $(LDLIBS) ${EXPAT_LIB} ${LIBZIP} ${LIBUUID} $(MONGO_LIBS) $(MONGOC_LIBS)
@@ -291,7 +316,7 @@ cgi-bin/serve-control${CGI_PROG_SUFFIX}: ${SC_OBJECTS}
 	${LD} ${LDFLAGS} $^ -o $@ ${LDLIBS} ${EXPAT_LIB}
 
 ej-users: ${UL_OBJECTS}
-	${LD} ${LDFLAGS} $^  libcommon.a libplatform.a -rdynamic -o $@ ${LDLIBS} -ldl ${EXPAT_LIB}
+	${LD} ${LDFLAGS} $^  libcommon.a libplatform.a -rdynamic -o $@ ${LDLIBS} -ldl ${EXPAT_LIB} ${LIBUUID}
 
 ej-users-control: ${ULC_OBJECTS}
 	${LD} ${LDFLAGS} $^  libcommon.a -rdynamic -o $@ ${LDLIBS} ${EXPAT_LIB}
@@ -312,7 +337,7 @@ ej-super-server-control: ${SSC_OBJECTS}
 	${LD} ${LDFLAGS} $^ libcommon.a -o $@ ${LDLIBS} ${EXPAT_LIB}
 
 ej-super-run: ${SR_OBJECTS}
-	${LD} ${LDFLAGS} -rdynamic $^ libcommon.a -o $@ ${LDLIBS} ${EXPAT_LIB} -ldl ${LIBZIP} ${LIBUUID} $(MONGO_LIBS) $(MONGOC_LIBS)
+	${LD} ${LDFLAGS} -pthread -rdynamic $^ libcommon.a -o $@ ${LDLIBS} ${EXPAT_LIB} -ldl ${LIBZIP} ${LIBUUID} $(MONGO_LIBS) $(MONGOC_LIBS) ${LIBLZMA}
 
 ej-super-run-control: ${SRC_OBJECTS}
 	${LD} ${LDFLAGS} -rdynamic $^ libcommon.a -o $@ ${LDLIBS} ${EXPAT_LIB} -ldl
@@ -327,7 +352,7 @@ ej-import-contest: ${IC_OBJECTS}
 	${LD} ${LDFLAGS} $^ libcommon.a -o $@ ${LDLIBS} ${EXPAT_LIB} ${LIBCURL} ${LIBZIP} -ldl
 
 ej-page-gen: ${G_OBJECTS} libuserlist_clnt.a libnew_server_clnt.a
-	${LD} ${LDFLAGS} -Wl,--whole-archive $^ -o $@ ${LDLIBS} libdwarf/libdwarf/libdwarf.a -lelf ${EXPAT_LIB} ${LIBZIP} -ldl -lpanel${NCURSES_SUFFIX} -lmenu${NCURSES_SUFFIX} -lncurses${NCURSES_SUFFIX} ${LIBUUID} -Wl,--no-whole-archive $(MONGO_LIBS) $(MONGOC_LIBS)
+	${LD} -pthread ${LDFLAGS} -Wl,--whole-archive $^ -o $@ ${LDLIBS} libdwarf/libdwarf/.libs/libdwarf.a -lelf ${EXPAT_LIB} ${LIBZIP} -ldl -lpanel${NCURSES_SUFFIX} -lmenu${NCURSES_SUFFIX} -lncurses${NCURSES_SUFFIX} ${LIBUUID} -Wl,--no-whole-archive $(MONGO_LIBS) $(MONGOC_LIBS) ${LIBLZMA}
 ej-page-gen.debug : ej-page-gen
 	objcopy --only-keep-debug $< $@
 
@@ -335,6 +360,12 @@ ej-convert-clars: ${CU_OBJECTS}
 	${LD} ${LDFLAGS} -rdynamic $^ libcommon.a libplatform.a -o $@ ${LDLIBS} ${EXPAT_LIB} ${LIBUUID} -ldl
 
 ej-convert-runs: ${CR_OBJECTS}
+	${LD} ${LDFLAGS} -rdynamic $^ libcommon.a -o $@ ${LDLIBS} ${EXPAT_LIB} -ldl ${LIBUUID} $(MONGO_LIBS) $(MONGOC_LIBS)
+
+ej-convert-status: ${CVTS_OBJECTS}
+	${LD} ${LDFLAGS} -rdynamic $^ libcommon.a -o $@ ${LDLIBS} ${EXPAT_LIB} -ldl ${LIBUUID} $(MONGO_LIBS) $(MONGOC_LIBS)
+
+ej-convert-xuser: ${CVTX_OBJECTS}
 	${LD} ${LDFLAGS} -rdynamic $^ libcommon.a -o $@ ${LDLIBS} ${EXPAT_LIB} -ldl ${LIBUUID} $(MONGO_LIBS) $(MONGOC_LIBS)
 
 ej-fix-db: ${FIX_DB_OBJECTS}
@@ -353,6 +384,12 @@ ej-suid-kill : bin/ej-suid-kill.c
 	${CC} ${CFLAGS} ${LDFLAGS} $^ -o $@
 
 ej-suid-ipcrm : bin/ej-suid-ipcrm.c
+	${CC} ${CFLAGS} ${LDFLAGS} $^ -o $@
+
+ej-suid-container : bin/ej-suid-container.c
+	${CC} -static ${CFLAGS} ${LDFLAGS} $^ -o $@
+
+ej-suid-update-scripts : bin/ej-suid-update-scripts.c
 	${CC} ${CFLAGS} ${LDFLAGS} $^ -o $@
 
 ej-collect-emails: ${CE_OBJECTS}
@@ -407,7 +444,7 @@ ejudge-install.sh : ejudge-setup
 	./ejudge-setup -b -i scripts/lang_ids.cfg
 
 local_clean:
-	-rm -f *.o *~ *.a $(TARGETS) revinfo tools/newrevinfo version.c $(ARCH)/*.o ejudge.po mkChangeLog2 userlist_clnt/*.o xml_utils/*.o super_clnt/*.o cdeps deps.make gen/filter_expr.[ch] gen/filter_scan.c cgi-bin/users cgi-bin/users${CGI_PROG_SUFFIX} ejudge-config cgi-bin/serve-control cgu-bin/serve-control${CGI_PROG_SUFFIX} prjutils2/*.o tools/make-js-actions new_server_clnt/*.o mktable tools/struct-sizes *.debug lib/*.o gen/*.o cgi-bin/*.o bin/*.o tools/genmatcher2 tools/genmatcher
+	-rm -f *.o *~ *.a $(TARGETS) revinfo tools/newrevinfo version.c $(ARCH)/*.o ejudge.po mkChangeLog2 userlist_clnt/*.o xml_utils/*.o super_clnt/*.o cdeps deps.make gen/filter_expr.[ch] gen/filter_scan.c cgi-bin/users cgi-bin/users${CGI_PROG_SUFFIX} ejudge-config cgi-bin/serve-control cgu-bin/serve-control${CGI_PROG_SUFFIX} prjutils2/*.o tools/make-js-actions new_server_clnt/*.o mktable tools/struct-sizes *.debug lib/*.o gen/*.o cgi-bin/*.o bin/*.o tools/genmatcher2 tools/genmatcher tools/genmatcher3
 	-rm -rf locale
 clean: subdir_clean local_clean
 
@@ -420,9 +457,15 @@ subdir_clean:
 	$(MAKE) -C plugins/rundb-mysql DESTDIR="${DESTDIR}" clean
 	$(MAKE) -C plugins/common-mongo DESTDIR="${DESTDIR}" clean
 	$(MAKE) -C plugins/xuser-mongo DESTDIR="${DESTDIR}" clean
+	$(MAKE) -C plugins/xuser-mysql DESTDIR="${DESTDIR}" clean
 	$(MAKE) -C plugins/avatar-mongo DESTDIR="${DESTDIR}" clean
+	$(MAKE) -C plugins/avatar-mysql DESTDIR="${DESTDIR}" clean
 	$(MAKE) -C plugins/status-mongo DESTDIR="${DESTDIR}" clean
+	$(MAKE) -C plugins/status-mysql DESTDIR="${DESTDIR}" clean
 	$(MAKE) -C plugins/telegram DESTDIR="${DESTDIR}" clean
+	$(MAKE) -C plugins/auth-base DESTDIR="${DESTDIR}" clean
+	$(MAKE) -C plugins/auth-google DESTDIR="${DESTDIR}" clean
+	$(MAKE) -C plugins/auth-vk DESTDIR="${DESTDIR}" clean
 	$(MAKE) -C csp/contests DESTDIR="${DESTDIR}" clean
 	$(MAKE) -C csp/super-server DESTDIR="${DESTDIR}" clean
 	$(MAKE) -C cfront clean
@@ -445,9 +488,15 @@ subdir_distclean :
 	$(MAKE) -C plugins/rundb-mysql DESTDIR="${DESTDIR}" distclean
 	$(MAKE) -C plugins/common-mongo DESTDIR="${DESTDIR}" distclean
 	$(MAKE) -C plugins/xuser-mongo DESTDIR="${DESTDIR}" distclean
+	$(MAKE) -C plugins/xuser-mysql DESTDIR="${DESTDIR}" distclean
 	$(MAKE) -C plugins/avatar-mongo DESTDIR="${DESTDIR}" distclean
+	$(MAKE) -C plugins/avatar-mysql DESTDIR="${DESTDIR}" distclean
 	$(MAKE) -C plugins/status-mongo DESTDIR="${DESTDIR}" distclean
+	$(MAKE) -C plugins/status-mysql DESTDIR="${DESTDIR}" distclean
 	$(MAKE) -C plugins/telegram DESTDIR="${DESTDIR}" distclean
+	$(MAKE) -C plugins/auth-base DESTDIR="${DESTDIR}" distclean
+	$(MAKE) -C plugins/auth-google DESTDIR="${DESTDIR}" distclean
+	$(MAKE) -C plugins/auth-vk DESTDIR="${DESTDIR}" distclean
 	$(MAKE) -C csp/contests DESTDIR="${DESTDIR}" distclean
 	$(MAKE) -C csp/super-server DESTDIR="${DESTDIR}" distclean
 	$(MAKE) -C cfront distclean

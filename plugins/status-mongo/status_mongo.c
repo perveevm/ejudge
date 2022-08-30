@@ -1,6 +1,6 @@
-/* -*- mode: c -*- */
+/* -*- mode: c; c-basic-offset: 4 -*- */
 
-/* Copyright (C) 2019 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2019-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -88,6 +88,13 @@ remove_func(
         const struct ejudge_cfg *config,
         const struct contest_desc *cnts,
         const struct section_global_data *global);
+static int
+has_status_func(
+        const struct common_loaded_plugin *self,
+        const struct ejudge_cfg *config,
+        const struct contest_desc *cnts,
+        const struct section_global_data *global,
+        int flags);
 
 static int
 serve_status_bson_parse(
@@ -120,7 +127,7 @@ struct status_plugin_iface plugin_status_mongo =
     load_func,
     save_func,
     remove_func,
-    NULL, // has_status_func
+    has_status_func,
 };
 
 static struct common_plugin_data *
@@ -371,7 +378,96 @@ remove_func(
         const struct contest_desc *cnts,
         const struct section_global_data *global)
 {
-    struct status_mongo_state *sms __attribute__((unused)) = (struct status_mongo_state *) sds;
+    struct status_mongo_state *sms = (struct status_mongo_state *) sds;
+    struct status_mongo_plugin_state *ps = (struct status_mongo_plugin_state *) sms->b.plugin->data;
+
+#if HAVE_LIBMONGOC - 0 > 0
+    bson_t *filter = NULL;
+    filter = bson_new();
+    bson_append_int32(filter, "contest_id", -1, cnts->id);
+    ps->common->i->remove(ps->common, "status", filter);
+    if (filter) bson_destroy(filter);
+#elif HAVE_LIBMONGO_CLIENT - 0 == 1
+    bson *filter = bson_new();
+    bson_append_int32(filter, "contest_id", cnts->id);
+    bson_finish(filter);
+    ps->common->i->remove(ps->common, "status", filter);
+    if (filter) bson_free(filter);
+#endif
+}
+
+static int
+has_status_func(
+        const struct common_loaded_plugin *self,
+        const struct ejudge_cfg *config,
+        const struct contest_desc *cnts,
+        const struct section_global_data *global,
+        int flags)
+{
+    struct status_mongo_plugin_state *ps = (struct status_mongo_plugin_state *) self->data;
+#if HAVE_LIBMONGOC - 0 > 0
+    int retval = -1;
+    bson_t *query = NULL;
+    int count;
+    bson_t **results = NULL;
+
+    query = bson_new();
+    bson_append_int32(query, "contest_id", -1, cnts->id);
+    count = ps->common->i->query(ps->common, "status", 0, 1, query, NULL, &results);
+    if (count < 0) goto cleanup;
+    if (count > 1) {
+        err("load_func: multiple entries returned: %d", count);
+        goto cleanup;
+    }
+    if (count == 1 && results[0]) {
+        retval = 1;
+    } else {
+        retval = 0;
+    }
+
+cleanup:;
+    if (query) bson_destroy(query);
+    if (results) {
+        for (int i = 0; i < count; ++i) {
+            bson_destroy(results[i]);
+        }
+        xfree(results);
+    }
+    return retval;
+#elif HAVE_LIBMONGO_CLIENT - 0 == 1
+    bson *query = NULL;
+    int count = 0;
+    bson **results = NULL;
+    int retval = -1;
+
+    query = bson_new();
+    bson_append_int32(query, "contest_id", cnts->id);
+    bson_finish(query);
+
+    count = ps->common->i->query(ps->common, "status", 0, 1, query, NULL, &results);
+    if (count < 0) goto done;
+    if (count > 1) {
+        err("load_func: multiple entries returned: %d", count);
+        goto done;
+    }
+    if (count == 1) {
+        retval = 1;
+    } else {
+        retval = 0;
+    }
+
+done:
+    if (query) bson_free(query);
+    if (results) {
+        for (int i = 0; i < count; ++i) {
+            bson_free(results[i]);
+        }
+        xfree(results);
+    }
+    return retval;
+#else
+    return -1;
+#endif
 }
 
 static ej_bson_t *
@@ -423,6 +519,7 @@ serve_status_bson_unparse(
     UNPARSE_BOOLEAN_FIELD(online_view_judge_score);
     UNPARSE_BOOLEAN_FIELD(online_final_visibility);
     UNPARSE_BOOLEAN_FIELD(online_valuer_judge_comments);
+    UNPARSE_BOOLEAN_FIELD(disable_virtual_start);
 
     bson_append_int32(res, "score_system", -1, status->score_system);
 
@@ -497,6 +594,7 @@ serve_status_bson_unparse(
     UNPARSE_BOOLEAN_FIELD(online_view_judge_score);
     UNPARSE_BOOLEAN_FIELD(online_final_visibility);
     UNPARSE_BOOLEAN_FIELD(online_valuer_judge_comments);
+    UNPARSE_BOOLEAN_FIELD(disable_virtual_start);
 
     bson_append_int32(res, "score_system", status->score_system);
 
@@ -618,6 +716,8 @@ serve_status_bson_parse(
             if (ej_bson_parse_boolean_uc_new(bc, "online_final_visibility", &status->online_final_visibility) < 0) goto fail;
         } else if (!strcmp(key, "online_valuer_judge_comments")) {
             if (ej_bson_parse_boolean_uc_new(bc, "online_valuer_judge_comments", &status->online_valuer_judge_comments) < 0) goto fail;
+        } else if (!strcmp(key, "disable_virtual_start")) {
+            if (ej_bson_parse_boolean_uc_new(bc, "disable_virtual_start", &status->disable_virtual_start) < 0) goto fail;
         } else if (!strcmp(key, "score_system")) {
             int ss;
             if (ej_bson_parse_int_new(bc, "score_system", &ss, 1, 0, 1, 100) < 0) goto fail;
@@ -745,6 +845,8 @@ fail:;
             if (ej_bson_parse_boolean_uc(bc, "online_final_visibility", &status->online_final_visibility) < 0) goto fail;
         } else if (!strcmp(key, "online_valuer_judge_comments")) {
             if (ej_bson_parse_boolean_uc(bc, "online_valuer_judge_comments", &status->online_valuer_judge_comments) < 0) goto fail;
+        } else if (!strcmp(key, "disable_virtual_start")) {
+            if (ej_bson_parse_boolean_uc(bc, "disable_virtual_start", &status->disable_virtual_start) < 0) goto fail;
         } else if (!strcmp(key, "score_system")) {
             int ss;
             if (ej_bson_parse_int(bc, "score_system", &ss, 1, 0, 1, 100) < 0) goto fail;

@@ -33,6 +33,9 @@ enum
   CNTS_enable_user_telegram,
   CNTS_enable_avatar,
   CNTS_enable_local_pages,
+  CNTS_read_only_name,
+  CNTS_enable_oauth,
+  CNTS_enable_reminders,
   CNTS_reg_deadline,
   CNTS_sched_time,
   CNTS_open_time,
@@ -120,6 +123,7 @@ enum
   CNTS_content_plugin,
   CNTS_content_url_prefix,
   CNTS_slave_rules,
+  CNTS_oauth_rules,
   CNTS_user_contest_num,
   CNTS_default_locale_num,
 

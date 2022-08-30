@@ -2,7 +2,7 @@
 #ifndef __SERVE_STATE_H__
 #define __SERVE_STATE_H__
 
-/* Copyright (C) 2006-2019 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2006-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -285,6 +285,11 @@ struct serve_state
      0 - no, 1 - yes
    */
   int online_valuer_judge_comments;
+  /**
+     Disable virtual start
+     0 - no, 1 - yes
+  */
+  int disable_virtual_start;
 
   time_t stat_last_check_time;
   time_t stat_reported_before;
@@ -335,6 +340,9 @@ struct serve_state
 
   // compiler options to report
   unsigned char **compiler_options;
+
+  // serial number for the testing user
+  int exec_user_serial;
 };
 typedef struct serve_state *serve_state_t;
 
@@ -515,6 +523,7 @@ serve_run_request(
         int variant,
         int priority_adjustment,
         int judge_id,
+        const ej_uuid_t *judge_uuid,
         int accepting_mode,
         int notify_flag,
         int mime_type,
@@ -711,6 +720,7 @@ serve_judge_built_in_problem(
         const struct contest_desc *cnts,
         int run_id,
         int judge_id,
+        const ej_uuid_t *judge_uuid,
         int variant,
         int accepting_mode,
         struct run_entry *re,
@@ -891,6 +901,7 @@ serve_make_audit_read_path(
 
 const unsigned char *
 serve_get_compiler_options(
+        const struct ejudge_cfg *config,
         const serve_state_t state,
         int lang_id);
 

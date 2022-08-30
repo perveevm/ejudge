@@ -1,13 +1,13 @@
 # -*- mode: po; coding: UTF-8 -*-
 # ejudge messages catalog
-# Copyright (C) 2002-2019 Alexander Chernov <cher@ejudge.ru>
+# Copyright (C) 2002-2022 Alexander Chernov <cher@ejudge.ru>
 #
 msgid ""
 msgstr ""
 "Project-Id-Version: ejudge 3\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2020-01-07 20:51+0300\n"
-"PO-Revision-Date: 2018-09-15 01:16+0300\n"
+"POT-Creation-Date: 2022-06-19 01:04+0300\n"
+"PO-Revision-Date: 2022-01-12 13:17+0300\n"
 "Last-Translator: Alexander Chernov <cher@ejudge.ru>\n"
 "Language-Team: Russian <ru@li.org>\n"
 "Language: ru\n"
@@ -141,7 +141,7 @@ msgstr "<i>Недопустимый ответ: %d</i>"
 msgid "<i>Not set</i>"
 msgstr "<i>Не установлено</i>"
 
-#, fuzzy, c-format
+#, c-format
 msgid ""
 "<p class=\"ejudge_copyright\">This is <a href=\"%s\"><b>ejudge</b></a> "
 "contest administration system, version %s, compiled %s.</p>\n"
@@ -162,7 +162,7 @@ msgstr ""
 "\"http://www.gnu.org/licenses/gpl.html\">Общей Лицензией GNU</a> (GNU "
 "General Public License), опубликованной <a href=\"http://www.fsf.org"
 "\">Фондом свободного ПО</a> (Free Software Foundation), либо версии 2 "
-"Лицензии, либо (по Вашему желанию) любой последующей версии.</p>"
+"Лицензии, либо (по Вашему желанию) любой последующей версии.</p>\n"
 
 msgid ""
 "<p class=\"fixed_width\">First stage of password recovery is successful. You "
@@ -303,6 +303,21 @@ msgstr "<u>--- Поток ошибок: размер %lld ---</u>\n"
 msgid "ALL PREVIOUS SUBMITS WILL BE LOST!"
 msgstr "ВСЕ СДЕЛАННЫЕ ПОСЫЛКИ БУДУТ ОБНУЛЕНЫ!"
 
+msgid "API Keys"
+msgstr "Ключи API"
+
+#, c-format
+msgid "API key created"
+msgstr "Ключ API создан"
+
+#, c-format
+msgid "API key creation failed"
+msgstr "Ошибка создания ключа API"
+
+#, c-format
+msgid "API keys"
+msgstr "Ключи API"
+
 msgid "Accepted for testing"
 msgstr "Принято на проверку"
 
@@ -436,6 +451,9 @@ msgstr "Все вопросы и комментарии"
 
 msgid "All entries"
 msgstr "Все записи"
+
+msgid "All headers"
+msgstr "Все заголовки"
 
 msgid "Allow"
 msgstr "Разрешить"
@@ -678,6 +696,9 @@ msgstr "Ошибка проверяющей системы"
 msgid "Check failed runs"
 msgstr "Посылки с ошибкой проверяющей системы"
 
+msgid "Checked?"
+msgstr "Проверено?"
+
 msgid "Checker Token"
 msgstr "Токен проверяющей программы"
 
@@ -758,6 +779,9 @@ msgstr "Очистить отображённые посылки!"
 
 msgid "Clear disqualification"
 msgstr "Сбросить дисквалификацию"
+
+msgid "Clear entry"
+msgstr "Очистить запись"
 
 msgid "Clear finished flag"
 msgstr "Сбросить флаг проверенности решений"
@@ -1031,6 +1055,9 @@ msgstr "Создать ещё одну учётную запись"
 msgid "Create contest!"
 msgstr "Создать турнир!"
 
+msgid "Create new API key"
+msgstr "Создать новый ключ API"
+
 msgid "Create user account"
 msgstr "Создать новую учётную запись"
 
@@ -1158,6 +1185,9 @@ msgstr "Запретить турнирные пароли"
 
 msgid "Disable team member deletion"
 msgstr "Запретить удаление членов команды"
+
+msgid "Disable virtual start"
+msgstr "Запретить виртуальный старт"
 
 msgid "Disabled"
 msgstr "Запрещён"
@@ -1300,17 +1330,23 @@ msgstr "Пустая посылка"
 msgid "Empty text of warning"
 msgstr "Текст предупреждения пуст"
 
+msgid "Enable OAUTH for login"
+msgstr "Разрешить OAUTH для входа"
+
+msgid "Enable daily reminders"
+msgstr "Разрешить ежедневные напоминания"
+
 msgid "Enable password restoration"
 msgstr "Разрешить восстановление пароля"
 
 msgid "Enable simple registration (no email)"
 msgstr "Разрешить упрощённую регистрацию (без e-mail)"
 
+msgid "Enable virtual start"
+msgstr "Разрешить виртуальный старт"
+
 msgid "End time"
 msgstr "Время окончания"
-
-msgid "Enqueue Time"
-msgstr "Время постановки"
 
 msgid "Error"
 msgstr "Ошибка"
@@ -1479,6 +1515,9 @@ msgstr "Завершить экзамен"
 
 msgid "Finish time"
 msgstr "Время окончания"
+
+msgid "First Run"
+msgstr "Первая посылка"
 
 msgid "First User_Id"
 msgstr "Первый User_Id"
@@ -1858,6 +1897,9 @@ msgstr "Импорт"
 msgid "Imported?"
 msgstr "Импортирована?"
 
+msgid "In DB?"
+msgstr "В БД?"
+
 msgid ""
 "In order to complete the registration procedure, hit the \"Confirm "
 "registration\" link."
@@ -1941,6 +1983,9 @@ msgstr "Недопустимое значени RunId %s в строке %d\n"
 #, c-format
 msgid "Invalid UId %s in row %d\n"
 msgstr "Недопустимое значение UId %s в строке %d\n"
+
+msgid "Invalid UUID"
+msgstr "Недопустимый UUID"
 
 msgid "Invalid action"
 msgstr "Неверная команда"
@@ -2063,6 +2108,9 @@ msgstr "Неверный текст комментария к предупреж
 msgid "Invalid time specification"
 msgstr "Неверная спецификация времени"
 
+msgid "Invalid token"
+msgstr "Неверный токен"
+
 msgid "Invalid user role"
 msgstr "Неверная роль пользователя"
 
@@ -2092,6 +2140,9 @@ msgstr "Янв"
 
 msgid "Judge"
 msgstr "Судья"
+
+msgid "Judge Request Time"
+msgstr "Время запроса на проверку"
 
 msgid "Judge scores are opened"
 msgstr "Финальные баллы открыты"
@@ -2164,6 +2215,15 @@ msgstr "Настройки языков программирования (serve.
 msgid "Language statistics"
 msgstr "Статистика по языкам программирования"
 
+msgid "Last Change"
+msgstr "Последнее изменение"
+
+msgid "Last Change Time"
+msgstr "Время последнего изменения"
+
+msgid "Last Run"
+msgstr "Последняя посылка"
+
 msgid "Last User_Id (incl.)"
 msgstr "Последний User_Id (вкл.)"
 
@@ -2187,6 +2247,9 @@ msgstr "Ссылка"
 
 msgid "Links"
 msgstr "Ссылки"
+
+msgid "List of API keys"
+msgstr "Список ключей API"
 
 msgid "List of registered participants"
 msgstr "Список зарегистрировавшихся участников"
@@ -2259,6 +2322,9 @@ msgstr "Главный URL"
 
 msgid "Main page"
 msgstr "Главная"
+
+msgid "Make &quot;Name&quot; field read-only"
+msgstr "Запретить редактировать поле &quot;Имя&quot;"
 
 msgid "Make invisible"
 msgstr "Сделать невидимой"
@@ -2338,6 +2404,9 @@ msgstr "Май"
 
 msgid "May change!"
 msgstr "Может измениться!"
+
+msgid "Memory RSS limit"
+msgstr "Ограничение физической памяти"
 
 msgid "Memory limit"
 msgstr "Ограничение памяти"
@@ -3684,6 +3753,9 @@ msgstr "Время разморозки таблицы результатов"
 msgid "Start"
 msgstr "Начать"
 
+msgid "Start Time"
+msgstr "Время начала"
+
 msgid "Start at"
 msgstr "Начало в"
 
@@ -3728,6 +3800,9 @@ msgstr "Статус Вашей посылки был изменён\n"
 
 msgid "Stop"
 msgstr "Остановить"
+
+msgid "Stop Time"
+msgstr "Время окончания"
 
 msgid "Stop exam"
 msgstr "Завершить экзамен"
@@ -4373,6 +4448,12 @@ msgstr ""
 msgid "User report"
 msgstr "Пользовательский протокол"
 
+msgid "User run header"
+msgstr "Заголовок прохождения"
+
+msgid "User run headers"
+msgstr "Прохождения участников"
+
 msgid "User standings"
 msgstr "Положение участников"
 
@@ -4512,8 +4593,17 @@ msgstr "Начало виртуального турнира"
 msgid "Virtual start failed"
 msgstr "Виртуальный турнир не может быть начат"
 
+msgid "Virtual start is disabled"
+msgstr "Виртуальный старт запрещен"
+
+msgid "Virtual start is disabled by config"
+msgstr "Виртуальный старт запрещен в конфигурационном файле"
+
 msgid "Virtual stop"
 msgstr "Окончание виртуального турнира"
+
+msgid "Virtual?"
+msgstr "Виртуал?"
 
 msgid "Wall time-limit exceeded"
 msgstr "Превышено реальное время работы"

@@ -1,6 +1,6 @@
 # -*- Makefile -*-
 
-# Copyright (C) 2002-2020 Alexander Chernov <cher@ejudge.ru> */
+# Copyright (C) 2002-2022 Alexander Chernov <cher@ejudge.ru> */
 
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -14,6 +14,7 @@
 
 USERLIST_CLNT_CFILES=\
  userlist_clnt/admin_process.c\
+ userlist_clnt/api_key_request.c\
  userlist_clnt/bytes_available.c\
  userlist_clnt/bin_data.c\
  userlist_clnt/change_registration.c\
@@ -118,11 +119,13 @@ REUSE_CFILES=\
  reuse/reuse_xstrmerge3.c
 
 COMMON_CFILES=\
+ lib/agent_client_ssh.c\
  lib/allowed_list.c\
  lib/archive_paths.c\
  lib/avatar_plugin.c\
  lib/base32.c\
  lib/base64.c\
+ lib/base64u.c\
  lib/bitset.c\
  lib/bson_utils.c\
  lib/bson_utils_new.c\
@@ -157,9 +160,12 @@ COMMON_CFILES=\
  lib/digest_5.c\
  lib/dos2unix_str.c\
  lib/dwarf_parse.c\
+ lib/dyntrie.c\
  lib/ej_import_packet.c\
  lib/ejudge_cfg.c\
+ lib/ejudge_cfg_var.c\
  lib/ej_libzip.c\
+ lib/ej_lzma.c\
  lib/ej_uuid.c\
  lib/errlog.c\
  lib/expat_iface.c\
@@ -196,6 +202,7 @@ COMMON_CFILES=\
  lib/ncurses_utils.c\
  lib/nsdb_plugin_files.c\
  lib/nwrun_packet.c\
+ lib/oauth.c\
  lib/opcaps.c\
  lib/opcaps_2.c\
  lib/packet_name.c\
@@ -265,6 +272,7 @@ COMMON_CFILES=\
  lib/teamdb_2.c\
  lib/team_extra.c\
  lib/team_extra_xml.c\
+ lib/test_count_cache.c\
  lib/testinfo.c\
  lib/testing_report_bson.c\
  lib/testing_report_xml.c\
@@ -272,6 +280,10 @@ COMMON_CFILES=\
  lib/tex_dom_parse.c\
  lib/tex_dom_doc.c\
  lib/tex_dom_render.c\
+ lib/trie_1.c\
+ lib/trie_2.c\
+ lib/trie_3.c\
+ lib/trie_4.c\
  lib/tsc.c\
  lib/type_info.c\
  lib/uldb_plugin_xml.c\
@@ -519,6 +531,7 @@ CFILES=\
  ${NEW_SERVER_CLNT_CFILES}
 
 HFILES=\
+ ./include/ejudge/agent_client.h\
  ./include/ejudge/archive_paths.h\
  ./include/ejudge/avatar_plugin.h\
  ./include/ejudge/base32.h\
@@ -548,6 +561,7 @@ HFILES=\
  ./include/ejudge/diff.h\
  ./include/ejudge/digest_io.h\
  ./include/ejudge/dwarf_parse.h\
+ ./include/ejudge/dyntrie.h\
  ./include/ejudge/ejudge_cfg.h\
  ./include/ejudge/ejudge_plugin.h\
  ./include/ejudge/ej_byteorder.h\
@@ -556,6 +570,7 @@ HFILES=\
  ./include/ejudge/ej_process.h\
  ./include/ejudge/ej_types.h\
  ./include/ejudge/ej_libzip.h\
+ ./include/ejudge/ej_lzma.h\
  ./include/ejudge/ej_uuid.h\
  ./include/ejudge/errlog.h\
  ./include/ejudge/expat_iface.h\
@@ -586,6 +601,7 @@ HFILES=\
  ./include/ejudge/new-server.h\
  ./include/ejudge/nsdb_plugin.h\
  ./include/ejudge/nwrun_packet.h\
+ ./include/ejudge/oauth.h\
  ./include/ejudge/opcaps.h\
  ./include/ejudge/packet_name.h\
  ./include/ejudge/parsecfg.h\
@@ -636,10 +652,13 @@ HFILES=\
  ./include/ejudge/teamdb.h\
  ./include/ejudge/teamdb_priv.h\
  ./include/ejudge/team_extra.h\
+ ./include/ejudge/test_count_cache.h\
  ./include/ejudge/testinfo.h\
  ./include/ejudge/testing_report_xml.h\
  ./include/ejudge/tex_dom.h\
  ./include/ejudge/timestamp.h\
+ ./include/ejudge/trie.h\
+ ./include/ejudge/trie_private.h\
  ./include/ejudge/tsc.h\
  ./include/ejudge/type_info.h\
  ./include/ejudge/uldb_plugin.h\

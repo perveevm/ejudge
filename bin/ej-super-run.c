@@ -1,6 +1,6 @@
 /* -*- c -*- */
 
-/* Copyright (C) 2012-2019 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2012-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -31,6 +31,7 @@
 #include "ejudge/xml_utils.h"
 #include "ejudge/ej_uuid.h"
 #include "ejudge/super_run_status.h"
+#include "ejudge/agent_client.h"
 
 #include "ejudge/xalloc.h"
 #include "ejudge/osdeps.h"
@@ -59,7 +60,7 @@ static unsigned char *super_run_dir = NULL;
 static unsigned char *run_server_id = NULL;
 
 static const unsigned char *program_name = 0;
-struct ejudge_cfg *ejudge_config = NULL;
+//struct ejudge_cfg *ejudge_config = NULL;
 static __attribute__((unused)) unsigned char super_run_server_path[PATH_MAX];
 static unsigned char super_run_path[PATH_MAX];
 static unsigned char super_run_spool_path[PATH_MAX];
@@ -81,6 +82,9 @@ static unsigned char *public_hostname = NULL;
 static unsigned char *super_run_name = NULL;
 static unsigned char *queue_name = NULL;
 static unsigned char *status_file_name = NULL;
+static unsigned char *agent_name = NULL;
+static struct AgentClient *agent;
+static int verbose_mode;
 
 static int ignored_archs_count = 0;
 static int ignored_problems_count = 0;
@@ -219,7 +223,7 @@ super_run_before_tests(struct run_listener *gself, int test_no)
   rs.queue_ts = self->queue_ts;
   rs.testing_start_ts = self->testing_start_ts;
 
-  super_run_status_save(super_run_heartbeat_path, status_file_name, &rs,
+  super_run_status_save(agent, super_run_heartbeat_path, status_file_name, &rs,
                         current_time_ms, &last_heartbear_save_time, HEARTBEAT_SAVE_INTERVAL_MS,
                         &pending_stop_flag, &pending_down_flag);
   if (!master_stop_enabled) pending_stop_flag = 0;
@@ -269,18 +273,28 @@ handle_packet(
   memset(&run_listener, 0, sizeof(run_listener));
   run_listener.b.ops = &super_run_listener_ops;
 
-  r = generic_read_file(&srp_b, 0, &srp_z, SAFE | REMOVE, super_run_spool_path, pkt_name, "");
+  if (agent) {
+    r = agent->ops->get_packet(agent, pkt_name, &srp_b, &srp_z);
+    if (r < 0) {
+      err("agent get_packet failed");
+      goto cleanup;
+    }
+  } else {
+    r = generic_read_file(&srp_b, 0, &srp_z, SAFE | REMOVE, super_run_spool_path, pkt_name, "");
+    if (r < 0) {
+      err("generic_read_file failed for packet %s in %s", pkt_name, super_run_spool_path);
+      goto cleanup;
+    }
+  }
   if (r == 0) {
     // ignore this packet
     retval = 0;
     goto cleanup;
   }
-  if (r < 0) {
-    err("generic_read_file failed for packet %s in %s", pkt_name, super_run_spool_path);
-    goto cleanup;
-  }
 
-  fprintf(stderr, "packet: <<%.*s>>\n", (int) srp_z, srp_b);
+  if (verbose_mode) {
+    fprintf(stderr, "packet: <<%.*s>>\n", (int) srp_z, srp_b);
+  }
 
   srp = super_run_in_packet_parse_cfg_str(pkt_name, srp_b, srp_z);
   if (!srp) {
@@ -312,7 +326,11 @@ handle_packet(
 
   if (is_packet_to_ignore(pkt_name, srgp->contest_id, srgp->rejudge_flag, short_name, arch)) {
     retval = 0;
-    generic_write_file(srp_b, srp_z, SAFE, super_run_spool_path, pkt_name, "");
+    if (agent) {
+      agent->ops->put_packet(agent, pkt_name, srp_b, srp_z);
+    } else {
+      generic_write_file(srp_b, srp_z, SAFE, super_run_spool_path, pkt_name, "");
+    }
     goto cleanup;
   }
 
@@ -333,7 +351,11 @@ handle_packet(
       if (!tst) {
         err("no support for architecture %s here", arch);
         retval = 0;
-        generic_write_file(srp_b, srp_z, SAFE, super_run_spool_path, pkt_name, "");
+        if (agent) {
+          agent->ops->put_packet(agent, pkt_name, srp_b, srp_z);
+        } else {
+          generic_write_file(srp_b, srp_z, SAFE, super_run_spool_path, pkt_name, "");
+        }
         goto cleanup;
       }
     }
@@ -341,12 +363,21 @@ handle_packet(
     snprintf(exe_pkt_name, sizeof(exe_pkt_name), "%s%s", pkt_name, srgp->exe_sfx);
     snprintf(exe_name, sizeof(exe_name), "%s%s", run_base, srgp->exe_sfx);
 
-    r = generic_copy_file(REMOVE, super_run_exe_path, exe_pkt_name, "",
-                          0, global->run_work_dir, exe_name, "");
+    if (agent) {
+      r = agent->ops->get_data_2(agent, pkt_name, srgp->exe_sfx,
+                                 global->run_work_dir, run_base, srgp->exe_sfx);
+    } else {
+      r = generic_copy_file(REMOVE, super_run_exe_path, exe_pkt_name, "",
+                            0, global->run_work_dir, exe_name, "");
+    }
     if (r <= 0) {
       // FIXME: handle this differently?
       retval = 0;
-      generic_write_file(srp_b, srp_z, SAFE, super_run_spool_path, pkt_name, "");
+      if (agent) {
+        agent->ops->put_packet(agent, pkt_name, srp_b, srp_z);
+      } else {
+        generic_write_file(srp_b, srp_z, SAFE, super_run_spool_path, pkt_name, "");
+      }
       goto cleanup;
     }
 
@@ -368,6 +399,9 @@ handle_packet(
     get_current_time(&reply_pkt.ts5, &reply_pkt.ts5_us);
     if (srgp->run_uuid && srgp->run_uuid[0]) {
       ej_uuid_parse(srgp->run_uuid, &reply_pkt.uuid);
+    }
+    if (srgp->judge_uuid && srgp->judge_uuid[0]) {
+      ej_uuid_parse(srgp->judge_uuid, &reply_pkt.judge_uuid);
     }
 
     run_listener.contest_id = srgp->contest_id;
@@ -457,19 +491,43 @@ handle_packet(
   }
 
   // copy full report from temporary location
-  if (generic_copy_file(0, NULL, report_path, "", 0, full_report_dir, reply_packet_name, "") < 0) {
-    goto cleanup;
+  if (agent) {
+    if (agent->ops->put_output_2(agent,
+                                 srgp->contest_server_id,
+                                 srgp->contest_id,
+                                 reply_packet_name,
+                                 "",
+                                 report_path) < 0) {
+      goto cleanup;
+    }
+  } else {
+    if (generic_copy_file(0, NULL, report_path, "", 0, full_report_dir, reply_packet_name, "") < 0) {
+      goto cleanup;
+    }
   }
 
 #if defined CONF_HAS_LIBZIP
-  if (full_report_path[0] && generic_copy_file(0, NULL, full_report_path, "", 0, full_full_dir, reply_packet_name, ".zip") < 0) {
-    goto cleanup;
-  }
+  const unsigned char *zip_suffix = ".zip";
 #else
-  if (full_report_path[0] && generic_copy_file(0, NULL, full_report_path, "", 0, full_full_dir, reply_packet_name, "") < 0) {
-    goto cleanup;
-  }
+  const unsigned char *zip_suffix = "";
 #endif
+
+  if (full_report_path[0]) {
+    if (agent) {
+      if (agent->ops->put_archive_2(agent,
+                                    srgp->contest_server_id,
+                                    srgp->contest_id,
+                                    reply_packet_name,
+                                    zip_suffix,
+                                    full_report_path) < 0) {
+        goto cleanup;
+      }
+    } else {
+      if (generic_copy_file(0, NULL, full_report_path, "", 0, full_full_dir, reply_packet_name, zip_suffix) < 0) {
+        goto cleanup;
+      }
+    }
+  }
 
   //run_reply_packet_dump(&reply_pkt);
 
@@ -477,8 +535,17 @@ handle_packet(
     goto cleanup;
   }
 
-  if (generic_write_file(reply_pkt_buf, reply_pkt_buf_size, SAFE, full_status_dir, reply_packet_name, "") < 0) {
-    goto cleanup;
+  if (agent) {
+    if (agent->ops->put_reply(agent,
+                              srgp->contest_server_id,
+                              srgp->contest_id,
+                              reply_packet_name,
+                              reply_pkt_buf, reply_pkt_buf_size) < 0)
+      goto cleanup;
+  } else {
+    if (generic_write_file(reply_pkt_buf, reply_pkt_buf_size, SAFE, full_status_dir, reply_packet_name, "") < 0) {
+      goto cleanup;
+    }
   }
 
 cleanup:
@@ -518,7 +585,7 @@ report_waiting_state(long long current_time_ms, long long last_check_time_ms)
   rs.timestamp = current_time_ms;
   rs.last_run_ts = last_check_time_ms;
   rs.status = SRS_WAITING;
-  super_run_status_save(super_run_heartbeat_path, status_file_name, &rs,
+  super_run_status_save(agent, super_run_heartbeat_path, status_file_name, &rs,
                         current_time_ms, &last_heartbear_save_time, HEARTBEAT_SAVE_INTERVAL_MS,
                         &pending_stop_flag, &pending_down_flag);
   if (!master_stop_enabled) pending_stop_flag = 0;
@@ -538,6 +605,26 @@ do_loop(
   time_t last_handled = 0;
   long long last_handled_ms = 0;
   long long current_time_ms = 0;
+  struct Future *future = NULL;
+
+  if (agent_name && *agent_name) {
+    if (!strncmp(agent_name, "ssh:", 4)) {
+      agent = agent_client_ssh_create();
+      if (agent->ops->init(agent, instance_id,
+                           agent_name + 4, run_server_id,
+                           PREPARE_RUN, verbose_mode) < 0) {
+        err("failed to initalize agent");
+        return -1;
+      }
+      if (agent->ops->connect(agent) < 0) {
+        err("failed to connect to client");
+        return -1;
+      }
+    } else {
+      err("invalid agent");
+      return -1;
+    }
+  }
 
   gettimeofday(&ctv, NULL);
   last_handled = ctv.tv_sec;
@@ -554,6 +641,7 @@ do_loop(
   }
   */
   interrupt_init();
+  interrupt_setup_usr1();
   interrupt_disable();
 
   while (1) {
@@ -577,17 +665,45 @@ do_loop(
       break;
     }
 
+    r = 0;
     pkt_name[0] = 0;
-    r = scan_dir(super_run_spool_path, pkt_name, sizeof(pkt_name), 1);
+    if (agent) {
+      if (interrupt_was_usr1()) {
+        interrupt_reset_usr1();
+        if (future) {
+          r = agent->ops->async_wait_complete(agent, &future, pkt_name, sizeof(pkt_name));
+          if (r < 0) {
+            err("async_wait_complete failed");
+            break;
+          }
+        }
+      } else if (!future) {
+        r = agent->ops->async_wait_init(agent, SIGUSR1, 1, pkt_name, sizeof(pkt_name), &future);
+        if (r < 0) {
+          err("async_wait_init failed");
+          break;
+        }
+      }
+      /*
+      r = agent->ops->poll_queue(agent, pkt_name, sizeof(pkt_name), 1);
+      if (r < 0) {
+        err("agent poll_queue failed, waiting...");
+      }
+      */
+    } else {
+      r = scan_dir(super_run_spool_path, pkt_name, sizeof(pkt_name), 1);
+      if (r < 0) {
+        err("scan_dir failed for %s, waiting...", super_run_spool_path);
+      }
+    }
     if (r < 0) {
-      err("scan_dir failed for %s, waiting...", super_run_spool_path);
-
       gettimeofday(&ctv, NULL);
       current_time_ms = ((long long) ctv.tv_sec) * 1000 + ctv.tv_usec / 1000;
       report_waiting_state(current_time_ms, last_handled_ms);
 
+      int sleep_time = agent?30000:global->sleep_time;
       interrupt_enable();
-      os_Sleep(global->sleep_time);
+      os_Sleep(sleep_time);
       interrupt_disable();
       continue;
     }
@@ -597,15 +713,20 @@ do_loop(
       current_time_ms = ((long long) ctv.tv_sec) * 1000 + ctv.tv_usec / 1000;
       report_waiting_state(current_time_ms, last_handled_ms);
 
+      int sleep_time = agent?30000:global->sleep_time;
       interrupt_enable();
-      os_Sleep(global->sleep_time);
+      os_Sleep(sleep_time);
       interrupt_disable();
       continue;
     }
 
     r = handle_packet(state, pkt_name);
     if (!r) {
-      scan_dir_add_ignored(super_run_spool_path, pkt_name);
+      if (agent) {
+        agent->ops->add_ignored(agent, pkt_name);
+      } else {
+        scan_dir_add_ignored(super_run_spool_path, pkt_name);
+      }
     }
 
     gettimeofday(&ctv, NULL);
@@ -613,7 +734,12 @@ do_loop(
     last_handled_ms = ((long long) ctv.tv_sec) * 1000 + ctv.tv_usec / 1000;
   }
 
-  super_run_status_remove(super_run_heartbeat_path, status_file_name);
+  super_run_status_remove(agent, super_run_heartbeat_path, status_file_name);
+
+  if (agent) {
+    agent->ops->close(agent);
+  }
+
   return 0;
 }
 
@@ -1239,6 +1365,10 @@ main(int argc, char *argv[])
       argv_restart[argc_restart++] = argv[cur_arg];
       ignore_rejudge = 1;
       ++cur_arg;
+    } else if (!strcmp(argv[cur_arg], "-v")) {
+      argv_restart[argc_restart++] = argv[cur_arg];
+      verbose_mode = 1;
+      ++cur_arg;
     } else if (!strcmp(argv[cur_arg], "-p")) {
       if (cur_arg + 1 >= argc) fatal("argument expected for -p");
       xfree(super_run_dir); super_run_dir = NULL;
@@ -1298,6 +1428,31 @@ main(int argc, char *argv[])
     } else if (!strcmp(argv[cur_arg], "-e")) {
       if (cur_arg + 1 >= argc) fatal("argument expected for -e");
       parse_remap_spec(argv[cur_arg + 1]);
+      argv_restart[argc_restart++] = argv[cur_arg];
+      argv_restart[argc_restart++] = argv[cur_arg + 1];
+      cur_arg += 2;
+    } else if (!strcmp(argv[cur_arg], "--agent")) {
+      if (cur_arg + 1 >= argc) fatal("argument expected for --agent");
+      xfree(agent_name);
+      agent_name = xstrdup(argv[cur_arg + 1]);
+      argv_restart[argc_restart++] = argv[cur_arg];
+      argv_restart[argc_restart++] = argv[cur_arg + 1];
+      cur_arg += 2;
+    } else if (!strcmp(argv[cur_arg], "--instance-id")) {
+      if (cur_arg + 1 >= argc) fatal("argument expected for --instance-id");
+      xfree(instance_id);
+      instance_id = xstrdup(argv[cur_arg + 1]);
+      argv_restart[argc_restart++] = argv[cur_arg];
+      argv_restart[argc_restart++] = argv[cur_arg + 1];
+      cur_arg += 2;
+    } else if (!strcmp(argv[cur_arg], "-x")) {
+      if (cur_arg + 1 >= argc) fatal("argument expected for -x");
+      errno = 0;
+      char *ep = NULL;
+      long val = strtol(argv[cur_arg + 1], &ep, 10);
+      if (errno || *ep || ep == argv[cur_arg + 1] || val < 0 || (int) val != val)
+        fatal("invalid argument for -x");
+      state->exec_user_serial = val;
       argv_restart[argc_restart++] = argv[cur_arg];
       argv_restart[argc_restart++] = argv[cur_arg + 1];
       cur_arg += 2;

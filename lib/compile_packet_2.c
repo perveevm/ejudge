@@ -1,6 +1,6 @@
 /* -*- c -*- */
 
-/* Copyright (C) 2005-2019 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2005-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -86,6 +86,10 @@ compile_request_packet_write(
   if (in_data->contest_server_id) {
     contest_server_id_len = strlen(in_data->contest_server_id);
   }
+  int container_options_len = 0;
+  if (in_data->container_options) {
+    container_options_len = strlen(in_data->container_options);
+  }
 
   FAIL_IF(in_data->judge_id < 0 || in_data->judge_id > EJ_MAX_JUDGE_ID);
   FAIL_IF(in_data->contest_id < 0 || in_data->contest_id > EJ_MAX_CONTEST_ID);
@@ -107,6 +111,7 @@ compile_request_packet_write(
   FAIL_IF(user_login_len < 0 || user_login_len > PATH_MAX);
   FAIL_IF(exam_cypher_len < 0 || exam_cypher_len > PATH_MAX);
   FAIL_IF(contest_server_id_len < 0 || contest_server_id_len > PATH_MAX);
+  FAIL_IF(container_options_len < 0 || container_options_len > PATH_MAX);
   FAIL_IF(in_data->run_block_len < 0 || in_data->run_block_len > EJ_MAX_COMPILE_RUN_BLOCK_LEN);
   env_num = in_data->env_num;
   if (env_num == -1) {
@@ -173,6 +178,9 @@ compile_request_packet_write(
   if (contest_server_id_len > 0) {
     out_size += pkt_bin_align(contest_server_id_len);
   }
+  if (container_options_len > 0) {
+    out_size += pkt_bin_align(container_options_len);
+  }
   out_size += pkt_bin_align(in_data->run_block_len);
   out_size += pkt_bin_align(env_num * sizeof(rint32_t));
   for (i = 0; i < env_num; i++) {
@@ -203,11 +211,17 @@ compile_request_packet_write(
   out_data->max_vm_size = cvt_host_to_bin_64(in_data->max_vm_size);
   out_data->max_stack_size = cvt_host_to_bin_64(in_data->max_stack_size);
   out_data->max_file_size = cvt_host_to_bin_64(in_data->max_file_size);
+  out_data->max_rss_size = cvt_host_to_bin_64(in_data->max_rss_size);
+  out_data->use_container = cvt_host_to_bin_32(in_data->use_container);
   out_data->use_uuid = cvt_host_to_bin_32(in_data->use_uuid);
+  out_data->uuid = in_data->uuid;
+  out_data->judge_uuid = in_data->judge_uuid;
+  /*
   out_data->uuid.v[0] = cvt_host_to_bin_32(in_data->uuid.v[0]);
   out_data->uuid.v[1] = cvt_host_to_bin_32(in_data->uuid.v[1]);
   out_data->uuid.v[2] = cvt_host_to_bin_32(in_data->uuid.v[2]);
   out_data->uuid.v[3] = cvt_host_to_bin_32(in_data->uuid.v[3]);
+  */
   out_data->multi_header = cvt_host_to_bin_32(in_data->multi_header);
   out_data->lang_header = cvt_host_to_bin_32(in_data->lang_header);
   out_data->style_checker_len = cvt_host_to_bin_32(style_checker_len);
@@ -221,6 +235,7 @@ compile_request_packet_write(
   out_data->user_login_len = cvt_host_to_bin_32(user_login_len);
   out_data->exam_cypher_len = cvt_host_to_bin_32(exam_cypher_len);
   out_data->contest_server_id_len = cvt_host_to_bin_32(contest_server_id_len);
+  out_data->container_options_len = cvt_host_to_bin_32(container_options_len);
   out_data->env_num = cvt_host_to_bin_32(env_num);
   out_data->sc_env_num = cvt_host_to_bin_32(sc_env_num);
   out_data->user_id = cvt_host_to_bin_32(in_data->user_id);
@@ -277,6 +292,11 @@ compile_request_packet_write(
   if (contest_server_id_len > 0) {
     memcpy(out_ptr, in_data->contest_server_id, contest_server_id_len);
     out_ptr += contest_server_id_len;
+    pkt_bin_align_addr(out_ptr, out_data);
+  }
+  if (container_options_len > 0) {
+    memcpy(out_ptr, in_data->container_options, container_options_len);
+    out_ptr += container_options_len;
     pkt_bin_align_addr(out_ptr, out_data);
   }
   if (env_num) {

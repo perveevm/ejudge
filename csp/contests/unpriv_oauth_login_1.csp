@@ -1,0 +1,63 @@
+<%
+%><%@include "unpriv_includes.csp"
+%><%
+#include "ejudge/ejudge_cfg.h"
+#include "ejudge/oauth.h"
+#include "ejudge/userlist_clnt.h"
+#include "ejudge/userlist_proto.h"
+%><%@set ac_prefix = "NEW_SRV_ACTION_"
+%><%@set err_prefix = "NEW_SRV_ERR_"
+%><%@set getter_name = "csp_get_unpriv_oauth_login_1"
+%><%@page csp_view_unpriv_oauth_login_1(PageInterface *ps, FILE *log_f, FILE *out_f, struct http_request_info *phr)
+%><%@include "unpriv_stdvars.csp"
+%><%
+  const unsigned char *provider = NULL;
+  const unsigned char *role = NULL;
+  unsigned char cookie[128];
+  unsigned char *redirect_url = NULL;
+
+%><s:read var="provider" ignoreerrors="yes" /><%
+%><s:read var="role" ignoreerrors="yes" /><%
+
+  if (role && !strcmp(role, "admin")) {
+    if (phr->config->enable_oauth <= 0) {
+      fprintf(log_f, "admin OAUTH disabled");
+      FAIL(NEW_SRV_ERR_SERVICE_NOT_AVAILABLE);
+    }
+  } else {
+    role = NULL;
+    if (phr->contest_id <= 0 || contests_get(phr->contest_id, &cnts) < 0 || !cnts) {
+      FAIL(NEW_SRV_ERR_INV_CONTEST_ID);
+    }
+    if (!contests_check_team_ip(phr->contest_id, &phr->ip, phr->ssl_flag)) {
+      fprintf(log_f, "%s://%s is not allowed for USER for contest %d\n",
+              ns_ssl_flag_str[phr->ssl_flag], xml_unparse_ipv6(&phr->ip), phr->contest_id);
+      FAIL(NEW_SRV_ERR_PERMISSION_DENIED);
+    }
+    if (cnts->closed) {
+      fprintf(log_f, "contest %d is closed", cnts->id);
+      FAIL(NEW_SRV_ERR_SERVICE_NOT_AVAILABLE);
+    }
+    if (!cnts->managed) {
+      fprintf(log_f, "contest %d is not managed", cnts->id);
+      FAIL(NEW_SRV_ERR_SERVICE_NOT_AVAILABLE);
+    }
+    if (!cnts->enable_oauth) {
+      fprintf(log_f, "contest %d OAUTH disabled", cnts->id);
+      FAIL(NEW_SRV_ERR_SERVICE_NOT_AVAILABLE);
+    }
+  }
+
+  snprintf(cookie, sizeof(cookie), "%016llx-%016llx", phr->session_id, phr->client_key);
+
+  redirect_url = oauth_get_redirect_url(phr->config, provider, role, cookie, phr->contest_id, NULL);
+  if (!redirect_url) {
+    fprintf(log_f, "get_redirect_url failed");
+    FAIL(NEW_SRV_ERR_SERVICE_NOT_AVAILABLE);
+  }
+  phr->redirect = redirect_url; redirect_url = NULL;
+
+cleanup:;
+  html_armor_free(&ab);
+  xfree(redirect_url);
+%>

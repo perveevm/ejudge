@@ -123,6 +123,13 @@
           }
 %>
 <%
+          if (prob->max_rss_size >= 0 && is_viewable) {
+%>
+    <tr><td><b><s:_>Memory RSS limit</s:_>:</b></td><td><tt><s:v format="V" value="prob->max_rss_size" /></tt></td></tr>
+<%
+          }
+%>
+<%
           if (prob->max_stack_size >= 0 && prob->max_stack_size != prob->max_vm_size && is_viewable) {
 %>
     <tr><td><b><s:_>Stack limit</s:_>:</b></td><td><tt><s:v format="V" value="prob->max_stack_size" /></tt></td></tr>
@@ -270,7 +277,7 @@
           int last_eoln_type = 0;
           for (i = 1; i <= cs->max_lang; i++) {
             if (!cs->langs[i] || cs->langs[i]->disabled
-                || (cs->langs[i]->insecure && global->secure_run)) continue;
+                || (prob->enable_container <= 0 && cs->langs[i]->insecure && global->secure_run)) continue;
             if ((lang_list = prob->enable_language)) {
               for (j = 0; lang_list[j]; j++)
                 if (!strcmp(lang_list[j], cs->langs[i]->short_name))
@@ -295,7 +302,7 @@
 %><tr><td class="b0"><s:_>Language</s:_>:</td><td class="b0"><s:select name="lang_id"><option value=""></option><%
             for (i = 1; i <= cs->max_lang; i++) {
               if (!cs->langs[i] || cs->langs[i]->disabled
-                  || (cs->langs[i]->insecure && global->secure_run)) continue;
+                  || (prob->enable_container <= 0 && cs->langs[i]->insecure && global->secure_run)) continue;
               if ((lang_list = prob->enable_language)) {
                 for (j = 0; lang_list[j]; j++)
                   if (!strcmp(lang_list[j], cs->langs[i]->short_name))

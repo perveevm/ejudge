@@ -2,7 +2,7 @@
 #ifndef __TESTINFO_H__
 #define __TESTINFO_H__
 
-/* Copyright (C) 2003-2018 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2003-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -43,53 +43,43 @@ enum
   TINF_E_LAST,
 };
 
+struct testinfo_array
+{
+  char **v;
+  int u;
+};
+
 struct testinfo_struct
 {
+  struct testinfo_array cmd;
+  struct testinfo_array env;
+  struct testinfo_array checker_env;
+  struct testinfo_array interactor_env;
+  struct testinfo_array init_env;
+  struct testinfo_array compiler_env;
+  struct testinfo_array style_checker_env;
+  struct testinfo_array ok_language;
+  char *comment;
+  char *team_comment;
+  char *source_stub;
+  char *working_dir;
+  char *program_name;
+  long long max_vm_size;
+  long long max_stack_size;
+  long long max_file_size;
+  long long max_rss_size;
   int exit_code;
+  int ignore_exit_code;
   int check_stderr;
   int disable_stderr;
   int enable_subst;
   int compiler_must_fail;
-  int cmd_argc;
-  char **cmd_argv;
-  char *comment;
-  char *team_comment;
-  char *source_stub;
-  int env_u;
-  char **env_v;
-
-  int checker_env_u;
-  char **checker_env_v;
-
-  int interactor_env_u;
-  char **interactor_env_v;
-
-  int init_env_u;
-  char **init_env_v;
-
-  int compiler_env_u;
-  char **compiler_env_v;
-
-  int style_checker_env_u;
-  char **style_checker_env_v;
-
   int disable_valgrind;
   int max_open_file_count;
   int max_process_count;
-
-  long long max_vm_size;
-  long long max_stack_size;
-  long long max_file_size;
-
-  int ok_language_u;
-  char **ok_language_v;
-
-  char *working_dir;
-
   int time_limit_ms;
   int real_time_limit_ms;
-
-  char *program_name;
+  int allow_compile_error;
 };
 typedef struct testinfo_struct testinfo_t;
 

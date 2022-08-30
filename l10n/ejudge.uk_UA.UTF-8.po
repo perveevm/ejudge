@@ -6,7 +6,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: 3.0\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2020-04-10 04:34+0300\n"
+"POT-Creation-Date: 2022-06-19 01:04+0300\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: Ukrainian <uk@li.org>\n"
@@ -261,6 +261,21 @@ msgstr ""
 msgid "ALL PREVIOUS SUBMITS WILL BE LOST!"
 msgstr ""
 
+msgid "API Keys"
+msgstr ""
+
+#, c-format
+msgid "API key created"
+msgstr ""
+
+#, c-format
+msgid "API key creation failed"
+msgstr ""
+
+#, c-format
+msgid "API keys"
+msgstr ""
+
 msgid "Accepted for testing"
 msgstr ""
 
@@ -389,6 +404,9 @@ msgid "All clars and comments"
 msgstr ""
 
 msgid "All entries"
+msgstr ""
+
+msgid "All headers"
 msgstr ""
 
 msgid "Allow"
@@ -625,6 +643,9 @@ msgstr ""
 msgid "Check failed runs"
 msgstr ""
 
+msgid "Checked?"
+msgstr ""
+
 msgid "Checker Token"
 msgstr ""
 
@@ -704,6 +725,9 @@ msgid "Clear displayed runs!"
 msgstr ""
 
 msgid "Clear disqualification"
+msgstr ""
+
+msgid "Clear entry"
 msgstr ""
 
 msgid "Clear finished flag"
@@ -976,6 +1000,9 @@ msgstr ""
 msgid "Create contest!"
 msgstr ""
 
+msgid "Create new API key"
+msgstr ""
+
 msgid "Create user account"
 msgstr ""
 
@@ -1102,6 +1129,9 @@ msgid "Disable separate team password"
 msgstr ""
 
 msgid "Disable team member deletion"
+msgstr ""
+
+msgid "Disable virtual start"
 msgstr ""
 
 msgid "Disabled"
@@ -1245,16 +1275,22 @@ msgstr ""
 msgid "Empty text of warning"
 msgstr ""
 
+msgid "Enable OAUTH for login"
+msgstr ""
+
+msgid "Enable daily reminders"
+msgstr ""
+
 msgid "Enable password restoration"
 msgstr ""
 
 msgid "Enable simple registration (no email)"
 msgstr ""
 
-msgid "End time"
+msgid "Enable virtual start"
 msgstr ""
 
-msgid "Enqueue Time"
+msgid "End time"
 msgstr ""
 
 msgid "Error"
@@ -1423,6 +1459,9 @@ msgid "Finish the exam"
 msgstr ""
 
 msgid "Finish time"
+msgstr ""
+
+msgid "First Run"
 msgstr ""
 
 msgid "First User_Id"
@@ -1733,6 +1772,9 @@ msgstr ""
 msgid "Imported?"
 msgstr ""
 
+msgid "In DB?"
+msgstr ""
+
 msgid ""
 "In order to complete the registration procedure, hit the \"Confirm "
 "registration\" link."
@@ -1813,6 +1855,9 @@ msgstr ""
 
 #, c-format
 msgid "Invalid UId %s in row %d\n"
+msgstr ""
+
+msgid "Invalid UUID"
 msgstr ""
 
 msgid "Invalid action"
@@ -1934,6 +1979,9 @@ msgstr ""
 msgid "Invalid time specification"
 msgstr ""
 
+msgid "Invalid token"
+msgstr ""
+
 msgid "Invalid user role"
 msgstr ""
 
@@ -1962,6 +2010,9 @@ msgid "Jan"
 msgstr ""
 
 msgid "Judge"
+msgstr ""
+
+msgid "Judge Request Time"
 msgstr ""
 
 msgid "Judge scores are opened"
@@ -2035,6 +2086,15 @@ msgstr ""
 msgid "Language statistics"
 msgstr ""
 
+msgid "Last Change"
+msgstr ""
+
+msgid "Last Change Time"
+msgstr ""
+
+msgid "Last Run"
+msgstr ""
+
 msgid "Last User_Id (incl.)"
 msgstr ""
 
@@ -2057,6 +2117,9 @@ msgid "Link"
 msgstr ""
 
 msgid "Links"
+msgstr ""
+
+msgid "List of API keys"
 msgstr ""
 
 msgid "List of registered participants"
@@ -2127,6 +2190,9 @@ msgid "Main URL"
 msgstr ""
 
 msgid "Main page"
+msgstr ""
+
+msgid "Make &quot;Name&quot; field read-only"
 msgstr ""
 
 msgid "Make invisible"
@@ -2202,6 +2268,9 @@ msgid "May"
 msgstr ""
 
 msgid "May change!"
+msgstr ""
+
+msgid "Memory RSS limit"
 msgstr ""
 
 msgid "Memory limit"
@@ -3527,6 +3596,9 @@ msgstr ""
 msgid "Start"
 msgstr ""
 
+msgid "Start Time"
+msgstr ""
+
 msgid "Start at"
 msgstr ""
 
@@ -3570,6 +3642,9 @@ msgid "Status of your submit is changed\n"
 msgstr ""
 
 msgid "Stop"
+msgstr ""
+
+msgid "Stop Time"
 msgstr ""
 
 msgid "Stop exam"
@@ -4013,7 +4088,7 @@ msgid "Unknown error %d.\n"
 msgstr ""
 
 #, c-format
-msgid "Unknown: hidden"
+msgid "Unknown: %d"
 msgstr ""
 
 msgid "Unlimited"
@@ -4174,6 +4249,12 @@ msgstr ""
 msgid "User report"
 msgstr ""
 
+msgid "User run header"
+msgstr ""
+
+msgid "User run headers"
+msgstr ""
+
 msgid "User standings"
 msgstr ""
 
@@ -4313,7 +4394,16 @@ msgstr ""
 msgid "Virtual start failed"
 msgstr ""
 
+msgid "Virtual start is disabled"
+msgstr ""
+
+msgid "Virtual start is disabled by config"
+msgstr ""
+
 msgid "Virtual stop"
+msgstr ""
+
+msgid "Virtual?"
 msgstr ""
 
 msgid "Wall time-limit exceeded"

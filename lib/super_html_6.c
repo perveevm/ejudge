@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2011-2020 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2011-2021 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -117,7 +117,7 @@ ss_redirect(
   }
 
   if (phr->client_key) {
-    fprintf(fout, "Set-Cookie: EJSID=%016llx; Path=/\n", phr->client_key);
+    fprintf(fout, "Set-Cookie: EJSID=%016llx; Path=/; SameSite=Lax\n", phr->client_key);
   }
   fprintf(fout, "Location: %s\n", url);
   putc('\n', fout);
@@ -162,7 +162,7 @@ ss_redirect_2(
   xfree(o_str); o_str = 0; o_len = 0;
 
   if (phr->client_key) {
-    fprintf(fout, "Set-Cookie: EJSID=%016llx; Path=/\n", phr->client_key);
+    fprintf(fout, "Set-Cookie: EJSID=%016llx; Path=/; SameSite=Lax\n", phr->client_key);
   }
   fprintf(fout, "Location: %s\n", url);
   putc('\n', fout);
@@ -197,7 +197,7 @@ ss_redirect_3(
   }
   fprintf(fout, "\n");
   if (phr->client_key) {
-    fprintf(fout, "Set-Cookie: EJSID=%016llx; Path=/\n", phr->client_key);
+    fprintf(fout, "Set-Cookie: EJSID=%016llx; Path=/; SameSite=Lax\n", phr->client_key);
   }
   putc('\n', fout);
 }
@@ -3877,7 +3877,7 @@ super_serve_op_EJUDGE_XML_CANCEL_ACTION(
 {
   fprintf(out_f, "Location: %s?SID=%016llx\n", phr->self_url, phr->session_id);
   if (phr->client_key) {
-    fprintf(out_f, "Set-Cookie: EJSID=%016llx; Path=/\n", phr->client_key);
+    fprintf(out_f, "Set-Cookie: EJSID=%016llx; Path=/; SameSite=Lax\n", phr->client_key);
   }
   putc('\n', out_f);
   return 0;
@@ -5003,6 +5003,9 @@ do_import_problem(
   }
   if (cfg->max_stack_size != (size_t) -1L && cfg->max_stack_size) {
     prob->max_stack_size = cfg->max_stack_size;
+  }
+  if (cfg->max_rss_size != (size_t) -1L && cfg->max_rss_size) {
+    prob->max_rss_size = cfg->max_rss_size;
   }
   if (cfg->test_pat && cfg->test_pat[0]) {
     xstrdup3(&prob->test_pat, cfg->test_pat);

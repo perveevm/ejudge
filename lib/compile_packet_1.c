@@ -1,6 +1,6 @@
 /* -*- c -*- */
 
-/* Copyright (C) 2005-2019 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2005-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -91,12 +91,20 @@ compile_request_packet_read(
   pout->max_vm_size = cvt_bin_to_host_64(pin->max_vm_size);
   pout->max_stack_size = cvt_bin_to_host_64(pin->max_stack_size);
   pout->max_file_size = cvt_bin_to_host_64(pin->max_file_size);
+  pout->max_rss_size = cvt_bin_to_host_64(pin->max_rss_size);
 
   pout->use_uuid = cvt_bin_to_host_32(pin->use_uuid);
+  // FIXME: convert byte order?
+  pout->uuid = pin->uuid;
+  pout->judge_uuid = pin->judge_uuid;
+  /*
   pout->uuid.v[0] = cvt_bin_to_host_32(pin->uuid.v[0]);
   pout->uuid.v[1] = cvt_bin_to_host_32(pin->uuid.v[1]);
   pout->uuid.v[2] = cvt_bin_to_host_32(pin->uuid.v[2]);
   pout->uuid.v[3] = cvt_bin_to_host_32(pin->uuid.v[3]);
+  */
+
+  pout->use_container = cvt_bin_to_host_32(pin->use_container);
 
   pout->multi_header = cvt_bin_to_host_32(pin->multi_header);
   FAIL_IF(pout->multi_header < 0 || pout->multi_header > 1);
@@ -231,6 +239,17 @@ compile_request_packet_read(
     memcpy(pout->contest_server_id, pin_ptr, contest_server_id_len);
     pout->contest_server_id[contest_server_id_len] = 0;
     pin_ptr += pkt_bin_align(contest_server_id_len);
+  }
+
+  pout->container_options = NULL;
+  int container_options_len = cvt_bin_to_host_32(pin->container_options_len);
+  FAIL_IF(container_options_len < 0 || container_options_len >= PATH_MAX);
+  FAIL_IF(pin_ptr + container_options_len > end_ptr);
+  if (container_options_len > 0) {
+    pout->container_options = xmalloc(container_options_len + 1);
+    memcpy(pout->container_options, pin_ptr, container_options_len);
+    pout->container_options[container_options_len] = 0;
+    pin_ptr += pkt_bin_align(container_options_len);
   }
 
   pout->env_num = cvt_bin_to_host_32(pin->env_num);

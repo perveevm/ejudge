@@ -1,6 +1,6 @@
-/* -*- mode: c -*- */
+/* -*- mode: c; c-basic-offset: 4 -*- */
 
-/* Copyright (C) 2016-2019 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2016-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -32,7 +32,20 @@
 
 #include <errno.h>
 
+#if HAVE_LIBMONGOC - 0 > 0
+struct _bson_t;
+typedef struct _bson_t ej_bson_t;
+#elif HAVE_LIBMONGO_CLIENT - 0 == 1
+struct _bson;
+typedef struct _bson ej_bson_t;
+#endif
+
 #define TELEGRAM_CHATS_TABLE_NAME "telegram_chats"
+
+static struct telegram_chat *
+telegram_chat_parse_bson(const ej_bson_t *bson);
+static ej_bson_t *
+telegram_chat_unparse_bson(const struct telegram_chat *tc);
 
 struct telegram_chat *
 telegram_chat_free(struct telegram_chat *tc)
@@ -57,7 +70,7 @@ telegram_chat_create(void)
     return tc;
 }
 
-struct telegram_chat *
+static struct telegram_chat *
 telegram_chat_parse_bson(const ej_bson_t *bson)
 {
 #if HAVE_LIBMONGOC - 0 > 0
@@ -123,7 +136,7 @@ cleanup:
 #endif
 }
 
-ej_bson_t *
+static ej_bson_t *
 telegram_chat_unparse_bson(const struct telegram_chat *tc)
 {
 #if HAVE_LIBMONGOC - 0 > 0
@@ -184,7 +197,7 @@ struct telegram_chat *
 telegram_chat_fetch(struct mongo_conn *conn, long long _id)
 {
 #if HAVE_LIBMONGOC - 0 > 0
-    if (!mongo_conn_open(conn)) return NULL;
+    if (!conn->b.vt->open(&conn->b)) return NULL;
 
     mongoc_collection_t *coll = NULL;
     bson_t *query = NULL;
@@ -192,7 +205,7 @@ telegram_chat_fetch(struct mongo_conn *conn, long long _id)
     const bson_t *doc = NULL;
     struct telegram_chat *retval = NULL;
 
-    if (!(coll = mongoc_client_get_collection(conn->client, conn->database, TELEGRAM_CHATS_TABLE_NAME))) {
+    if (!(coll = mongoc_client_get_collection(conn->client, conn->b.database, TELEGRAM_CHATS_TABLE_NAME))) {
         err("get_collection failed\n");
         goto cleanup;
     }
@@ -262,7 +275,7 @@ int
 telegram_chat_save(struct mongo_conn *conn, const struct telegram_chat *tc)
 {
 #if HAVE_LIBMONGOC - 0 > 0
-    if (!mongo_conn_open(conn)) return -1;
+    if (!conn->b.vt->open(&conn->b)) return -1;
 
     int retval = -1;
     mongoc_collection_t *coll = NULL;
@@ -270,7 +283,7 @@ telegram_chat_save(struct mongo_conn *conn, const struct telegram_chat *tc)
     bson_t *bson = NULL;
     bson_error_t error;
 
-    if (!(coll = mongoc_client_get_collection(conn->client, conn->database, TELEGRAM_CHATS_TABLE_NAME))) {
+    if (!(coll = mongoc_client_get_collection(conn->client, conn->b.database, TELEGRAM_CHATS_TABLE_NAME))) {
         err("get_collection failed\n");
         goto cleanup;
     }
@@ -314,9 +327,3 @@ cleanup:
     return 0;
 #endif
 }
-
-/*
- * Local variables:
- *  c-basic-offset: 4
- * End:
- */

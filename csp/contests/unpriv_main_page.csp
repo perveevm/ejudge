@@ -106,10 +106,10 @@ ns_unparse_answers(
       vend_info = global->virtual_end_info;
   } else {
     start_time = run_get_start_time(cs->runlog_state);
-    stop_time = run_get_stop_time(cs->runlog_state);
+    stop_time = run_get_stop_time(cs->runlog_state, phr->user_id, cs->current_time);
     accepting_mode = cs->accepting_mode;
   }
-  run_get_times(cs->runlog_state, 0, &sched_time, &duration, 0, &finish_time);
+  run_get_times(cs->runlog_state, phr->user_id, 0, &sched_time, &duration, 0, &finish_time);
   if (duration > 0 && start_time && !stop_time && global->board_fog_time > 0)
     fog_start_time = start_time + duration - global->board_fog_time;
   if (fog_start_time < 0) fog_start_time = 0;
@@ -140,7 +140,7 @@ ns_unparse_answers(
 
   unpriv_load_html_style(phr, cnts, 0, 0);
 
-  ns_get_user_problems_summary(cs, phr->user_id, phr->login, accepting_mode, start_time, stop_time, pinfo);
+  ns_get_user_problems_summary(cs, phr->user_id, phr->login, accepting_mode, start_time, stop_time, &phr->ip, pinfo);
   for (i = 1; i <= cs->max_prob; ++i) {
     summoned_count += pinfo[i].summoned_flag;
   }

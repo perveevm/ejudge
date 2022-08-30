@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2003-2017 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2003-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -308,6 +308,7 @@ process_run_elements(struct xml_tree *xt, struct run_xml_helpers *helper)
   time_t tv;
   int lv;
   size_t sv;
+  unsigned char bool_val;
 
   while (xt) {
     if (xt->tag != RUNLOG_T_RUN) return xml_err_top_level(xt, RUNLOG_T_RUN);
@@ -364,7 +365,7 @@ process_run_elements(struct xml_tree *xt, struct run_xml_helpers *helper)
         break;
       case RUNLOG_A_SHA1:
         if (!xa->text) goto empty_attr_value;
-        if (parse_sha1(xr->r.sha1, xa->text) < 0) goto invalid_attr_value;
+        if (parse_sha1(xr->r.h.sha1, xa->text) < 0) goto invalid_attr_value;
         break;
       case RUNLOG_A_USER_ID:
         if (!xa->text) goto empty_attr_value;
@@ -464,10 +465,12 @@ process_run_elements(struct xml_tree *xt, struct run_xml_helpers *helper)
         xr->r.is_imported = !iv;
         break;
       case RUNLOG_A_READONLY:
-        if (xml_attr_bool_byte(xa, &xr->r.is_readonly) < 0) return -1;
+        if (xml_attr_bool_byte(xa, &bool_val) < 0) return -1;
+        xr->r.is_readonly = bool_val;
         break;
       case RUNLOG_A_HIDDEN:
-        if (xml_attr_bool_byte(xa, &xr->r.is_hidden) < 0) return -1;
+        if (xml_attr_bool_byte(xa, &bool_val) < 0) return -1;
+        xr->r.is_hidden = bool_val;
         break;
       case RUNLOG_A_EXAMINABLE:
         //if (xml_attr_bool_byte(xa, &xr->r.is_examinable) < 0) return -1;
@@ -481,7 +484,8 @@ process_run_elements(struct xml_tree *xt, struct run_xml_helpers *helper)
         xr->r.nsec = lv;
         break;
       case RUNLOG_A_SSL:
-        if (xml_attr_bool_byte(xa, &xr->r.ssl_flag) < 0) return -1;
+        if (xml_attr_bool_byte(xa, &bool_val) < 0) return -1;
+        xr->r.ssl_flag = bool_val;
         break;
       case RUNLOG_A_MIME_TYPE:
         if (!xa->text) goto empty_attr_value;
@@ -929,9 +933,9 @@ unparse_runlog_xml(
       if (pp->ssl_flag)
         fprintf(f, " %s=\"yes\"", attr_map[RUNLOG_A_SSL]);
     }
-    if (!external_mode && is_non_empty_sha1(pp->sha1)) {
+    if (!external_mode && is_non_empty_sha1(pp->h.sha1)) {
       fprintf(f, " %s=\"%s\"", attr_map[RUNLOG_A_SHA1],
-              unparse_sha1(pp->sha1));
+              unparse_sha1(pp->h.sha1));
     }
     run_status_to_str_short(status_buf, sizeof(status_buf), pp->status);
     fprintf(f, " %s=\"%s\"", attr_map[RUNLOG_A_STATUS], status_buf);

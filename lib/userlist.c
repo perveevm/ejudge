@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2002-2017 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2002-2020 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -2375,4 +2375,34 @@ userlist_user_count_cookies(struct userlist_user *u)
   if (!u->cookies) return 0;
   for (cookie = FIRST_COOKIE(u); cookie; cookie = NEXT_COOKIE(cookie), tot++);
   return tot;
+}
+
+void
+userlist_api_key_free(struct userlist_api_key *apk)
+{
+  if (apk) {
+    xfree(apk->origin);
+    xfree(apk->payload);
+  }
+}
+
+const char *
+userlist_unparse_user_role(int role)
+{
+  static const char * const strs[] =
+  {
+    "CONTESTANT",
+    "OBSERVER",
+    "EXAMINER",
+    "CHIEF_EXAMINER",
+    "COORDINATOR",
+    "JUDGE",
+    "ADMIN",
+  };
+  if (role >= 0 && role <= USER_ROLE_ADMIN) {
+    return strs[role];
+  }
+  static char buf[64];
+  snprintf(buf, sizeof(buf), "User Role #%d", role);
+  return buf;
 }

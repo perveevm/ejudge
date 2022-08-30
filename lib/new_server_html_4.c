@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2006-2019 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2006-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -310,7 +310,7 @@ do_schedule(
     return -NEW_SRV_ERR_INV_TIME_SPEC;
 
   if (sloc > 0) {
-    run_get_times(cs->runlog_state, &start_time, 0, 0, &stop_time, 0);
+    run_get_times(cs->runlog_state, 0, &start_time, 0, 0, &stop_time, 0);
     if (stop_time > 0) return -NEW_SRV_ERR_CONTEST_ALREADY_FINISHED;
     if (start_time > 0) return -NEW_SRV_ERR_CONTEST_ALREADY_STARTED;
   }
@@ -362,7 +362,7 @@ cmd_operation(
     ns_reload_server_all();
     break;
   case NEW_SRV_ACTION_START_CONTEST:
-    run_get_times(cs->runlog_state, &start_time, 0, &duration, &stop_time, 0);
+    run_get_times(cs->runlog_state, 0, &start_time, 0, &duration, &stop_time, 0);
     if (stop_time > 0) return -NEW_SRV_ERR_CONTEST_ALREADY_FINISHED;
     if (start_time > 0) return -NEW_SRV_ERR_CONTEST_ALREADY_STARTED;
     run_start_contest(cs->runlog_state, cs->current_time);
@@ -371,7 +371,7 @@ cmd_operation(
     serve_update_standings_file(extra, cs, cnts, 0);
     break;
   case NEW_SRV_ACTION_STOP_CONTEST:
-    run_get_times(cs->runlog_state, &start_time, 0, &duration, &stop_time, 0);
+    run_get_times(cs->runlog_state, 0, &start_time, 0, &duration, &stop_time, 0);
     if (stop_time > 0) return -NEW_SRV_ERR_CONTEST_ALREADY_FINISHED;
     if (start_time <= 0) return -NEW_SRV_ERR_CONTEST_NOT_STARTED;
     run_stop_contest(cs->runlog_state, cs->current_time);
@@ -379,7 +379,7 @@ cmd_operation(
     serve_update_status_file(ejudge_config, cnts, cs, 1);
     break;
   case NEW_SRV_ACTION_CONTINUE_CONTEST:
-    run_get_times(cs->runlog_state, &start_time, 0, &duration, &stop_time, 0);
+    run_get_times(cs->runlog_state, 0, &start_time, 0, &duration, &stop_time, 0);
     if (!global->enable_continue) return -NEW_SRV_ERR_CANNOT_CONTINUE_CONTEST;
     if (start_time <= 0) return -NEW_SRV_ERR_CONTEST_NOT_STARTED;
     if (stop_time <= 0) return -NEW_SRV_ERR_CONTEST_NOT_FINISHED;
@@ -525,7 +525,7 @@ cmd_operation_2(
   const struct section_global_data *global = cs->global;
   time_t start_time = 0, duration = 0, stop_time = 0, sched = 0;
 
-  run_get_times(cs->runlog_state, &start_time, &sched, &duration, &stop_time, 0);
+  run_get_times(cs->runlog_state, 0, &start_time, &sched, &duration, &stop_time, 0);
   switch (phr->action) {
   case NEW_SRV_ACTION_GET_CONTEST_NAME:
     fprintf(fout, "%s", cnts->name);
@@ -981,7 +981,7 @@ cmd_submit_run(
                                             cs->current_time);
     } else {
       start_time = run_get_start_time(cs->runlog_state);
-      stop_time = run_get_stop_time(cs->runlog_state);
+      stop_time = run_get_stop_time(cs->runlog_state, phr->user_id, cs->current_time);
     }
     if (cs->clients_suspended)
       FAIL(NEW_SRV_ERR_CLIENTS_SUSPENDED);
@@ -1092,16 +1092,14 @@ cmd_submit_run(
     FAIL(NEW_SRV_ERR_INV_PROB_ID);
   }
 
-  gettimeofday(&precise_time, 0);
-  ej_uuid_t run_uuid;
+  ej_uuid_t run_uuid = {};
   int store_flags = 0;
-  ej_uuid_generate(&run_uuid);
-  if (global->uuid_run_store > 0 && run_get_uuid_hash_state(cs->runlog_state) >= 0 && ej_uuid_is_nonempty(run_uuid)) {
+  if (global->uuid_run_store > 0 && run_get_uuid_hash_state(cs->runlog_state) >= 0) {
     store_flags = STORE_FLAGS_UUID;
     if (testing_report_bson_available()) store_flags = STORE_FLAGS_UUID_BSON;
   }
   run_id = run_add_record(cs->runlog_state,
-                          precise_time.tv_sec, precise_time.tv_usec * 1000,
+                          &precise_time,
                           run_size, shaval, &run_uuid,
                           &phr->ip, phr->ssl_flag,
                           phr->locale_id, phr->user_id,
@@ -1187,7 +1185,10 @@ cmd_submit_run(
       } else {
         if (serve_run_request(phr->config, cs, cnts, stderr, run_text, run_size,
                               cnts->id, run_id,
-                              phr->user_id, prob->id, 0, variant, 0, -1, -1, 0,
+                              phr->user_id, prob->id, 0, variant, 0,
+                              -1, /* judge_id */
+                              NULL, /* judge_uuid */
+                              -1, 0,
                               mime_type, 0, phr->locale_id, 0, 0, 0, &run_uuid,
                               0 /* rejudge_flag */, 0 /* zip_mode */, store_flags) < 0)
           FAIL(NEW_SRV_ERR_DISK_WRITE_ERROR);
@@ -1212,7 +1213,9 @@ cmd_submit_run(
         run_get_entry(cs->runlog_state, run_id, &re);
         serve_audit_log(cs, run_id, NULL, phr->user_id, &phr->ip, phr->ssl_flag,
                         "submit", "ok", RUN_RUNNING, NULL);
-        serve_judge_built_in_problem(extra, ejudge_config, cs, cnts, run_id, 1 /* judge_id */,
+        serve_judge_built_in_problem(extra, ejudge_config, cs, cnts, run_id,
+                                     1 /* judge_id */,
+                                     NULL, /* judge_uuid */
                                      variant, cs->accepting_mode, &re,
                                      prob, px, phr->user_id, &phr->ip,
                                      phr->ssl_flag);
@@ -1240,7 +1243,10 @@ cmd_submit_run(
                         "submit", "ok", RUN_RUNNING, NULL);
         if (serve_run_request(phr->config, cs, cnts, stderr, run_text, run_size,
                               cnts->id, run_id,
-                              phr->user_id, prob->id, 0, variant, 0, -1, -1, 0,
+                              phr->user_id, prob->id, 0, variant, 0,
+                              -1, /* judge_id */
+                              NULL, /* judge_uuid */
+                              -1, 0,
                               mime_type, 0, phr->locale_id, 0, 0, 0, &run_uuid,
                               0 /* rejudge_flag */, 0 /* zip_mode */, store_flags) < 0)
           FAIL(NEW_SRV_ERR_DISK_WRITE_ERROR);
@@ -1665,7 +1671,7 @@ do_dump_master_runs(
     if (pe->is_hidden) csv_rec[F_IS_HIDDEN] = "1";
     if (pe->is_imported) csv_rec[F_IS_IMPORTED] = "1";
     if (pe->is_readonly) csv_rec[F_IS_READONLY] = "1";
-    snprintf(sha1_buf, sizeof(sha1_buf), "%s", unparse_sha1(pe->sha1));
+    snprintf(sha1_buf, sizeof(sha1_buf), "%s", unparse_sha1(pe->h.sha1));
     csv_rec[F_SHA1] = sha1_buf;
     if (pe->locale_id >= 0) {
       snprintf(locale_id_buf, sizeof(locale_id_buf), "%d", pe->locale_id);
@@ -1675,8 +1681,8 @@ do_dump_master_runs(
       snprintf(pages_buf, sizeof(pages_buf), "%d", pe->pages);
       csv_rec[F_PAGES] = pages_buf;
     }
-    if (pe->judge_id > 0) {
-      snprintf(judge_id_buf, sizeof(judge_id_buf), "%d", pe->judge_id);
+    if (pe->j.judge_id > 0) {
+      snprintf(judge_id_buf, sizeof(judge_id_buf), "%d", pe->j.judge_id);
       csv_rec[F_JUDGE_ID] = judge_id_buf;
     }
 
@@ -1901,7 +1907,9 @@ cmd_force_start_virtual(
   run_id = run_virtual_start(cs->runlog_state, user_id_2,
                              tt.tv_sec, 0, 0, tt.tv_usec * 1000);
   if (run_id < 0) FAIL(NEW_SRV_ERR_VIRTUAL_START_FAILED);
-  serve_move_files_to_insert_run(cs, run_id);
+  if (run_is_virtual_legacy_mode(cs->runlog_state)) {
+    serve_move_files_to_insert_run(cs, run_id);
+  }
 
  cleanup:
   return retval;

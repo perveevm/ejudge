@@ -2,7 +2,7 @@
 #ifndef __RUNLOG_H__
 #define __RUNLOG_H__
 
-/* Copyright (C) 2000-2019 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2000-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -22,6 +22,7 @@
 #include <time.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdint.h>
 
 enum
 {
@@ -102,11 +103,10 @@ run_open(
 int
 run_add_record(
         runlog_state_t state,
-        time_t         timestamp,
-        int            nsec,
+        struct timeval *p_tv,    // filled as a result
         size_t         size,
         const ruint32_t sha1[5],
-        const ej_uuid_t *puuid,
+        ej_uuid_t     *puuid,    // filled as a result, if empty
         const ej_ip_t *pip,
         int            ssl_flag,
         int            locale_id,
@@ -129,17 +129,8 @@ run_change_status(
         int newtest,
         int newpassedmode,
         int newscore,
-        int judge_id);
-int
-run_change_status_2(
-        runlog_state_t state,
-        int runid,
-        int newstatus,
-        int newtest,
-        int newpassedmode,
-        int newscore,
         int judge_id,
-        int is_marked);
+        const ej_uuid_t *judge_uuid);
 int
 run_change_status_3(
         runlog_state_t state,
@@ -148,7 +139,6 @@ run_change_status_3(
         int newtest,
         int newpassedmode,
         int newscore,
-        int judge_id,
         int is_marked,
         int has_user_score,
         int user_status,
@@ -161,11 +151,11 @@ run_change_status_4(
         int newstatus);
 int run_get_status(runlog_state_t state, int runid);
 int run_is_imported(runlog_state_t state, int runid);
-void run_get_times(runlog_state_t, time_t *, time_t *, time_t *, time_t *,
+void run_get_times(runlog_state_t, int user_id, time_t *, time_t *, time_t *, time_t *,
                    time_t *);
 int  run_set_duration(runlog_state_t, time_t);
 
-time_t run_get_stop_time(runlog_state_t);
+time_t run_get_stop_time(runlog_state_t, int user_id, time_t current_time);
 int    run_stop_contest(runlog_state_t, time_t);
 int    run_sched_contest(runlog_state_t, time_t);
 
@@ -178,7 +168,7 @@ int run_save_times(runlog_state_t);
 int run_set_finish_time(runlog_state_t state, time_t finish_time);
 time_t run_get_finish_time(runlog_state_t state);
 
-time_t run_get_duration(runlog_state_t);
+time_t run_get_duration(runlog_state_t, int user_id);
 
 void run_get_team_usage(runlog_state_t, int, int *, size_t*);
 int  run_get_attempts(runlog_state_t, int, int *, int *, int *, time_t *, int, int);
@@ -224,8 +214,7 @@ struct run_header
   ej_time64_t saved_duration;
   ej_time64_t saved_stop_time;
   ej_time64_t saved_finish_time;
-  int next_run_id;              /* the first free run_id + 1 (i.e. 0 means "unknown", 1 means 0, etc) */
-  unsigned char _pad3[28];
+  unsigned char _pad3[32];
 };
 
 enum
@@ -246,7 +235,7 @@ enum
     RE_IS_READONLY   = 0x00002000,
     RE_PAGES         = 0x00004000,
     RE_SCORE_ADJ     = 0x00008000,
-    RE__UNUSED       = 0x00010000,
+    RE_IS_CHECKED    = 0x00010000,
     RE_JUDGE_ID      = 0x00020000,
     RE_SSL_FLAG      = 0x00040000,
     RE_MIME_TYPE     = 0x00080000,
@@ -262,10 +251,10 @@ enum
     RE_EOLN_TYPE     = 0x20000000,
     RE_STORE_FLAGS   = 0x40000000,
     RE_PROB_UUID     = 0x80000000, // not a part of run_entry structure
-    RE_ALL           = 0xFFFFFFFF,
+    RE_JUDGE_UUID   = 0x100000000ULL,
+    RE_ALL          = 0x1FFFFFFFFULL,
   };
 
-/* structure size is 128 bytes */
 struct run_entry
 {
   rint32_t       run_id;        /* 4 */
@@ -275,39 +264,53 @@ struct run_entry
   rint32_t       user_id;       /* 4 */
   rint32_t       prob_id;       /* 4 */
   rint32_t       lang_id;       /* 4 */
+  unsigned int   ipv6_flag:1;
+  unsigned int   sha256_flag:1;
+  unsigned int   ssl_flag:1;
+  unsigned int   judge_uuid_flag:1;
+  unsigned int   is_imported:1;
+  unsigned int   is_hidden:1;
+  unsigned int   is_readonly:1;
+  unsigned int   is_marked:1;
+  unsigned int   is_saved:1;
+  unsigned int   is_checked:1;
+  unsigned int   _pad2:22;
+  rint32_t       score;         /* 4 */
+  unsigned char  status;        /* 1 */
+  signed char    passed_mode;   /* 1 */
+  unsigned char  store_flags;   /* 1 */
+  unsigned char  variant;       /* 1 */
+  rint16_t       test;          /* 2 */
+  unsigned char  token_flags;   /* 1 */
+  unsigned char  token_count;   /* 1 */
   union
   {
     ej_ip4_t       ip;
     unsigned char  ipv6[16];
   }              a;             /* 16 */
-  ruint32_t      sha1[5];       /* 20 */
-  rint32_t       score;         /* 4 */
-  rint16_t       test;          /* 2 */
-  signed char    passed_mode;   /* 1 */
-  unsigned char  store_flags;   /* 1 */
-  rint32_t       score_adj;     /* 4 */
-  rint16_t       locale_id;     /* 2 */
-  ruint16_t      judge_id;      /* 2 */
-  unsigned char  status;        /* 1 */
-  unsigned char  is_imported;   /* 1 */
-  unsigned char  variant;       /* 1 */
-  unsigned char  is_hidden;     /* 1 */
-  unsigned char  is_readonly;   /* 1 */
-  unsigned char  pages;         /* 1 */
-  unsigned char  ipv6_flag;     /* 1 */
-  unsigned char  ssl_flag;      /* 1 */
-  rint16_t       mime_type;     /* 2 */
-  unsigned char  eoln_type;     /* 1 */
-  unsigned char  is_marked;     /* 1 */
+  union
+  {
+    ruint32_t      sha1[5];     /* 20 */
+    unsigned char  sha256[32];  /* 32 */
+  }              h;             /* 32 */
   ej_uuid_t      run_uuid;      /* 16 */
-  unsigned char  token_flags;   /* 1 */
-  unsigned char  token_count;   /* 1 */
-  unsigned char  _unused[6];    /* 6 */
+  union
+  {
+    ruint16_t      judge_id;    /* 2 */
+    ej_uuid_t      judge_uuid;  /* 16 */
+  }              j;
+  ej_uuid_t      prob_uuid;     /* 16 */
+  rint32_t       score_adj;     /* 4 */
   rint32_t       saved_score;   /* 4 */
   rint16_t       saved_test;    /* 2 */
   unsigned char  saved_status;  /* 1 */
-  unsigned char  is_saved;      /* 1 */
-  /* total is 128 bytes */
+  unsigned char  eoln_type;     /* 1 */
+  rint16_t       locale_id;     /* 2 */
+  rint16_t       mime_type;     /* 2 */
+  int64_t        serial_id;     /* 8 */
+  unsigned char  pages;         /* 1 */
+  char _pad[87];
+  /* total is 256 bytes */
 };
 
 struct run_file
@@ -324,19 +327,18 @@ struct run_data
 void run_get_header(runlog_state_t, struct run_header *out);
 void run_get_all_entries(runlog_state_t, struct run_entry *out);
 int run_get_entry(runlog_state_t, int run_id, struct run_entry *out);
-int run_get_virtual_start_entry(runlog_state_t, int user, struct run_entry *);
-int run_set_entry(runlog_state_t, int run_id, unsigned int mask,
+int run_set_entry(runlog_state_t, int run_id, uint64_t mask,
                   struct run_entry const *in);
 int run_is_readonly(runlog_state_t, int run_id);
 const struct run_entry *run_get_entries_ptr(runlog_state_t);
 
 time_t run_get_virtual_start_time(runlog_state_t, int user_id);
 time_t run_get_virtual_stop_time(runlog_state_t, int user_id, time_t cur_time);
-int run_get_virtual_status(runlog_state_t, int user_id);
+int run_get_virtual_is_checked(runlog_state_t, int user_id);
+int run_get_is_virtual(runlog_state_t, int user_id);
 int run_virtual_start(runlog_state_t, int user_id, time_t, const ej_ip_t *, int, int);
 int run_virtual_stop(runlog_state_t, int user_id, time_t, const ej_ip_t *, int, int);
-int run_get_virtual_info(runlog_state_t state, int user_id,
-                         struct run_entry *vs, struct run_entry *ve);
+int run_set_virtual_is_checked(runlog_state_t, int user_id, int is_checked, int last_change_user_id);
 
 int run_clear_entry(runlog_state_t, int run_id);
 int run_squeeze_log(runlog_state_t);
@@ -345,7 +347,6 @@ int run_clear_user_entries(runlog_state_t, int user_id);
 
 int run_forced_clear_entry(runlog_state_t, int run_id);
 int run_set_hidden(runlog_state_t state, int run_id);
-int run_set_judge_id(runlog_state_t state, int run_id, int judge_id);
 
 int run_put_entry(runlog_state_t state, const struct run_entry *re);
 int run_put_header(runlog_state_t state, const struct run_header *rh);
@@ -441,8 +442,10 @@ run_entry_to_ipv6(const struct run_entry *p_re, ej_ip_t *p_ip);
 void
 ipv6_to_run_entry(const ej_ip_t *p_ip, struct run_entry *p_re);
 
-int
-run_get_insert_position(runlog_state_t state, time_t t, int uid, int nsec);
+// TO REMOVE
+int __attribute__((deprecated))
+obsolete_run_get_insert_position(runlog_state_t state, time_t t, int uid, int nsec);
+
 int run_clear_index(runlog_state_t state, int run_id);
 
 int run_get_user_last_run_id(runlog_state_t state, int user_id);
@@ -464,6 +467,36 @@ run_fetch_user_runs(
         int prob_id,
         int *p_count,
         struct run_entry **p_entries);
+
+void
+run_delete_user_run_header(
+        runlog_state_t state,
+        int user_id);
+
+int
+run_set_user_duration(
+        runlog_state_t state,
+        int user_id,
+        int duration,
+        int last_change_user_id);
+
+int
+run_set_user_stop_time(
+        runlog_state_t state,
+        int user_id,
+        time_t stop_time,
+        int last_change_user_id);
+
+int run_is_virtual_legacy_mode(runlog_state_t state);
+
+int
+run_set_run_is_checked(
+        runlog_state_t state,
+        int run_id,
+        int is_checked);
+
+void
+run_rebuild_user_run_index(runlog_state_t state, int user_id);
 
 static inline _Bool __attribute__((always_inline)) run_is_normal_status(unsigned char status)
 {

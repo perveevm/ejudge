@@ -2,7 +2,7 @@
 #ifndef __PREPARE_H__
 #define __PREPARE_H__
 
-/* Copyright (C) 2000-2020 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2000-2021 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -145,7 +145,7 @@ struct virtual_end_info_s
   int checker_comment_mode;
 };
 
-/* sizeof(struct section_global_data) == 1204/1912 */
+/* sizeof(struct section_global_data) == 1208/1920 */
 struct section_global_data
 {
   struct generic_section_config g META_ATTRIB((meta_hidden));
@@ -791,7 +791,7 @@ struct section_global_data
   ejintbool_t disable_passed_tests META_ATTRIB((meta_private));
 };
 
-/* sizeof(struct section_problem_data) == 764/1208 */
+/* sizeof(struct section_problem_data) == 820/1280 */
 struct section_problem_data
 {
   struct generic_section_config g META_ATTRIB((meta_hidden));   // 32 bytes
@@ -940,6 +940,8 @@ struct section_problem_data
   ejbyteflag_t disable_security;
   /** enable suid helpers for this problem */
   ejbyteflag_t enable_suid_run;
+  /** enable container for this problem */
+  ejbyteflag_t enable_container;
 
   /** if the valuer also sets the marked flag */
   ejbyteflag_t valuer_sets_marked;
@@ -963,6 +965,8 @@ struct section_problem_data
   ejbyteflag_t enable_extended_info;
   /** stop testing after the first failed test (like ACM) */
   ejbyteflag_t stop_on_first_fail;
+  /** create a controlling socket pair for interactor */
+  ejbyteflag_t enable_control_socket;
 
   /** enable headers/footers specific for each test */
   ejbyteflag_t enable_multi_header;
@@ -973,7 +977,7 @@ struct section_problem_data
   ejbyteflag_t notify_on_submit;
 
   // padding to 8-byte boundary
-  unsigned char _pad1[1];
+  //unsigned char _pad1[1];
 
   /** number of independent examinations */
   int examinator_num;
@@ -999,6 +1003,8 @@ struct section_problem_data
   int min_tests_to_accept;
   /** real time limit for checkers */
   int checker_real_time_limit;
+  /** time limit for checkers */
+  int checker_time_limit_ms;
   /** priority adjustment for this problem */
   int priority_adjustment;
   /** additional score multiplier for this problem */
@@ -1057,6 +1063,8 @@ struct section_problem_data
   unsigned char *footer_pat;
   /** compiler environment pattern for multi-header mode */
   unsigned char *compiler_env_pat;
+  /** options for container */
+  unsigned char *container_options;
 
   struct token_info *token_info META_ATTRIB((meta_private));
 
@@ -1134,8 +1142,11 @@ struct section_problem_data
   char **enable_language;
   char **require;
   char **provide_ok;
+  char **allow_ip;
   /** environment variables for compilation */
   ejenvlist_t lang_compiler_env;
+  /** container options for compilation */
+  ejenvlist_t lang_compiler_container_options;
   /** environment variables for the problem checker */
   ejenvlist_t checker_env;
   /** environment variables for the problem valuer */
@@ -1177,6 +1188,7 @@ struct section_problem_data
   /** language-specific memory limit */
   char **lang_max_vm_size;
   char **lang_max_stack_size;
+  char **lang_max_rss_size;
 
   /** environment variables for the statement */
   ejenvlist_t statement_env;
@@ -1216,10 +1228,18 @@ struct section_problem_data
   ej_size64_t max_data_size;
   /** max stack size limit */
   ej_size64_t max_stack_size;
+  /** max resident set size limit  */
+  ej_size64_t max_rss_size;
   /** max allowed size of the core file */
   ej_size64_t max_core_size;
   /** max file size */
   ej_size64_t max_file_size;
+  /** max virtual size limit for checkers */
+  ej_size64_t checker_max_vm_size;
+  /** max stack size limit for checkers */
+  ej_size64_t checker_max_stack_size;
+  /** max RSS limit for checkers */
+  ej_size64_t checker_max_rss_size;
   /** max number of opened files per process */
   int max_open_file_count;
   /** max number of processes per user */
@@ -1248,7 +1268,7 @@ struct section_problem_data
   } xml META_ATTRIB((meta_hidden));
 };
 
-/* sizeof(struct section_language_data) == 296/376 */
+/* sizeof(struct section_language_data) == 312/400 */
 struct section_language_data
 {
   struct generic_section_config g META_ATTRIB((meta_hidden));
@@ -1314,6 +1334,8 @@ struct section_language_data
   ej_size64_t run_max_stack_size;
   /** virtual memory size limit for compiled programs, overrides the problem settings */
   ej_size64_t run_max_vm_size;
+  /** max resident set size limit for compiled programs, overrides the problem settings */
+  ej_size64_t run_max_rss_size;
 
   /** index of the compile directory in the list of compile servers */
   int compile_dir_index;
@@ -1335,13 +1357,15 @@ struct section_language_data
   unsigned char *compile_server_id;
   /** suffix to use for multi-header setup */
   unsigned char *multi_header_suffix;
+  /** additional container options -- appended to the problem container_options */
+  unsigned char *container_options;
 
   unsigned char *unhandled_vars;
   /** disabled by configuration script */
   int disabled_by_config META_ATTRIB((meta_private));
 };
 
-/* sizeof(struct section_tester_data) == 288/392 */
+/* sizeof(struct section_tester_data) == 292/400 */
 struct section_tester_data
 {
   struct generic_section_config g META_ATTRIB((meta_hidden));
@@ -1394,6 +1418,8 @@ struct section_tester_data
   size_t max_data_size;
   /** max size of the virtual memory */
   size_t max_vm_size;
+  /** max size of the resident set */
+  size_t max_rss_size;
   /** whether the environment is cleared */
   ejintbool_t clear_env;
   int time_limit_adjustment;
@@ -1584,9 +1610,8 @@ prepare_insert_variant_num(
 struct token_info *
 prepare_parse_tokens(FILE *log_f, const unsigned char *tokens);
 
-/* This is INTENTIONALLY not an `extern' variable */
 struct ejudge_cfg;
-struct ejudge_cfg *ejudge_config GCC_ATTRIB((common)) ;
+extern struct ejudge_cfg *ejudge_config;
 
 int
 lang_config_configure(

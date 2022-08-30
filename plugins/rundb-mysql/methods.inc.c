@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2008-2018 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2008-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -62,7 +62,7 @@ static int
 flush_func(struct rldb_plugin_cnts *cdata);
 
 static int
-get_insert_run_id(
+get_insert_run_id_func(
         struct rldb_plugin_cnts *cdata,
         time_t create_time,
         int user_id,
@@ -73,7 +73,7 @@ add_entry_func(
         struct rldb_plugin_cnts *cdata,
         int run_id,
         const struct run_entry *re,
-        int flags);
+        uint64_t mask);
 
 static int
 undo_add_entry_func(
@@ -88,7 +88,8 @@ change_status_func(
         int new_test,
         int new_passed_mode,
         int new_score,
-        int judge_id);
+        int judge_id,
+        const ej_uuid_t *judge_uuid);
 
 static int
 start_func(
@@ -136,12 +137,6 @@ set_hidden_func(
         int new_hidden);
 
 static int
-set_judge_id_func(
-        struct rldb_plugin_cnts *cdata,
-        int run_id,
-        int new_judge_id);
-
-static int
 set_pages_func(
         struct rldb_plugin_cnts *cdata,
         int run_id,
@@ -152,7 +147,7 @@ set_entry_func(
         struct rldb_plugin_cnts *cdata,
         int run_id,
         const struct run_entry *in,
-        int flags);
+        uint64_t mask);
 
 static int
 squeeze_func(struct rldb_plugin_cnts *cdata);
@@ -168,17 +163,6 @@ put_header_func(
         const struct run_header *rh);
 
 static int
-change_status_2_func(
-        struct rldb_plugin_cnts *cdata,
-        int run_id,
-        int new_status,
-        int new_test,
-        int new_passed_mode,
-        int new_score,
-        int new_judge_id,
-        int new_is_marked);
-
-static int
 check_func(
         struct rldb_plugin_cnts *cdata,
         FILE *log_f);
@@ -191,7 +175,6 @@ change_status_3_func(
         int new_test,
         int new_passed_mode,
         int new_score,
-        int new_judge_id,
         int new_is_marked,
         int has_user_score,
         int user_status,
@@ -205,9 +188,50 @@ change_status_4_func(
         int new_status);
 
 static int
-add_entry_2_func(
+user_run_header_set_start_time_func(
+        struct rldb_plugin_cnts *cdata,
+        int user_id,
+        time_t start_time,
+        int is_virtual,
+        int last_change_user_id);
+
+static int
+user_run_header_set_stop_time_func(
+        struct rldb_plugin_cnts *cdata,
+        int user_id,
+        time_t stop_time,
+        int last_change_user_id);
+
+static int
+user_run_header_set_duration_func(
+        struct rldb_plugin_cnts *cdata,
+        int user_id,
+        int duration,
+        int last_change_user_id);
+
+static int
+user_run_header_set_is_checked_func(
+        struct rldb_plugin_cnts *cdata,
+        int user_id,
+        int is_checked,
+        int last_change_user_id);
+
+static int
+user_run_header_delete_func(
+        struct rldb_plugin_cnts *cdata,
+        int user_id);
+
+static int
+append_run_func(
+        struct rldb_plugin_cnts *cdata,
+        const struct run_entry *re,
+        uint64_t mask,
+        struct timeval *p_tv,
+        int64_t *p_serial_id,
+        ej_uuid_t *p_uuid);
+
+static int
+run_set_is_checked_func(
         struct rldb_plugin_cnts *cdata,
         int run_id,
-        const struct run_entry *re,
-        int flags,
-        const unsigned char *prob_uuid);
+        int is_checked);

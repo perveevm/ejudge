@@ -1,6 +1,6 @@
 /* -*- c -*- */
 
-/* Copyright (C) 2012-2020 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2012-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -56,6 +56,7 @@
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <utime.h>
@@ -215,7 +216,12 @@ generate_xml_report(
   unsigned char *msg = 0;
   const struct super_run_in_global_packet *srgp = srp->global;
 
-  testing_report_xml_t tr = testing_report_alloc(srgp->contest_id, srgp->run_id, srgp->judge_id);
+  ej_uuid_t judge_uuid = {};
+  if (srgp->judge_uuid && srgp->judge_uuid[0]) {
+    ej_uuid_parse(srgp->judge_uuid, &judge_uuid);
+  }
+
+  testing_report_xml_t tr = testing_report_alloc(srgp->contest_id, srgp->run_id, srgp->judge_id, &judge_uuid);
   tr->status = reply_pkt->status;
   tr->scoring_system = srgp->scoring_system_val;
   tr->archive_available = (srgp->enable_full_archive > 0);
@@ -1048,8 +1054,22 @@ invoke_valuer(
   task_SetRedir(tsk, 2, TSR_FILE, score_err, TSK_REWRITE, TSK_FULL_RW);
   task_SetWorkingDir(tsk, global->run_work_dir);
   task_SetPathAsArg0(tsk);
+  /*
   if (srpp->checker_real_time_limit_ms > 0) {
     task_SetMaxRealTimeMillis(tsk, srpp->checker_real_time_limit_ms);
+  }
+  */
+  if (srpp->checker_time_limit_ms > 0) {
+    task_SetMaxTimeMillis(tsk, srpp->checker_time_limit_ms);
+  }
+  if (srpp->checker_max_stack_size > 0) {
+    task_SetStackSize(tsk, srpp->checker_max_stack_size);
+  }
+  if (srpp->checker_max_vm_size > 0) {
+    task_SetVMSize(tsk, srpp->checker_max_vm_size);
+  }
+  if (srpp->checker_max_rss_size > 0) {
+    task_SetRSSSize(tsk, srpp->checker_max_rss_size);
   }
   setup_environment(tsk, srpp->valuer_env, 0, NULL, 1);
   if (srgp->separate_user_score > 0) {
@@ -1155,8 +1175,22 @@ start_interactive_valuer(
   task_SetRedir(tsk, 2, TSR_FILE, valuer_err_file, TSK_APPEND, TSK_FULL_RW);
   task_SetWorkingDir(tsk, global->run_work_dir);
   task_SetPathAsArg0(tsk);
+  /*
   if (srpp->checker_real_time_limit_ms > 0) {
     task_SetMaxRealTimeMillis(tsk, srpp->checker_real_time_limit_ms);
+  }
+  */
+  if (srpp->checker_time_limit_ms > 0) {
+    task_SetMaxTimeMillis(tsk, srpp->checker_time_limit_ms);
+  }
+  if (srpp->checker_max_stack_size > 0) {
+    task_SetStackSize(tsk, srpp->checker_max_stack_size);
+  }
+  if (srpp->checker_max_vm_size > 0) {
+    task_SetVMSize(tsk, srpp->checker_max_vm_size);
+  }
+  if (srpp->checker_max_rss_size > 0) {
+    task_SetRSSSize(tsk, srpp->checker_max_rss_size);
   }
   setup_environment(tsk, srpp->valuer_env, 0, NULL, 1);
   if (srgp->separate_user_score > 0) {
@@ -1754,17 +1788,14 @@ cleanup:
 
 static int
 invoke_init_cmd(
-        const unsigned char *init_cmd,
+        const struct super_run_in_problem_packet *srpp,
         const unsigned char *subcommand,
         const unsigned char *test_src_path,
         const unsigned char *corr_src_path,
         const unsigned char *info_src_path,
         const unsigned char *working_dir,
         const unsigned char *check_out_path,
-        char **init_env,
-        testinfo_t *ti,
-        long real_time_limit_ms,
-        int disable_pe)
+        testinfo_t *ti)
 {
   tpTask tsk = NULL;
   int status = 0;
@@ -1772,12 +1803,12 @@ invoke_init_cmd(
   char **env_v = NULL;
 
   if (ti) {
-    env_u = ti->init_env_u;
-    env_v = ti->init_env_v;
+    env_u = ti->init_env.u;
+    env_v = ti->init_env.v;
   }
 
   tsk = task_New();
-  task_AddArg(tsk, init_cmd);
+  task_AddArg(tsk, srpp->init_cmd);
   if (subcommand && *subcommand) {
     task_AddArg(tsk, subcommand);
   }
@@ -1794,17 +1825,29 @@ invoke_init_cmd(
   if (working_dir && *working_dir) {
     task_SetWorkingDir(tsk, working_dir);
   }
-  setup_environment(tsk, init_env, env_u, env_v, 1);
+  setup_environment(tsk, srpp->init_env, env_u, env_v, 1);
   task_SetRedir(tsk, 0, TSR_FILE, "/dev/null", TSK_READ);
   task_SetRedir(tsk, 1, TSR_FILE, check_out_path, TSK_APPEND, TSK_FULL_RW);
   task_SetRedir(tsk, 2, TSR_DUP, 1);
   task_EnableAllSignals(tsk);
-  if (real_time_limit_ms > 0) {
-    task_SetMaxRealTimeMillis(tsk, real_time_limit_ms);
+  if (srpp->checker_real_time_limit_ms > 0) {
+    task_SetMaxRealTimeMillis(tsk, srpp->checker_real_time_limit_ms);
+  }
+  if (srpp->checker_time_limit_ms > 0) {
+    task_SetMaxTimeMillis(tsk, srpp->checker_time_limit_ms);
+  }
+  if (srpp->checker_max_stack_size > 0) {
+    task_SetStackSize(tsk, srpp->checker_max_stack_size);
+  }
+  if (srpp->checker_max_vm_size > 0) {
+    task_SetVMSize(tsk, srpp->checker_max_vm_size);
+  }
+  if (srpp->checker_max_rss_size > 0) {
+    task_SetRSSSize(tsk, srpp->checker_max_rss_size);
   }
 
   if (task_Start(tsk) < 0) {
-    append_msg_to_log(check_out_path, "failed to start init_cmd %s", init_cmd);
+    append_msg_to_log(check_out_path, "failed to start init_cmd %s", srpp->init_cmd);
     status = RUN_CHECK_FAILED;
     goto cleanup;
   }
@@ -1839,7 +1882,7 @@ invoke_init_cmd(
     break;
 
   case RUN_PRESENTATION_ERR:
-    if (disable_pe > 0) {
+    if (srpp->disable_pe > 0) {
       exitcode = RUN_WRONG_ANSWER_ERR;
     }
     break;
@@ -1870,6 +1913,7 @@ invoke_interactor(
         struct testinfo_struct *ti,
         int stdin_fd,
         int stdout_fd,
+        int control_fd,
         int program_pid,
         const struct super_run_in_global_packet *srgp,
         const struct super_run_in_problem_packet *srpp,
@@ -1887,6 +1931,7 @@ invoke_interactor(
         struct testinfo_struct *ti,
         int stdin_fd,
         int stdout_fd,
+        int control_fd,
         int program_pid,
         const struct super_run_in_global_packet *srgp,
         const struct super_run_in_problem_packet *srpp,
@@ -1897,8 +1942,8 @@ invoke_interactor(
   char **env_v = NULL;
 
   if (ti) {
-    env_u = ti->interactor_env_u;
-    env_v = ti->interactor_env_v;
+    env_u = ti->interactor_env.u;
+    env_v = ti->interactor_env.v;
   }
 
   tsk_int = task_New();
@@ -1926,7 +1971,9 @@ invoke_interactor(
   if (srgp->checker_locale && srgp->checker_locale[0]) {
     task_SetEnv(tsk_int, "EJUDGE_LOCALE", srgp->checker_locale);
   }
-  if (srgp->suid_run > 0) {
+  if (srgp->enable_container > 0) {
+    task_SetEnv(tsk_int, "EJUDGE_CONTAINER", "1");
+  } else if (srgp->suid_run > 0) {
     task_SetEnv(tsk_int, "EJUDGE_SUID_RUN", "1");
   }
   if (srgp->testlib_mode > 0) {
@@ -1945,6 +1992,11 @@ invoke_interactor(
     task_SetEnv(tsk_int, "EJUDGE_USER_LOGIN", srgp->user_login);
     task_SetEnv(tsk_int, "EJUDGE_USER_NAME", srgp->user_name);
   }
+  if (control_fd >= 0) {
+    unsigned char buf[64];
+    snprintf(buf, sizeof(buf), "%d", control_fd);
+    task_SetEnv(tsk_int, "EJUDGE_CONTROL_FD", buf);
+  }
   task_EnableAllSignals(tsk_int);
   task_IgnoreSIGPIPE(tsk_int);
   if (srpp->interactor_time_limit_ms > 0) {
@@ -1952,6 +2004,15 @@ invoke_interactor(
   }
   if (srpp->interactor_real_time_limit_ms > 0) {
     task_SetMaxRealTimeMillis(tsk_int, srpp->interactor_real_time_limit_ms);
+  }
+  if (srpp->checker_max_stack_size > 0) {
+    task_SetStackSize(tsk_int, srpp->checker_max_stack_size);
+  }
+  if (srpp->checker_max_vm_size > 0) {
+    task_SetVMSize(tsk_int, srpp->checker_max_vm_size);
+  }
+  if (srpp->checker_max_rss_size > 0) {
+    task_SetRSSSize(tsk_int, srpp->checker_max_rss_size);
   }
 
   task_PrintArgs(tsk_int);
@@ -2012,19 +2073,19 @@ report_args_and_env(testinfo_t *ti)
   int cmd_args_len = 0;
   unsigned char *s, *args = NULL;
 
-  if (!ti || ti->cmd_argc <= 0) return NULL;
+  if (!ti || ti->cmd.u <= 0) return NULL;
 
-  for (i = 0; i < ti->cmd_argc; i++) {
+  for (i = 0; i < ti->cmd.u; i++) {
     cmd_args_len += 16;
-    if (ti->cmd_argv[i]) {
-      cmd_args_len += strlen(ti->cmd_argv[i]) + 16;
+    if (ti->cmd.v[i]) {
+      cmd_args_len += strlen(ti->cmd.v[i]) + 16;
     }
   }
   if (cmd_args_len > 0) {
     s = args = (unsigned char *) xmalloc(cmd_args_len + 1);
-    for (i = 0; i < ti->cmd_argc; i++) {
-      if (ti->cmd_argv[i]) {
-        s += sprintf(s, "[%3d]: >%s<\n", i + 1, ti->cmd_argv[i]);
+    for (i = 0; i < ti->cmd.u; i++) {
+      if (ti->cmd.v[i]) {
+        s += sprintf(s, "[%3d]: >%s<\n", i + 1, ti->cmd.v[i]);
       } else {
         s += sprintf(s, "[%3d]: NULL\n", i + 1);
       }
@@ -2063,8 +2124,8 @@ invoke_checker(
   int user_score_mode = 0;
 
   if (ti) {
-    env_u = ti->checker_env_u;
-    env_v = ti->checker_env_v;
+    env_u = ti->checker_env.u;
+    env_v = ti->checker_env.v;
   }
 
   tsk = task_New();
@@ -2097,6 +2158,18 @@ invoke_checker(
   if (srpp->checker_real_time_limit_ms > 0) {
     task_SetMaxRealTimeMillis(tsk, srpp->checker_real_time_limit_ms);
   }
+  if (srpp->checker_time_limit_ms > 0) {
+    task_SetMaxTimeMillis(tsk, srpp->checker_time_limit_ms);
+  }
+  if (srpp->checker_max_stack_size > 0) {
+    task_SetStackSize(tsk, srpp->checker_max_stack_size);
+  }
+  if (srpp->checker_max_vm_size > 0) {
+    task_SetVMSize(tsk, srpp->checker_max_vm_size);
+  }
+  if (srpp->checker_max_rss_size > 0) {
+    task_SetRSSSize(tsk, srpp->checker_max_rss_size);
+  }
   setup_environment(tsk, srpp->checker_env, env_u, env_v, 1);
   if (srpp->scoring_checker > 0) {
     task_SetEnv(tsk, "EJUDGE_SCORING_CHECKER", "1");
@@ -2111,6 +2184,19 @@ invoke_checker(
   if (srgp->separate_user_score > 0 && output_only > 0) {
     task_SetEnv(tsk, "EJUDGE_USER_SCORE", "1");
     user_score_mode = 1;
+  }
+  if (srpp->enable_extended_info > 0) {
+    unsigned char buf[64];
+    snprintf(buf, sizeof(buf), "%d", srgp->user_id);
+    task_SetEnv(tsk, "EJUDGE_USER_ID", buf);
+    snprintf(buf, sizeof(buf), "%d", srgp->contest_id);
+    task_SetEnv(tsk, "EJUDGE_CONTEST_ID", buf);
+    snprintf(buf, sizeof(buf), "%d", srgp->run_id);
+    task_SetEnv(tsk, "EJUDGE_RUN_ID", buf);
+    snprintf(buf, sizeof(buf), "%d", cur_test);
+    task_SetEnv(tsk, "EJUDGE_TEST_NUM", buf);
+    task_SetEnv(tsk, "EJUDGE_USER_LOGIN", srgp->user_login);
+    task_SetEnv(tsk, "EJUDGE_USER_NAME", srgp->user_name);
   }
   task_EnableAllSignals(tsk);
 
@@ -2234,6 +2320,34 @@ invoke_checker(
 cleanup:
   task_Delete(tsk); tsk = NULL;
   return status;
+}
+
+static const char *
+remap_start_cmd_for_container(const char *start_cmd)
+{
+  if (!start_cmd || !*start_cmd) return NULL;
+  char *last = strrchr(start_cmd, '/');
+  if (!last) return start_cmd;
+  ++last;
+
+  static const char * const remaps[][2] =
+  {
+    { "runmono", "runmono2" },
+    { "runjava", "runjava2" },
+    { "rundotnet", "rundotnet2" },
+    { "runvg", "runvg2" },
+    { NULL, NULL },
+  };
+
+  for (int i = 0; remaps[i][0]; ++i) {
+    if (!strcmp(last, remaps[i][0])) {
+      static char remap_buf[PATH_MAX];
+      snprintf(remap_buf, sizeof(remap_buf), "%s/ejudge/lang/%s", EJUDGE_LIBEXEC_DIR, remaps[i][1]);
+      return remap_buf;
+    }
+  }
+
+  return start_cmd;
 }
 
 static int
@@ -2387,6 +2501,7 @@ run_one_test(
 
   int pfd1[2] = { -1, -1 };
   int pfd2[2] = { -1, -1 };
+  int cfd[2] = { -1, -1 }; // control socket for container
   testinfo_t tstinfo;
   tpTask tsk_int = NULL;
   tpTask tsk = NULL;
@@ -2550,13 +2665,13 @@ run_one_test(
     }
     xfree(eff_inf_text); eff_inf_text = NULL;
 
-    if (srgp->lang_short_name && srgp->lang_short_name[0] && tstinfo.ok_language_u > 0) {
+    if (srgp->lang_short_name && srgp->lang_short_name[0] && tstinfo.ok_language.u > 0) {
       int i;
-      for (i = 0; i < tstinfo.ok_language_u; ++i) {
-        if (tstinfo.ok_language_v[i] && !strcmp(tstinfo.ok_language_v[i], srgp->lang_short_name))
+      for (i = 0; i < tstinfo.ok_language.u; ++i) {
+        if (tstinfo.ok_language.v[i] && !strcmp(tstinfo.ok_language.v[i], srgp->lang_short_name))
           break;
       }
-      if (i < tstinfo.ok_language_u) {
+      if (i < tstinfo.ok_language.u) {
         // mark this test as successfully passed
         status = RUN_OK; // FIXME: RUN_SKIPPED?
         cur_info->input = xstrdup("");
@@ -2582,6 +2697,10 @@ run_one_test(
       }
       if (tstinfo.max_stack_size > 0 && (size_t) tstinfo.max_stack_size != tstinfo.max_stack_size) {
         append_msg_to_log(check_out_path, "max_stack_size %lld cannot be represented by size_t\n", tstinfo.max_stack_size);
+        goto check_failed;
+      }
+      if (tstinfo.max_rss_size > 0 && (size_t) tstinfo.max_rss_size != tstinfo.max_rss_size) {
+        append_msg_to_log(check_out_path, "max_rss_size %lld cannot be represented by size_t\n", tstinfo.max_rss_size);
         goto check_failed;
       }
       if (tstinfo.max_file_size > 0 && (size_t) tstinfo.max_file_size != tstinfo.max_file_size) {
@@ -2737,20 +2856,27 @@ run_one_test(
   snprintf(output_path, sizeof(output_path), "%s/%s", check_dir, srpp->output_file);
   snprintf(error_path, sizeof(error_path), "%s/%s", check_dir, error_file);
 
-  if (interactor_cmd) {
-    snprintf(output_path, sizeof(output_path), "%s/%s", global->run_work_dir, srpp->output_file);
-  }
-
   if (srpp->init_cmd && srpp->init_cmd[0]) {
-    status = invoke_init_cmd(srpp->init_cmd, "start", test_src, corr_src,
+    status = invoke_init_cmd(srpp, "start", test_src, corr_src,
                              info_src, working_dir, check_out_path,
-                             srpp->init_env, &tstinfo, srpp->checker_real_time_limit_ms, srpp->disable_pe);
+                             &tstinfo);
     if (status != 0) {
       append_msg_to_log(check_out_path, "init_cmd failed to start with code 0");
       status = RUN_CHECK_FAILED;
       goto check_failed;
     }
     init_cmd_started = 1;
+  }
+
+  if (interactor_cmd) {
+    snprintf(output_path, sizeof(output_path), "%s/%s", global->run_work_dir, srpp->output_file);
+    if (srpp->enable_control_socket > 0) {
+      if (socketpair(PF_UNIX, SOCK_STREAM, 0, cfd) < 0) {
+        append_msg_to_log(check_out_path, "socketpair failed: %s", os_ErrorMsg());
+        status = RUN_CHECK_FAILED;
+        goto check_failed;
+      }
+    }
   }
 
 #ifndef __WIN32__
@@ -2779,7 +2905,11 @@ run_one_test(
     task_AddArg(tsk, start_cmd_arg);
   }
   if (tst && tst->start_cmd && tst->start_cmd[0]) {
-    if (remaps) {
+    if (srgp->enable_container > 0) {
+      const char *remapped_path = remap_start_cmd_for_container(tst->start_cmd);
+      fprintf(start_msg_f, " %s", remapped_path);
+      task_AddArg(tsk, remapped_path);
+    } else if (remaps) {
       unsigned char *new_cmd = remap_command(tst->start_cmd, remaps);
       fprintf(start_msg_f, " %s", new_cmd);
       task_AddArg(tsk, new_cmd);
@@ -2835,8 +2965,8 @@ run_one_test(
     task_SetPathAsArg0(tsk);
   }
 
-  if (srpp->use_info > 0 && tstinfo.cmd_argc >= 1) {
-    task_pnAddArgs(tsk, tstinfo.cmd_argc, (char**) tstinfo.cmd_argv);
+  if (srpp->use_info > 0 && tstinfo.cmd.u >= 1) {
+    task_pnAddArgs(tsk, tstinfo.cmd.u, (char**) tstinfo.cmd.v);
   }
   /*
   if (tstinfo.working_dir) {
@@ -2855,6 +2985,9 @@ run_one_test(
     snprintf(mem_limit_buf, sizeof(mem_limit_buf), "%d", getpid());
     task_SetEnv(tsk, "EJ_SUPER_RUN_PID", mem_limit_buf);
 #endif
+  }
+  if (srpp->use_tgz) {
+    task_EnableSubdirMode(tsk);
   }
 
   if (interactor_cmd) {
@@ -2900,7 +3033,7 @@ run_one_test(
   }
 
   if (tst && tst->clear_env > 0) task_ClearEnv(tsk);
-  setup_environment(tsk, start_env, tstinfo.env_u, tstinfo.env_v, 0);
+  setup_environment(tsk, start_env, tstinfo.env.u, tstinfo.env.v, 0);
 
   if (tstinfo.time_limit_ms > 0) {
     task_SetMaxTimeMillis(tsk, tstinfo.time_limit_ms);
@@ -2927,14 +3060,17 @@ run_one_test(
 
   long long max_vm_size = -1LL;
   long long max_stack_size = -1LL;
+  long long max_rss_size = -1LL;
   long long max_file_size = -1LL;
   if (srpp->use_info > 0) {
     if (tstinfo.max_vm_size > 0) max_vm_size = tstinfo.max_vm_size;
     if (tstinfo.max_stack_size > 0) max_stack_size = tstinfo.max_stack_size;
+    if (tstinfo.max_rss_size > 0) max_rss_size = tstinfo.max_rss_size;
     if (tstinfo.max_file_size > 0) max_file_size = tstinfo.max_file_size;
   }
   if (max_vm_size < 0 && srpp->max_vm_size > 0) max_vm_size = srpp->max_vm_size;
   if (max_stack_size < 0 && srpp->max_stack_size > 0) max_stack_size = srpp->max_stack_size;
+  if (max_rss_size < 0 && srpp->max_rss_size > 0) max_rss_size = srpp->max_rss_size;
   if (max_file_size < 0 && srpp->max_file_size > 0) max_file_size = srpp->max_file_size;
 
   if (!tst || tst->memory_limit_type_val < 0) {
@@ -2947,6 +3083,8 @@ run_one_test(
       task_SetDataSize(tsk, srpp->max_data_size);
     if (max_vm_size > 0)
       task_SetVMSize(tsk, max_vm_size);
+    if (max_rss_size > 0)
+      task_SetRSSSize(tsk, max_rss_size);
   } else {
     switch (tst->memory_limit_type_val) {
     case MEMLIMIT_TYPE_DEFAULT:
@@ -2961,6 +3099,8 @@ run_one_test(
         task_SetDataSize(tsk, srpp->max_data_size);
       if (max_vm_size > 0)
         task_SetVMSize(tsk, max_vm_size);
+      if (max_rss_size > 0)
+        task_SetRSSSize(tsk, max_rss_size);
       if (tst->enable_memory_limit_error > 0 && srgp->enable_memory_limit_error > 0 && srgp->secure_run > 0) {
         task_EnableMemoryLimitError(tsk);
       }
@@ -2989,7 +3129,19 @@ run_one_test(
     }
   }
 
-  if (tst && srgp->suid_run > 0) {
+  if (tst && srgp->enable_container > 0) {
+    task_SetSuidHelperDir(tsk, EJUDGE_SERVER_BIN_PATH);
+    task_EnableContainer(tsk);
+    if (srpp->container_options && srpp->container_options[0])
+      task_AppendContainerOptions(tsk, srpp->container_options);
+    if (srgp->lang_container_options && srgp->lang_container_options[0])
+      task_AppendContainerOptions(tsk, srgp->lang_container_options);
+    if (srgp->lang_short_name && *srgp->lang_short_name)
+      task_SetLanguageName(tsk, srgp->lang_short_name);
+    if (tst->secure_exec_type_val == SEXEC_TYPE_JAVA) {
+      task_PutEnv(tsk, "EJUDGE_JAVA_POLICY=fileio.policy");
+    }
+  } else if (tst && srgp->suid_run > 0) {
     task_SetSuidHelperDir(tsk, EJUDGE_SERVER_BIN_PATH);
     task_EnableSuidExec(tsk);
     switch (tst->secure_exec_type_val) {
@@ -2999,7 +3151,7 @@ run_one_test(
     }
   }
 
-  if (tst && tst->secure_exec_type_val > 0 && srgp->secure_run > 0) {
+  if (tst && tst->secure_exec_type_val > 0 && srgp->secure_run > 0 && srgp->enable_container <= 0) {
     switch (tst->secure_exec_type_val) {
     case SEXEC_TYPE_STATIC:
       if (task_EnableSecureExec(tsk) < 0) {
@@ -3033,7 +3185,7 @@ run_one_test(
     }
   }
 
-  if (tst && tst->secure_exec_type_val == SEXEC_TYPE_JAVA && srgp->secure_run <= 0) {
+  if (tst && tst->secure_exec_type_val == SEXEC_TYPE_JAVA && srgp->secure_run <= 0 && srgp->enable_container <= 0) {
     task_PutEnv(tsk, "EJUDGE_JAVA_POLICY=none");
   }
 
@@ -3041,7 +3193,7 @@ run_one_test(
     task_FormatEnv(tsk, "EJUDGE_JAVA_COMPILER", "%s", srgp->lang_short_name);
   }
 
-  if (tst && tst->enable_memory_limit_error > 0 && srgp->secure_run > 0 && srgp->detect_violations > 0) {
+  if (tst && tst->enable_memory_limit_error > 0 && srgp->secure_run > 0 && srgp->detect_violations > 0 && srgp->enable_container <= 0) {
     switch (tst->secure_exec_type_val) {
     case SEXEC_TYPE_STATIC:
     case SEXEC_TYPE_DLL:
@@ -3087,6 +3239,12 @@ run_one_test(
       task_SetUmask(tsk, umask);
     }
   }
+  if (srpp->enable_control_socket) {
+    task_SetControlSocket(tsk, cfd[0], cfd[1]);
+  }
+  if (state->exec_user_serial > 0) {
+    task_SetUserSerial(tsk, state->exec_user_serial);
+  }
 
   //task_PrintArgs(tsk);
 
@@ -3097,11 +3255,15 @@ run_one_test(
     goto check_failed;
   }
 
+  if (cfd[0] >= 0) {
+    close(cfd[0]); cfd[0] = -1;
+  }
+
 #ifndef __WIN32__
   if (interactor_cmd) {
     tsk_int = invoke_interactor(interactor_cmd, test_src, output_path, corr_src, info_src,
                                 working_dir, check_out_path,
-                                &tstinfo, pfd1[0], pfd2[1], task_GetPid(tsk), srgp, srpp, cur_test);
+                                &tstinfo, pfd1[0], pfd2[1], cfd[1], task_GetPid(tsk), srgp, srpp, cur_test);
     if (!tsk_int) {
       append_msg_to_log(check_out_path, "interactor failed to start");
       goto check_failed;
@@ -3114,6 +3276,10 @@ run_one_test(
   if (pfd2[0] >= 0) close(pfd2[0]);
   if (pfd2[1] >= 0) close(pfd2[1]);
   pfd1[0] = pfd1[1] = pfd2[0] = pfd2[1] = -1;
+
+  if (cfd[1] >= 0) {
+    close(cfd[1]); cfd[1] = -1;
+  }
 
   task_NewWait(tsk);
 
@@ -3133,7 +3299,15 @@ run_one_test(
   }
 #endif
 
-  if (srgp->suid_run > 0 && srpp->enable_kill_all > 0 && task_TryAnyProcess(tsk) > 0) {
+  if (task_WasCheckFailed(tsk)) {
+    append_msg_to_log(check_out_path, "%s", task_GetErrorMessage(tsk));
+    goto check_failed;
+  } else if (srgp->enable_container > 0) {
+    if (task_GetOrphanProcessCount(tsk) > 0) {
+      append_msg_to_log(check_out_path, "There exist processes belonging to the 'ejexec' user\n");
+      pg_not_empty = 1;
+    }
+  } else if (srgp->suid_run > 0 && srpp->enable_kill_all > 0 && task_TryAnyProcess(tsk) > 0) {
     append_msg_to_log(check_out_path,
                       "There exist processes belonging to the 'ejexec' user\n");
     pg_not_empty = 1;
@@ -3299,6 +3473,12 @@ run_one_test(
     goto cleanup;
   }
 
+  if (task_GetIPCObjectCount(tsk) > 0) {
+    status = RUN_SECURITY_ERR;
+    append_msg_to_log(check_out_path, "%s", task_GetErrorMessage(tsk));
+    goto read_checker_output;
+  }
+
   // terminated with a signal
   if (task_Status(tsk) == TSK_SIGNALED) {
     cur_info->code = 256; /* FIXME: magic */
@@ -3320,12 +3500,18 @@ run_one_test(
       if (tsk_int) goto read_checker_output;
       goto cleanup;
     }
-  } else if (srpp->ignore_exit_code > 0) {
-    // do not analyze exit code
-  } else if (cur_info->code != 0) {
-    status = RUN_RUN_TIME_ERR;
-    if (tsk_int) goto read_checker_output;
-    goto cleanup;
+  } else {
+    int ignore_exit_code = -1;
+    if (srpp->use_info > 0 && tstinfo.ignore_exit_code >= 0) {
+      ignore_exit_code = tstinfo.ignore_exit_code;
+    } else {
+      ignore_exit_code = srpp->ignore_exit_code;
+    }
+    if (ignore_exit_code <= 0 && cur_info->code != 0) {
+      status = RUN_RUN_TIME_ERR;
+      if (tsk_int) goto read_checker_output;
+      goto cleanup;
+    }
   }
 
   if (pg_not_empty) {
@@ -3401,9 +3587,9 @@ run_checker:;
   // read the checker output
 read_checker_output:;
   if (init_cmd_started) {
-    int new_status = invoke_init_cmd(srpp->init_cmd, "stop", test_src,
+    int new_status = invoke_init_cmd(srpp, "stop", test_src,
                                      corr_src, info_src, working_dir, check_out_path,
-                                     srpp->init_env, &tstinfo, srpp->checker_real_time_limit_ms, srpp->disable_pe);
+                                     &tstinfo);
     if (!status) status = new_status;
     init_cmd_started = 0;
   }
@@ -3420,8 +3606,8 @@ read_checker_output:;
 
 cleanup:;
   if (init_cmd_started) {
-    int new_status = invoke_init_cmd(srpp->init_cmd, "stop", test_src, corr_src,  info_src, working_dir, check_out_path,
-                                     srpp->init_env, &tstinfo, srpp->checker_real_time_limit_ms, srpp->disable_pe);
+    int new_status = invoke_init_cmd(srpp, "stop", test_src, corr_src,  info_src, working_dir, check_out_path,
+                                     &tstinfo);
     if (!status) status = new_status;
     init_cmd_started = 0;
   }
@@ -3431,6 +3617,8 @@ cleanup:;
   if (pfd1[1] >= 0) close(pfd1[1]);
   if (pfd2[0] >= 0) close(pfd2[0]);
   if (pfd2[1] >= 0) close(pfd2[1]);
+  if (cfd[0] >= 0) close(cfd[0]);
+  if (cfd[1] >= 0) close(cfd[1]);
 
   if (check_out_path[0]) unlink(check_out_path);
   if (score_out_path[0]) unlink(score_out_path);
@@ -4113,6 +4301,12 @@ run_tests(
     unsigned char sz_buf[64];
     append_msg_to_log(messages_path, "max_stack_size = %s is too big for this platform",
                       ej_size64_t_to_size(sz_buf, sizeof(sz_buf), srpp->max_stack_size));
+    goto check_failed;
+  }
+  if (srpp->max_rss_size > 0 && srpp->max_rss_size != (size_t) srpp->max_rss_size) {
+    unsigned char sz_buf[64];
+    append_msg_to_log(messages_path, "max_rss_size = %s is too big for this platform",
+                      ej_size64_t_to_size(sz_buf, sizeof(sz_buf), srpp->max_rss_size));
     goto check_failed;
   }
   if (srpp->max_file_size > 0 && srpp->max_file_size != (size_t) srpp->max_file_size) {

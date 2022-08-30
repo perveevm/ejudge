@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2006-2019 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2006-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -50,6 +50,7 @@
 #include "ejudge/xuser_plugin.h"
 #include "ejudge/random.h"
 #include "ejudge/statusdb.h"
+#include "ejudge/test_count_cache.h"
 
 #include "ejudge/xalloc.h"
 #include "ejudge/logger.h"
@@ -317,7 +318,7 @@ serve_update_status_file(
   int p;
 
   status.cur_time = state->current_time;
-  run_get_times(state->runlog_state, &t1, &t2, &t3, &t4, &t5);
+  run_get_times(state->runlog_state, 0, &t1, &t2, &t3, &t4, &t5);
   if (t1 > 0 && t5 > 0 && t5 <= t1) {
     t5 = 0;
   }
@@ -352,6 +353,7 @@ serve_update_status_file(
   status.online_view_judge_score = state->online_view_judge_score;
   status.online_final_visibility = state->online_final_visibility;
   status.online_valuer_judge_comments = state->online_valuer_judge_comments;
+  status.disable_virtual_start = state->disable_virtual_start;
 
   if (status.start_time && status.duration && global->board_fog_time > 0
       && !status.is_virtual) {
@@ -432,6 +434,7 @@ serve_load_status_file(
   state->online_view_judge_score = status.online_view_judge_score;
   state->online_final_visibility = status.online_final_visibility;
   state->online_valuer_judge_comments = status.online_valuer_judge_comments;
+  state->disable_virtual_start = status.disable_virtual_start;
 
   state->max_online_time = status.max_online_time;
   state->max_online_count = status.max_online_count;
@@ -951,6 +954,8 @@ serve_check_telegram_reminder(
         serve_state_t state,
         const struct contest_desc *cnts)
 {
+  if (cnts->enable_reminders <= 0) return;
+
   // if current time hour >= 10 and time from the last reminder > 24h, try hard
   struct tm *ptm = localtime(&state->current_time);
   if (ptm->tm_hour >= 10 && (state->last_daily_reminder <= 0 || state->last_daily_reminder + 24 * 60 * 60 <= state->current_time)) {
@@ -988,7 +993,7 @@ serve_check_telegram_reminder(
     snprintf(unans_clar_buf, sizeof(unans_clar_buf), "%d", trdata.unans_clars);
     args[7] = unans_clar_buf;
     args[8] = NULL;
-    send_job_packet(NULL, (unsigned char**) args, 0);
+    send_job_packet(config, (unsigned char**) args);
   }
 
   struct tm stm;
@@ -1062,7 +1067,7 @@ generate_statistics_email(
   mail_args[4] = cnts->daily_stat_email;
   mail_args[5] = ftxt;
   mail_args[6] = 0;
-  send_job_packet(NULL, (unsigned char **) mail_args, 0);
+  send_job_packet(config, (unsigned char **) mail_args);
   xfree(ftxt); ftxt = 0;
   xfree(etxt); etxt = 0;
 }
@@ -1370,14 +1375,17 @@ serve_compile_request(
   char **comp_env_mem = NULL;
   char **comp_env_mem_2 = NULL;
   char **compiler_env_copy = NULL;
+  char **compiler_container_options = NULL;
   const unsigned char *compile_src_dir = 0;
   const unsigned char *compile_queue_dir = 0;
   int errcode = -SERVE_ERR_GENERIC;
   struct sformat_extra_data sformat_extra;
   __attribute__((unused)) unsigned char compile_src_buf[PATH_MAX];
   __attribute__((unused)) unsigned char compile_queue_buf[PATH_MAX];
+  ej_uuid_t judge_uuid;
 
   memset(&sformat_extra, 0, sizeof(sformat_extra));
+  ej_uuid_generate(&judge_uuid);
 
   // perform substitutions
   compiler_env_copy = prepare_sarray_varsubst(state, prob, lang, NULL, compiler_env);
@@ -1461,6 +1469,9 @@ serve_compile_request(
   if (prob && prob->lang_compiler_env && lang) {
     comp_env_mem_2 = filter_lang_environ(config, state, prob, lang, NULL, prob->lang_compiler_env);
   }
+  if (prob && lang && prob->lang_compiler_container_options) {
+    compiler_container_options = filter_lang_environ(config, state, prob, lang, NULL, prob->lang_compiler_container_options);
+  }
 
   if (compiler_env && compiler_env[0] && comp_env_mem_2 && comp_env_mem_2[0]) {
     comp_env_mem = sarray_merge_pp(compiler_env, comp_env_mem_2);
@@ -1479,6 +1490,7 @@ serve_compile_request(
 
   memset(&cp, 0, sizeof(cp));
   cp.judge_id = state->compile_request_id++;
+  cp.judge_uuid = judge_uuid;
   cp.contest_id = contest_id;
   cp.run_id = run_id;
   cp.lang_id = lang_id;
@@ -1489,6 +1501,9 @@ serve_compile_request(
   cp.run_block = &rx;
   cp.env_num = -1;
   cp.env_vars = (unsigned char**) compiler_env;
+  if (compiler_container_options) {
+    cp.container_options = compiler_container_options[0];
+  }
   cp.style_check_only = !!style_check_only;
   cp.max_vm_size = ~(ej_size64_t) 0;
   cp.max_stack_size = ~(ej_size64_t) 0;
@@ -1543,7 +1558,7 @@ serve_compile_request(
   if (cp.lang_header) {
     if (lang->multi_header_suffix && lang->multi_header_suffix[0]) {
       cp.lang_short_name = lang->multi_header_suffix;
-    } else if (lang->short_name && lang->short_name[0]) {
+    } else if (/*lang->short_name &&*/ lang->short_name[0]) {
       cp.lang_short_name = (unsigned char*) lang->short_name;
     }
   }
@@ -1614,7 +1629,7 @@ serve_compile_request(
 #endif
 
   if (!sfx) sfx = "";
-  serve_packet_name(contest_id, run_id, prio, pkt_name, sizeof(pkt_name));
+  serve_packet_name(contest_id, run_id, prio, &judge_uuid, pkt_name, sizeof(pkt_name));
 
   if (src_header_size > 0 || src_footer_size > 0) {
     if (len < 0) {
@@ -1686,7 +1701,7 @@ serve_compile_request(
 
   if (!no_db_flag) {
     if (run_change_status(state->runlog_state, run_id, RUN_COMPILING, 0, 1, -1,
-                          cp.judge_id) < 0) {
+                          cp.judge_id, &cp.judge_uuid) < 0) {
       errcode = -SERVE_ERR_DB;
       goto failed;
     }
@@ -1694,6 +1709,7 @@ serve_compile_request(
 
   sarray_free(comp_env_mem_2);
   sarray_free(comp_env_mem);
+  sarray_free(compiler_container_options);
   sarray_free(sc_env_mem);
   sarray_free(compiler_env_copy);
   xfree(pkt_buf);
@@ -1706,6 +1722,7 @@ serve_compile_request(
  failed:
   sarray_free(comp_env_mem_2);
   sarray_free(comp_env_mem);
+  sarray_free(compiler_container_options);
   sarray_free(sc_env_mem);
   sarray_free(compiler_env_copy);
   xfree(pkt_buf);
@@ -1781,6 +1798,7 @@ serve_run_request(
         int variant,
         int priority_adjustment,
         int judge_id,
+        const ej_uuid_t *judge_uuid,
         int accepting_mode,
         int notify_flag,
         int mime_type,
@@ -1825,6 +1843,7 @@ serve_run_request(
   char *srp_t = NULL;
   size_t srp_z = 0;
   ej_size64_t lang_specific_size = 0;
+  ej_uuid_t local_judge_uuid;
 
   get_current_time(&current_time, &current_time_us);
 
@@ -1951,6 +1970,10 @@ serve_run_request(
     if (!state->compile_request_id) state->compile_request_id++;
     judge_id = state->compile_request_id++;
   }
+  if (!judge_uuid) {
+    ej_uuid_generate(&local_judge_uuid);
+    judge_uuid = &local_judge_uuid;
+  }
   if (accepting_mode < 0) {
     if (global->score_system == SCORE_OLYMPIAD && global->is_virtual > 0) {
       accepting_mode = 1;
@@ -1969,15 +1992,18 @@ serve_run_request(
   }
 
   /* generate a packet name */
-  serve_packet_name(contest_id, run_id, prio, pkt_base, sizeof(pkt_base));
+  serve_packet_name(contest_id, run_id, prio, judge_uuid, pkt_base, sizeof(pkt_base));
   snprintf(exe_out_name, sizeof(exe_out_name), "%s%s", pkt_base, exe_sfx);
 
   if (!run_text) {
-    if (comp_pkt && comp_pkt->use_uuid > 0
-        && comp_pkt->uuid.v[0] && comp_pkt->uuid.v[1]
-        && comp_pkt->uuid.v[2] && comp_pkt->uuid.v[3]) {
-      snprintf(exe_in_name, sizeof(exe_in_name), "%s%s",
-               ej_uuid_unparse(&comp_pkt->uuid, NULL), exe_sfx);
+    if (comp_pkt && comp_pkt->use_uuid > 0) {
+      if (ej_uuid_is_nonempty(comp_pkt->judge_uuid)) {
+        snprintf(exe_in_name, sizeof(exe_in_name), "%s%s",
+                 ej_uuid_unparse(&comp_pkt->judge_uuid, NULL), exe_sfx);
+      } else {
+        snprintf(exe_in_name, sizeof(exe_in_name), "%s%s",
+                 ej_uuid_unparse(&comp_pkt->uuid, NULL), exe_sfx);
+      }
     } else {
       snprintf(exe_in_name, sizeof(exe_in_name), "%06d%s", run_id, exe_sfx);
     }
@@ -2014,6 +2040,7 @@ serve_run_request(
 
   srgp->contest_id = contest_id;
   srgp->judge_id = judge_id;
+  srgp->judge_uuid = xstrdup(ej_uuid_unparse(judge_uuid, NULL));
   srgp->run_id = run_id;
   srgp->variant = variant;
   srgp->user_id = user_id;
@@ -2027,6 +2054,8 @@ serve_run_request(
   srgp->enable_full_archive = global->enable_full_archive;
   srgp->secure_run = secure_run;
   srgp->suid_run = suid_run;
+  srgp->enable_container = prob->enable_container;
+  if (config->force_container) srgp->enable_container = 1;
   srgp->enable_memory_limit_error = global->enable_memory_limit_error;
   srgp->detect_violations = global->detect_violations;
   srgp->time_limit_retry_count = global->time_limit_retry_count;
@@ -2081,7 +2110,9 @@ serve_run_request(
   if (exe_sfx) {
     srgp->exe_sfx = xstrdup(exe_sfx);
   }
-  if (srgp->run_uuid) {
+  if (srgp->judge_uuid && srgp->judge_uuid[0]) {
+    srgp->reply_packet_name = xstrdup(srgp->judge_uuid);
+  } else if (srgp->run_uuid) {
     srgp->reply_packet_name = xstrdup(srgp->run_uuid);
   } else {
     snprintf(buf, sizeof(buf), "%06d", run_id);
@@ -2122,6 +2153,9 @@ serve_run_request(
   srgp->zip_mode = zip_mode;
   srgp->contest_server_id = xstrdup(config->contest_server_id);
   srgp->bson_available = (store_flags == STORE_FLAGS_UUID_BSON);
+  if (lang && lang->container_options) {
+    srgp->lang_container_options = xstrdup(lang->container_options);
+  }
 
   struct super_run_in_problem_packet *srpp = srp->problem;
   srpp->type = xstrdup(problem_unparse_type(prob->type));
@@ -2158,11 +2192,16 @@ serve_run_request(
   srpp->accept_partial = prob->accept_partial;
   srpp->min_tests_to_accept = prob->min_tests_to_accept;
   srpp->checker_real_time_limit_ms = prob->checker_real_time_limit * 1000;
+  srpp->checker_time_limit_ms = prob->checker_time_limit_ms;
+  srpp->checker_max_vm_size = prob->checker_max_vm_size;
+  srpp->checker_max_stack_size = prob->checker_max_stack_size;
+  srpp->checker_max_rss_size = prob->checker_max_rss_size;
   srpp->short_name = xstrdup(prob->short_name);
   srpp->long_name = xstrdup2(prob->long_name);
   srpp->internal_name = xstrdup2(prob->internal_name);
   srpp->uuid = xstrdup2(prob->uuid);
   srpp->open_tests = xstrdup2(prob->open_tests);
+  srpp->container_options = xstrdup2(prob->container_options);
 
   if (srgp->advanced_layout > 0) {
     get_advanced_layout_path(pathbuf, sizeof(pathbuf), global, prob, NULL, variant);
@@ -2358,6 +2397,7 @@ serve_run_request(
   srpp->max_vm_size = prob->max_vm_size;
   srpp->max_data_size = prob->max_data_size;
   srpp->max_stack_size = prob->max_stack_size;
+  srpp->max_rss_size = prob->max_rss_size;
   srpp->max_core_size = prob->max_core_size;
   srpp->max_file_size = prob->max_file_size;
   srpp->max_open_file_count = prob->max_open_file_count;
@@ -2367,9 +2407,11 @@ serve_run_request(
   srgp->testlib_mode = prob->enable_testlib_mode;
   srpp->enable_extended_info = prob->enable_extended_info;
   srpp->stop_on_first_fail = prob->stop_on_first_fail;
+  srpp->enable_control_socket = prob->enable_control_socket;
   if (prob->umask && prob->umask[0]) {
     srpp->umask = xstrdup(prob->umask);
   }
+  srpp->test_count = test_count_cache_get(NULL, srpp->test_dir, srpp->test_pat);
 
   if (find_lang_specific_size(prob->lang_max_vm_size, lang, &lang_specific_size) > 0) {
     srpp->max_vm_size = lang_specific_size;
@@ -2377,11 +2419,17 @@ serve_run_request(
   if (find_lang_specific_size(prob->lang_max_stack_size, lang, &lang_specific_size) > 0) {
     srpp->max_stack_size = lang_specific_size;
   }
+  if (find_lang_specific_size(prob->lang_max_rss_size, lang, &lang_specific_size) > 0) {
+    srpp->max_rss_size = lang_specific_size;
+  }
   if (lang && lang->run_max_stack_size > 0) {
     srpp->max_stack_size = lang->run_max_stack_size;
   }
   if (lang && lang->run_max_vm_size > 0) {
     srpp->max_vm_size = lang->run_max_vm_size;
+  }
+  if (lang && lang->run_max_rss_size > 0) {
+    srpp->max_rss_size = lang->run_max_rss_size;
   }
 
   if (tester) {
@@ -2433,7 +2481,7 @@ serve_run_request(
 
   /* update status */
   if (!no_db_flag) {
-    if (run_change_status(state->runlog_state, run_id, RUN_RUNNING, 0, 1, -1, judge_id) < 0) {
+    if (run_change_status(state->runlog_state, run_id, RUN_RUNNING, 0, 1, -1, judge_id, judge_uuid) < 0) {
       goto fail;
     }
   }
@@ -2487,7 +2535,7 @@ serve_send_clar_notify_telegram(
   args[2] = cnts->telegram_admin_chat_id;
   args[3] = text_s;
   args[4] = NULL;
-  send_job_packet(NULL, (unsigned char**) args, 0);
+  send_job_packet(config, (unsigned char**) args);
 
   free(text_s); text_s = NULL;
 }
@@ -2535,7 +2583,7 @@ serve_send_telegram_token(
   args[7] = contest_id_buf;
   args[8] = expiry_buf;
   args[9] = NULL;
-  send_job_packet(NULL, (unsigned char**) args, 0);
+  send_job_packet(config, (unsigned char**) args);
 }
 
 void
@@ -2576,7 +2624,7 @@ serve_send_clar_notify_email(
   mail_args[4] = cnts->clar_notify_email;
   mail_args[5] = ftxt;
   mail_args[6] = 0;
-  send_job_packet(NULL, (unsigned char**) mail_args, 0);
+  send_job_packet(config, (unsigned char**) mail_args);
   xfree(ftxt); ftxt = 0;
 }
 
@@ -2630,7 +2678,7 @@ serve_telegram_notify_on_submit(
   args[8] = probname;
   args[9] = run_status_str(new_status, buf4, sizeof(buf4), 0, 0);
   args[10] = NULL;
-  send_job_packet(NULL, (unsigned char **) args, 0);
+  send_job_packet(config, (unsigned char **) args);
 }
 
 void
@@ -2680,7 +2728,7 @@ serve_telegram_check_failed(
   }
   args[8] = probname;
   args[9] = NULL;
-  send_job_packet(NULL, (unsigned char **) args, 0);
+  send_job_packet(config, (unsigned char **) args);
 }
 
 void
@@ -2716,7 +2764,7 @@ serve_send_check_failed_email(
   mail_args[4] = cnts->cf_notify_email;
   mail_args[5] = ftxt;
   mail_args[6] = 0;
-  send_job_packet(NULL, (unsigned char **) mail_args, 0);
+  send_job_packet(config, (unsigned char **) mail_args);
   xfree(ftxt); ftxt = 0;
 }
 
@@ -2745,7 +2793,7 @@ serve_send_email_to_user(
   mail_args[4] = u->email;
   mail_args[5] = text;
   mail_args[6] = 0;
-  send_job_packet(NULL, (unsigned char**) mail_args, 0);
+  send_job_packet(config, (unsigned char**) mail_args);
 }
 
 void
@@ -2786,7 +2834,7 @@ serve_telegram_user_run_reviewed(
     args[8] = run_status_str(new_status, buf4, sizeof(buf4), 0, 0);
   }
   args[9] = NULL;
-  send_job_packet(NULL, (unsigned char **) args, 0);
+  send_job_packet(config, (unsigned char **) args);
 }
 
 void
@@ -2822,7 +2870,7 @@ serve_telegram_user_clar_replied(
   args[7] = buf3;
   args[8] = reply;
   args[9] = NULL;
-  send_job_packet(NULL, (unsigned char **) args, 0);
+  send_job_packet(config, (unsigned char **) args);
 }
 
 void
@@ -2934,10 +2982,21 @@ serve_read_compile_packet(
       goto non_fatal_error;
     }
   }
-  if (comp_pkt->judge_id != re.judge_id) {
-    err("read_compile_packet: judge_id mismatch: %d, %d", comp_pkt->judge_id,
-        re.judge_id);
-    goto non_fatal_error;
+  if (re.judge_uuid_flag) {
+    if (memcmp(&comp_pkt->judge_uuid, &re.j.judge_uuid, sizeof(re.j.judge_uuid)) != 0) {
+      unsigned char b1[64];
+      unsigned char b2[64];
+      err("read_compile_packet: judge_uuid mismatch: %s, %s",
+          ej_uuid_unparse_r(b1, sizeof(b1), &comp_pkt->judge_uuid, NULL),
+          ej_uuid_unparse_r(b2, sizeof(b2), &re.j.judge_uuid, NULL));
+      goto non_fatal_error;
+    }
+  } else {
+    if (comp_pkt->judge_id != re.j.judge_id) {
+      err("read_compile_packet: judge_id mismatch: %d, %d", comp_pkt->judge_id,
+          re.j.judge_id);
+      goto non_fatal_error;
+    }
   }
   if (re.status != RUN_COMPILING) {
     err("read_compile_packet: run %d is not compiling", comp_pkt->run_id);
@@ -2962,7 +3021,11 @@ serve_read_compile_packet(
       snprintf(errmsg, sizeof(errmsg), "generic_read_file: %s/%s.txt failed\n", compile_report_dir, pname);
       goto report_check_failed;
     }
-    testing_report = testing_report_alloc(comp_pkt->contest_id, comp_pkt->run_id, re.judge_id);
+    if (re.judge_uuid_flag) {
+      testing_report = testing_report_alloc(comp_pkt->contest_id, comp_pkt->run_id, 0, &re.j.judge_uuid);
+    } else {
+      testing_report = testing_report_alloc(comp_pkt->contest_id, comp_pkt->run_id, re.j.judge_id, NULL);
+    }
     testing_report->status = comp_pkt->status;
     testing_report->compiler_output = xstrdup(txt_text);
     utf8_fix_string(testing_report->compiler_output, NULL);
@@ -3050,7 +3113,11 @@ serve_read_compile_packet(
     snprintf(txt_packet_path, sizeof(txt_packet_path), "%s/%s.txt", compile_report_dir, pname);
     generic_read_file(&txt_text, 0, &txt_size, REMOVE, NULL, txt_packet_path, NULL);
 
-    testing_report = testing_report_alloc(comp_pkt->contest_id, comp_pkt->run_id, re.judge_id);
+    if (re.judge_uuid_flag) {
+      testing_report = testing_report_alloc(comp_pkt->contest_id, comp_pkt->run_id, 0, &re.j.judge_uuid);
+    } else {
+      testing_report = testing_report_alloc(comp_pkt->contest_id, comp_pkt->run_id, re.j.judge_id, NULL);
+    }
     testing_report->status = RUN_RUNNING;
     if (txt_text) {
       testing_report->compiler_output = xstrdup(txt_text);
@@ -3273,7 +3340,8 @@ prepare_run_request:
                         cnts->id, comp_pkt->run_id,
                         re.user_id, re.prob_id, re.lang_id, re.variant,
                         comp_extra->priority_adjustment,
-                        comp_pkt->judge_id, comp_extra->accepting_mode,
+                        comp_pkt->judge_id, &comp_pkt->judge_uuid,
+                        comp_extra->accepting_mode,
                         comp_extra->notify_flag, re.mime_type, re.eoln_type,
                         re.locale_id, compile_report_dir, comp_pkt, 0, &re.run_uuid,
                         comp_extra->rejudge_flag, comp_pkt->zip_mode, re.store_flags) < 0) {
@@ -3307,7 +3375,11 @@ prepare_run_request:
   report_size = strlen(errmsg);
 
   if (re.store_flags == STORE_FLAGS_UUID_BSON) {
-    testing_report = testing_report_alloc(comp_pkt->contest_id, comp_pkt->run_id, re.judge_id);
+    if (re.judge_uuid_flag) {
+      testing_report = testing_report_alloc(comp_pkt->contest_id, comp_pkt->run_id, 0, &re.j.judge_uuid);
+    } else {
+      testing_report = testing_report_alloc(comp_pkt->contest_id, comp_pkt->run_id, re.j.judge_id, NULL);
+    }
     testing_report->status = RUN_CHECK_FAILED;
     if (txt_text) {
       testing_report->compiler_output = xstrdup(errmsg);
@@ -3554,10 +3626,21 @@ serve_read_run_packet(
     err("read_run_packet: run %d status is not RUNNING", reply_pkt->run_id);
     goto failed;
   }
-  if (re.judge_id != reply_pkt->judge_id) {
-    err("read_run_packet: judge_id mismatch: packet: %d, db: %d",
-        reply_pkt->judge_id, re.judge_id);
-    goto failed;
+  if (re.judge_uuid_flag) {
+    if (memcmp(&reply_pkt->judge_uuid, &re.j.judge_uuid, sizeof(re.j.judge_uuid)) != 0) {
+      unsigned char b1[64];
+      unsigned char b2[64];
+      err("read_run_packet: judge_uuid mismatch: %s, %s",
+          ej_uuid_unparse_r(b1, sizeof(b1), &reply_pkt->judge_uuid, NULL),
+          ej_uuid_unparse_r(b2, sizeof(b2), &re.j.judge_uuid, NULL));
+      goto failed;
+    }
+  } else {
+    if (re.j.judge_id != reply_pkt->judge_id) {
+      err("read_run_packet: judge_id mismatch: packet: %d, db: %d",
+          reply_pkt->judge_id, re.j.judge_id);
+      goto failed;
+    }
   }
 
   if (!serve_is_valid_status(state, reply_pkt->status, 2))
@@ -3634,7 +3717,7 @@ serve_read_run_packet(
     }
     if (run_change_status_3(state->runlog_state, reply_pkt->run_id,
                             reply_pkt->status, reply_pkt->tests_passed, 1,
-                            reply_pkt->score, 0, reply_pkt->marked_flag,
+                            reply_pkt->score, reply_pkt->marked_flag,
                             has_user_score, user_status, user_tests_passed,
                             user_score) < 0)
       goto failed;
@@ -3799,10 +3882,10 @@ serve_read_run_packet(
       if (run_get_entry(state->runlog_state, i, &pe) < 0) continue;
       if ((pe.status == RUN_ACCEPTED || pe.status == RUN_PENDING_REVIEW)
           && pe.prob_id == re.prob_id && pe.user_id == re.user_id) {
-        run_change_status_3(state->runlog_state, i, RUN_IGNORED, 0, 1, 0, 0, 0, 0, 0, 0, 0);
+        run_change_status_3(state->runlog_state, i, RUN_IGNORED, 0, 1, 0, 0, 0, 0, 0, 0);
       } else if (pe.is_saved && (pe.saved_status == RUN_ACCEPTED || pe.saved_status == RUN_PENDING_REVIEW)
           && pe.prob_id == re.prob_id && pe.user_id == re.user_id) {
-        run_change_status_3(state->runlog_state, i, RUN_IGNORED, 0, 1, 0, 0, 0, 0, 0, 0, 0);
+        run_change_status_3(state->runlog_state, i, RUN_IGNORED, 0, 1, 0, 0, 0, 0, 0, 0);
       }
     }
   }
@@ -3853,6 +3936,7 @@ serve_judge_built_in_problem(
         const struct contest_desc *cnts,
         int run_id,
         int judge_id,
+        const ej_uuid_t *judge_uuid,
         int variant,
         int accepting_mode,
         struct run_entry *re,
@@ -3999,7 +4083,7 @@ serve_judge_built_in_problem(
   /* FIXME: handle database update error */
   (void) failed_test;
   run_change_status_3(state->runlog_state, run_id, glob_status, passed_tests, 1,
-                      score, 0, 0, 0, 0, 0, 0);
+                      score, 0, 0, 0, 0, 0);
   serve_update_standings_file(extra, state, cnts, 0);
   /*
   if (global->notify_status_change > 0 && !re.is_hidden
@@ -4052,7 +4136,7 @@ serve_report_check_failed(
         const unsigned char *error_text)
 {
   const struct section_global_data *global = state->global;
-  testing_report_xml_t tr = testing_report_alloc(cnts->id, run_id, 0);
+  testing_report_xml_t tr = testing_report_alloc(cnts->id, run_id, 0, NULL);
   size_t tr_z = 0;
   char *tr_t = NULL;
   unsigned char tr_p[PATH_MAX];
@@ -4141,7 +4225,8 @@ serve_rejudge_run(
     err("rejudge_run: bad problem: %d", re.prob_id);
     return;
   }
-  if (prob->manual_checking > 0 || prob->disable_testing > 0) return;
+  if (prob->manual_checking > 0
+      || (prob->disable_testing > 0 && prob->enable_compilation <= 0)) return;
   if (prob->type > 0) {
     if (force_full_rejudge && global->score_system == SCORE_OLYMPIAD) {
       accepting_mode = 0;
@@ -4162,7 +4247,9 @@ serve_rejudge_run(
     }
 
     if (prob->type == PROB_TYPE_SELECT_ONE && px && px->ans_num > 0) {
-      serve_judge_built_in_problem(extra, config, state, cnts, run_id, 1 /* judge_id*/,
+      serve_judge_built_in_problem(extra, config, state, cnts, run_id,
+                                   1 /* judge_id*/,
+                                   NULL, /* judge_uuid */
                                    variant, accepting_mode, &re, prob,
                                    px, user_id, ip, ssl_flag);
       return;
@@ -4202,7 +4289,9 @@ serve_rejudge_run(
                       cnts->id, run_id,
                       re.user_id, re.prob_id, re.lang_id,
                       re.variant, priority_adjustment,
-                      -1, accepting_mode, 1, re.mime_type, re.eoln_type,
+                      -1,       /* judge_id */
+                      NULL,     /* judge_uuid */
+                      accepting_mode, 1, re.mime_type, re.eoln_type,
                       re.locale_id, 0, 0, 0, &re.run_uuid,
                       1 /* rejudge_flag */, 0 /* zip_mode */, re.store_flags);
     xfree(run_text);
@@ -5394,7 +5483,9 @@ handle_virtual_stop_event(
     return;
   }
   info("inserted virtual stop as run %d", run_id);
-  serve_move_files_to_insert_run(cs, run_id);
+  if (run_is_virtual_legacy_mode(cs->runlog_state)) {
+    serve_move_files_to_insert_run(cs, run_id);
+  }
   if (cs->global->score_system == SCORE_OLYMPIAD
       && cs->global->is_virtual && cs->global->disable_virtual_auto_judge<= 0) {
     serve_event_add(cs, p->time + 1, SERVE_EVENT_JUDGE_OLYMPIAD, p->user_id, 0);
@@ -5411,25 +5502,10 @@ handle_judge_olympiad_event(
         serve_state_t cs,
         struct serve_event_queue *p)
 {
-  int count;
-  struct run_entry rs, re;
-
   if (cs->global->score_system != SCORE_OLYMPIAD
       || !cs->global->is_virtual) goto done;
-  count = run_get_virtual_info(cs->runlog_state, p->user_id, &rs, &re);
-  if (count < 0) {
-    err("virtual user %d cannot be judged", p->user_id);
-    goto done;
-  }
-  // cannot do judging before all transint runs are done
-  if (count > 0) return;
-  if (rs.status != RUN_VIRTUAL_START || rs.user_id != p->user_id)
-    goto done;
-  if (re.status != RUN_VIRTUAL_STOP || re.user_id != p->user_id)
-    goto done;
-  // already judged somehow
-  if (rs.judge_id > 0) goto done;
-  serve_judge_virtual_olympiad(extra, config, cnts, cs, p->user_id, re.run_id,
+  if (run_get_virtual_is_checked(cs->runlog_state, p->user_id)) return;
+  serve_judge_virtual_olympiad(extra, config, cnts, cs, p->user_id, 0,
                                DFLT_G_REJUDGE_PRIORITY_ADJUSTMENT);
   if (p->handler) (*p->handler)(cnts, cs, p);
 
@@ -5479,18 +5555,14 @@ serve_judge_virtual_olympiad(
   const struct section_problem_data *prob;
   struct run_entry re;
   int *latest_runs, s, i;
-  int vstart_id;
 
   if (global->score_system != SCORE_OLYMPIAD || !global->is_virtual) return;
   if (user_id <= 0) return;
-  if (run_get_virtual_start_entry(cs->runlog_state, user_id, &re) < 0) return;
-  if (re.judge_id > 0) return;
-  if (run_id < 0) return;
-  vstart_id = re.run_id;
+  if (run_get_virtual_is_checked(cs->runlog_state, user_id)) return;
 
   // Fully rejudge latest submits
-  if (run_get_entry(cs->runlog_state, run_id, &re) < 0) return;
-  if (re.status != RUN_VIRTUAL_STOP) return;
+  run_id = run_get_total(cs->runlog_state) - 1;
+  if (run_id < 0) return;
   if (cs->max_prob <= 0) return;
 
   XALLOCA(latest_runs, cs->max_prob + 1);
@@ -5519,7 +5591,7 @@ serve_judge_virtual_olympiad(
       serve_rejudge_run(extra, config, cnts, cs, latest_runs[i], user_id, 0, 0, 1,
                         priority_adjustment);
   }
-  run_set_judge_id(cs->runlog_state, vstart_id, 1);
+  run_set_virtual_is_checked(cs->runlog_state, user_id, 1, 0);
 }
 
 void
@@ -5873,9 +5945,20 @@ serve_testing_queue_delete(
   unlink(exe_path);
 
   if (run_get_entry(state->runlog_state, srp->global->run_id, &re) >= 0
-      && re.status == RUN_RUNNING
-      && re.judge_id == srp->global->judge_id) {
-    run_change_status_4(state->runlog_state, srp->global->run_id, RUN_PENDING);
+      && re.status == RUN_RUNNING) {
+    if (re.judge_uuid_flag) {
+      ej_uuid_t judge_uuid = {};
+      if (srp->global->judge_uuid
+          && srp->global->judge_uuid[0]
+          && ej_uuid_parse(srp->global->judge_uuid, &judge_uuid) >= 0
+          && !memcmp(&re.j.judge_uuid, &judge_uuid, sizeof(re.j.judge_uuid))) {
+        run_change_status_4(state->runlog_state, srp->global->run_id, RUN_PENDING);
+      }
+    } else {
+      if (re.j.judge_id == srp->global->judge_id) {
+        run_change_status_4(state->runlog_state, srp->global->run_id, RUN_PENDING);
+      }
+    }
   }
 
   srp = super_run_in_packet_free(srp);
@@ -6327,6 +6410,7 @@ serve_count_unread_clars(
 
 static unsigned char *
 get_compiler_option(
+        const struct ejudge_cfg *config,
         const serve_state_t state,
         const struct section_language_data *lang)
 {
@@ -6381,6 +6465,10 @@ get_compiler_option(
   }
 
   if (!flags) {
+    flags = ejudge_cfg_get_compiler_option(config, lang->short_name);
+  }
+
+  if (!flags) {
     if (!strcmp(lang->short_name, "clang")) {
       flags = "-Wall -O2 -std=gnu11";
     } else if (!strcmp(lang->short_name, "clang-32")) {
@@ -6396,9 +6484,9 @@ get_compiler_option(
     } else if (!strcmp(lang->short_name, "gcc-vg")) {
       flags = "-g -O2 -std=gnu11";
     } else if (!strcmp(lang->short_name, "g++")) {
-      flags = "-Wall -O2 -std=gnu++11";
+      flags = "-Wall -O2 -std=gnu++17";
     } else if (!strcmp(lang->short_name, "g++-32")) {
-      flags = "-Wall -O2";
+      flags = "-Wall -O2 -std=gnu++17";
     } else if (!strcmp(lang->short_name, "g++-vg")) {
       flags = "-g -O2";
     } else if (!strcmp(lang->short_name, "g77")) {
@@ -6466,7 +6554,9 @@ get_compiler_option(
 }
 
 static void
-fill_compiler_options(const serve_state_t state)
+fill_compiler_options(
+        const struct ejudge_cfg *config,
+        const serve_state_t state)
 {
   if (state->compiler_options) return;
   if (state->max_lang <= 0) return;
@@ -6474,12 +6564,13 @@ fill_compiler_options(const serve_state_t state)
 
   for (int lang_id = 1; lang_id <= state->max_lang; ++lang_id) {
     const struct section_language_data *lang = state->langs[lang_id];
-    state->compiler_options[lang_id] = get_compiler_option(state, lang);
+    state->compiler_options[lang_id] = get_compiler_option(config, state, lang);
   }
 }
 
 const unsigned char *
 serve_get_compiler_options(
+        const struct ejudge_cfg *config,
         const serve_state_t state,
         int lang_id)
 {
@@ -6488,7 +6579,7 @@ serve_get_compiler_options(
   if (lang_id <= 0 || lang_id > state->max_lang) return "";
 
   if (!state->compiler_options) {
-    fill_compiler_options(state);
+    fill_compiler_options(config, state);
   }
 
   s = state->compiler_options[lang_id];

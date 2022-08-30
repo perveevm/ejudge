@@ -1,6 +1,6 @@
 /* -*- c -*- */
 
-/* Copyright (C) 2012-2018 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2012-2021 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -778,6 +778,7 @@ merge_problem_section(
         { CNTSPROB_stand_last_column, META_PROBLEM_CONFIG_SECTION_stand_last_column },
         { CNTSPROB_disable_security, META_PROBLEM_CONFIG_SECTION_disable_security },
         { CNTSPROB_enable_suid_run, META_PROBLEM_CONFIG_SECTION_enable_suid_run },
+        { CNTSPROB_enable_container, META_PROBLEM_CONFIG_SECTION_enable_container },
         { CNTSPROB_enable_multi_header, META_PROBLEM_CONFIG_SECTION_enable_multi_header },
         { CNTSPROB_use_lang_multi_header, META_PROBLEM_CONFIG_SECTION_use_lang_multi_header },
         { CNTSPROB_require_any, META_PROBLEM_CONFIG_SECTION_require_any },
@@ -810,6 +811,7 @@ merge_problem_section(
         { CNTSPROB_min_tests_to_accept, META_PROBLEM_CONFIG_SECTION_min_tests_to_accept, 0 },
         { CNTSPROB_tests_to_accept, META_PROBLEM_CONFIG_SECTION_tests_to_accept, 0 },
         { CNTSPROB_checker_real_time_limit, META_PROBLEM_CONFIG_SECTION_checker_real_time_limit, 0 },
+        { CNTSPROB_checker_time_limit_ms, META_PROBLEM_CONFIG_SECTION_checker_time_limit_ms, 0 },
         { CNTSPROB_score_multiplier, META_PROBLEM_CONFIG_SECTION_score_multiplier, 0 },
         { CNTSPROB_prev_runs_to_show, META_PROBLEM_CONFIG_SECTION_prev_runs_to_show, 0 },
         { CNTSPROB_max_user_run_count, META_PROBLEM_CONFIG_SECTION_max_user_run_count, 0 },
@@ -880,6 +882,9 @@ merge_problem_section(
         { CNTSPROB_max_stack_size, META_PROBLEM_CONFIG_SECTION_max_stack_size },
         { CNTSPROB_max_core_size, META_PROBLEM_CONFIG_SECTION_max_core_size },
         { CNTSPROB_max_file_size, META_PROBLEM_CONFIG_SECTION_max_file_size },
+        { CNTSPROB_checker_max_vm_size, META_PROBLEM_CONFIG_SECTION_checker_max_vm_size },
+        { CNTSPROB_checker_max_stack_size, META_PROBLEM_CONFIG_SECTION_checker_max_stack_size },
+        { CNTSPROB_checker_max_rss_size, META_PROBLEM_CONFIG_SECTION_checker_max_rss_size },
 
         { 0, 0 },
     };
@@ -941,6 +946,7 @@ merge_problem_section(
         { CNTSPROB_header_pat, META_PROBLEM_CONFIG_SECTION_header_pat },
         { CNTSPROB_footer_pat, META_PROBLEM_CONFIG_SECTION_footer_pat },
         { CNTSPROB_compiler_env_pat, META_PROBLEM_CONFIG_SECTION_compiler_env_pat },
+        { CNTSPROB_container_options, META_PROBLEM_CONFIG_SECTION_container_options },
 
         { 0, 0 },
     };
@@ -993,6 +999,7 @@ merge_problem_section(
         { CNTSPROB_score_view_text, META_PROBLEM_CONFIG_SECTION_score_view_text },
 
         { CNTSPROB_lang_compiler_env, META_PROBLEM_CONFIG_SECTION_lang_compiler_env },
+        { CNTSPROB_lang_compiler_container_options, META_PROBLEM_CONFIG_SECTION_lang_compiler_container_options },
         { CNTSPROB_checker_env, META_PROBLEM_CONFIG_SECTION_checker_env },
         { CNTSPROB_valuer_env, META_PROBLEM_CONFIG_SECTION_valuer_env },
         { CNTSPROB_interactor_env, META_PROBLEM_CONFIG_SECTION_interactor_env },

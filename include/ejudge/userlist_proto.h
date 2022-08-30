@@ -3,7 +3,7 @@
 #ifndef __USERLIST_PROTO_H__
 #define __USERLIST_PROTO_H__
 
-/* Copyright (C) 2002-2020 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2002-2021 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -125,6 +125,11 @@ enum
     ULS_LIST_STANDINGS_USERS_2,
     ULS_CHECK_USER_2,
     ULS_CREATE_COOKIE,
+    ULS_CREATE_API_KEY,
+    ULS_GET_API_KEY,
+    ULS_GET_API_KEYS_FOR_USER,
+    ULS_DELETE_API_KEY,
+    ULS_PRIV_CREATE_COOKIE,
 
     ULS_LAST_CMD
   };
@@ -147,6 +152,7 @@ enum
     ULS_TEXT_DATA_FAILURE,
     ULS_COUNT,
     ULS_BIN_DATA,
+    ULS_API_KEY_DATA,
   };
 
 /* various error codes */
@@ -189,6 +195,7 @@ enum
     ULS_ERR_SIMPLE_REGISTERED,
     ULS_ERR_GROUP_NAME_USED,
     ULS_ERR_BAD_GROUP_ID,
+    ULS_ERR_TOO_MANY_API_KEYS,
 
     ULS_ERR_LAST
   };
@@ -464,6 +471,39 @@ struct userlist_pk_create_user_2
   int group_id;
   int register_existing_flag;
   unsigned char data[5];
+};
+
+struct userlist_pk_api_key
+{
+  char token[32];
+  char secret[32];
+  ej_time64_t create_time;
+  ej_time64_t expiry_time;
+  int user_id;
+  int contest_id;
+  int payload_offset;
+  int origin_offset;
+  int all_contests;
+  int role;
+};
+
+struct userlist_pk_contest_info
+{
+  int user_id;
+  int contest_id;
+  int login_offset;
+  int name_offset;
+  int reg_status;
+  int reg_flags;
+};
+
+struct userlist_pk_api_key_data
+{
+  short request_id;
+  int api_key_count;
+  int contest_info_count;
+  int string_pool_size;
+  struct userlist_pk_api_key api_keys[0];
 };
 
 /* server->client replies */

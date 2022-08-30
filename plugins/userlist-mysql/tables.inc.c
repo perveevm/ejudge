@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2008-2018 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2008-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -77,7 +77,7 @@ static struct common_mysql_parse_spec cntsreg_spec[CNTSREG_WIDTH] =
   //[10]    createtime TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   { 0, 't', "createtime", CONTEST_OFFSET(create_time), 0 },
   //[11]    changetime TIMESTAMP DEFAULT 0,
-  { 0, 't', "changetime", CONTEST_OFFSET(last_change_time), 0 },
+  { 1, 't', "changetime", CONTEST_OFFSET(last_change_time), 0 },
 };
 
 // the number of columns in `logins' table
@@ -112,11 +112,11 @@ static struct common_mysql_parse_spec login_spec[LOGIN_WIDTH] =
   { 0, 'b', "simplereg", LOGIN_OFFSET(simple_registration) },
   //[12]   regtime TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   { 1, 't', "regtime", LOGIN_OFFSET(registration_time) },
-  //[13]   logintime TIMESTAMP DEFAULT NULL,
+  //[13]   logintime DATETIME DEFAULT NULL,
   { 1, 't', "logintime", LOGIN_OFFSET(last_login_time) },
-  //[14]   pwdtime TIMESTAMP DEFAULT NULL,
+  //[14]   pwdtime DATETIME DEFAULT NULL,
   { 1, 't', "pwdtime", LOGIN_OFFSET(last_pwdchange_time) },
-  //[15]   changetime TIMESTAMP DEFAULT NULL
+  //[15]   changetime DATETIME DEFAULT NULL
   { 1, 't', "changetime", LOGIN_OFFSET(last_change_time) },
 };
 
@@ -330,4 +330,31 @@ static struct common_mysql_parse_spec usergroupmember_spec[] =
   { 0, 'd', "user_id", USERGROUPMEMBER_OFFSET(user_id), 0 },
   //[2] rights VARCHAR(512) DEFAULT NULL,
   { 1, 's', "rights", USERGROUPMEMBER_OFFSET(rights), 0 },
+};
+
+enum { APIKEY_WIDTH = 10 };
+#define APIKEY_OFFSET(f) XOFFSET(struct userlist_api_key, f)
+
+static struct common_mysql_parse_spec apikey_spec[] =
+{
+  //[0] token VARCHAR(64) NOT NULL PRIMARY KEY,
+  { 0, 'U', "token", APIKEY_OFFSET(token), NULL },
+  //[1] secret VARCHAR(64) NOT NULL PRIMARY KEY,
+  { 0, 'U', "secret", APIKEY_OFFSET(secret), NULL },
+  //[2] user_id INT NOT NULL,
+  { 0, 'd', "user_id", APIKEY_OFFSET(user_id), NULL },
+  //[3] contest_id INT UNSIGNED NOT NULL,
+  { 0, 'd', "contest_id", APIKEY_OFFSET(contest_id), NULL },
+  //[4] create_time DATETIME NOT NULL,
+  { 0, 't', "create_time", APIKEY_OFFSET(create_time), NULL },
+  //[5] expiry_time DATETIME DEFAULT NULL,
+  { 1, 't', "expiry_time", APIKEY_OFFSET(expiry_time), NULL },
+  //[6] payload VARCHAR(1024) DEFAULT NULL,
+  { 1, 's', "payload", APIKEY_OFFSET(payload), NULL },
+  //[7] origin VARCHAR(128) DEFAULT NULL,
+  { 1, 's', "origin", APIKEY_OFFSET(origin), NULL },
+  //[8] all_contests TINYINT NOT NULL DEFAULT 0,
+  { 0, 'd', "all_contests", APIKEY_OFFSET(all_contests), NULL },
+  //[9] priv_level TINYINT NOT NULL DEFAULT 0,
+  { 0, 'd', "role_id", APIKEY_OFFSET(role), NULL },
 };

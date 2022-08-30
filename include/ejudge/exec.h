@@ -1,7 +1,7 @@
 #ifndef __REUSE_EXEC_H__
 #define __REUSE_EXEC_H__
 
-/* Copyright (C) 1998-2018 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 1998-2021 Alexander Chernov <cher@ejudge.ru> */
 /* Created: <1998-01-21 14:26:50 cher> */
 
 /*
@@ -39,7 +39,7 @@ enum
   TSR_CLOSE,                    /* close file descriptor */
   TSR_FILE,                     /* redirect to/from file */
   TSR_DUP,                      /* duplicate file descriptor */
-  TSR_PIPE                      /* pipe the file descriptor */
+  TSR_PIPE                      /* pipe the file descriptor - unused! */
 };
 
 /* file open flags */
@@ -91,15 +91,23 @@ int      task_SetKillSignal(tpTask, char const *);
 int      task_SetStackSize(tpTask, size_t);
 int      task_SetDataSize(tpTask, size_t);
 int      task_SetVMSize(tpTask, size_t);
+int      task_SetRSSSize(tpTask, size_t);
 int      task_DisableCoreDump(tpTask);
 int      task_EnableMemoryLimitError(tpTask);
 int      task_EnableSecureExec(tpTask);
 int      task_EnableSuidExec(tpTask);
+int      task_EnableContainer(tpTask);
 int      task_EnableAllSignals(tpTask);
 int      task_EnableSecurityViolationError(tpTask);
 int      task_EnableProcessGroup(tpTask);
 int      task_EnableKillAll(tpTask);
+int      task_EnableSubdirMode(tpTask);
 int      task_IgnoreSIGPIPE(tpTask);
+int      task_SetContainerOptions(tpTask, const char *);
+int      task_AppendContainerOptions(tpTask, const char *);
+int      task_SetLanguageName(tpTask, const char *);
+int      task_SetControlSocket(tpTask, int fd1, int fd2);
+int      task_SetUserSerial(tpTask, int serial);
 
 int      task_SetSuidHelperDir(tpTask, const char *);
 
@@ -155,6 +163,10 @@ int task_SetMaxPrioValue(tpTask, int);
 // RLIMIT_SIGPENDING
 int task_SetMaxPendingCount(tpTask, int);
 int task_SetUmask(tpTask, int);
+
+int task_GetIPCObjectCount(tTask *tsk);
+int task_GetOrphanProcessCount(tTask *tsk);
+int task_WasCheckFailed(tTask *tsk);
 
 #ifdef __cplusplus
 }

@@ -3,7 +3,7 @@
 #ifndef __USERLIST_H__
 #define __USERLIST_H__
 
-/* Copyright (C) 2002-2018 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2002-2020 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -634,6 +634,32 @@ struct userlist_list
   struct xml_tree *groupmembers_node;
 };
 
+struct userlist_contest_info
+{
+  int user_id;
+  int contest_id;
+  char *login;
+  char *name;
+  int reg_status;
+  int reg_flags;
+};
+
+struct userlist_api_key
+{
+  struct xml_tree b;
+
+  char token[32]; // 256-bit token key in binary form
+  char secret[32];
+  int user_id;
+  int contest_id;
+  time_t create_time;
+  time_t expiry_time;
+  char *payload;
+  char *origin;
+  int all_contests;
+  int role;
+};
+
 // unparse modes
 enum
   {
@@ -872,5 +898,11 @@ int
 userlist_user_count_contests(struct userlist_user *u);
 int
 userlist_user_count_cookies(struct userlist_user *u);
+
+void
+userlist_api_key_free(struct userlist_api_key *apk);
+void
+userlist_contest_info_free(struct userlist_contest_info *uci);
+const char *userlist_unparse_user_role(int role);
 
 #endif /* __USERLIST_H__ */

@@ -1,0 +1,297 @@
+<%
+%><%@include "unpriv_includes.csp"
+%><%
+#include "ejudge/ejudge_cfg.h"
+#include "ejudge/oauth.h"
+#include "ejudge/userlist_clnt.h"
+#include "ejudge/userlist_proto.h"
+#include "ejudge/random.h"
+#include "ejudge/base64.h"
+%><%@set ac_prefix = "NEW_SRV_ACTION_"
+%><%@set err_prefix = "NEW_SRV_ERR_"
+%><%@set getter_name = "csp_get_unpriv_oauth_login_3"
+%><%@page csp_view_unpriv_oauth_login_3(PageInterface *ps, FILE *log_f, FILE *out_f, struct http_request_info *phr)
+%><%@include "unpriv_stdvars.csp"
+%><%
+  const unsigned char *provider = NULL;
+  const unsigned char *job_id = NULL;
+  struct OAuthLoginResult oauth_res = {};
+  int r;
+  int user_id;
+  unsigned char *xml_text = NULL;
+  struct userlist_user *u = NULL;
+  struct userlist_cookie in_c = {};
+  struct userlist_cookie out_c = {};
+  unsigned char *user_login_dup = NULL;
+%><s:read var="provider" ignoreerrors="yes" /><%
+%><s:read var="job_id" ignoreerrors="yes" /><%
+
+  if (!provider || !*provider) {
+    FAIL(NEW_SRV_ERR_INV_PARAM);
+  }
+  if (!job_id || !*job_id) {
+    FAIL(NEW_SRV_ERR_INV_PARAM);
+  }
+
+  oauth_res = oauth_get_result(phr->config, provider, job_id);
+  if (oauth_res.status == 0 || oauth_res.status == 1) {
+    %><html><head><meta http-equiv="Refresh" content="1" /></head><body><p>waiting...</p></body></html><%
+    goto cleanup;
+  }
+
+  if (oauth_res.status == 2) {
+    fprintf(log_f, "request failed with error: %s\n", oauth_res.error_message);
+    FAIL(NEW_SRV_ERR_PERMISSION_DENIED);
+  }
+
+  if (oauth_res.role != NULL && !strcmp(oauth_res.role, "admin")) {
+    if (!phr->config->enable_oauth) {
+      fprintf(log_f, "OAUTH disabled");
+      FAIL(NEW_SRV_ERR_PERMISSION_DENIED);
+    }
+
+    if (!oauth_res.email || !*oauth_res.email) {
+      FAIL(NEW_SRV_ERR_PERMISSION_DENIED);
+    }
+    const unsigned char *user_login = ejudge_cfg_oauth_user_map_find(phr->config, oauth_res.email, oauth_res.provider);
+    if (!user_login || !*user_login) {
+      FAIL(NEW_SRV_ERR_PERMISSION_DENIED);
+    }
+
+    phr->session_id = 0;
+    phr->client_key = 0;
+    if (oauth_res.cookie && oauth_res.cookie[0]) {
+      unsigned long long s, k;
+      int n = 0;
+      if (sscanf(oauth_res.cookie, "%llx-%llx%n", &s, &k, &n) == 2 && !oauth_res.cookie[n]) {
+        //phr->session_id = s;
+        phr->client_key = k;
+      }
+    }
+
+    if ((r = userlist_clnt_lookup_user(ul_conn, user_login, 0, &user_id, NULL)) < 0) {
+      FAIL(NEW_SRV_ERR_PERMISSION_DENIED);
+    }
+
+    in_c.ip = phr->ip;
+    in_c.ssl = phr->ssl_flag;
+    in_c.user_id = user_id;
+    in_c.contest_id = 0;
+    in_c.priv_level = PRIV_LEVEL_ADMIN;
+    in_c.role = USER_ROLE_ADMIN;
+    in_c.team_login = 0;
+    in_c.client_key = phr->client_key;
+    if (userlist_clnt_create_cookie(ul_conn, ULS_PRIV_CREATE_COOKIE, &in_c, &out_c) < 0) {
+      FAIL(NEW_SRV_ERR_DATABASE_FAILED);
+    }
+
+    phr->client_key = out_c.client_key;
+    phr->session_id = out_c.cookie;
+    phr->rest_mode = 0;
+
+%><s:url name="MainUrl" script="control" ac="''" ></s:url><s:redirect url="MainUrl" /><%
+
+    goto cleanup;
+  }
+
+  phr->contest_id = oauth_res.contest_id;
+  if (phr->contest_id <= 0 || contests_get(phr->contest_id, &cnts) < 0 || !cnts) {
+    FAIL(NEW_SRV_ERR_INV_CONTEST_ID);
+  }
+  if (cnts->closed) {
+    fprintf(log_f, "contest %d is closed", cnts->id);
+    FAIL(NEW_SRV_ERR_PERMISSION_DENIED);
+  }
+  if (!cnts->managed) {
+    fprintf(log_f, "contest %d is not managed", cnts->id);
+    FAIL(NEW_SRV_ERR_PERMISSION_DENIED);
+  }
+  if (!cnts->enable_oauth) {
+    fprintf(log_f, "contest %d OAUTH disabled", cnts->id);
+    FAIL(NEW_SRV_ERR_PERMISSION_DENIED);
+  }
+
+  extra = ns_get_contest_extra(cnts, phr->config);
+  if (!extra) FAIL(NEW_SRV_ERR_INTERNAL);
+  if (ns_open_ul_connection(phr->fw_state) < 0) {
+    FAIL(NEW_SRV_ERR_USERLIST_SERVER_DOWN);
+  }
+
+  // get login
+  if (!oauth_res.email || !*oauth_res.email) {
+    FAIL(NEW_SRV_ERR_PERMISSION_DENIED);
+  }
+  const unsigned char *user_login = ejudge_cfg_oauth_user_map_find(phr->config, oauth_res.email, oauth_res.provider);
+  int disable_email_check = 1;
+  if (!user_login) {
+    disable_email_check = -1;
+    if(contests_apply_oauth_rules(cnts, oauth_res.email, &user_login_dup, &disable_email_check) > 0) {
+      user_login = user_login_dup;
+    } else {
+      FAIL(NEW_SRV_ERR_PERMISSION_DENIED);
+    }
+  }
+  if (!user_login) {
+    user_login = oauth_res.email;
+    disable_email_check = -1;
+  }
+
+  phr->session_id = 0;
+  phr->client_key = 0;
+  if (oauth_res.cookie && oauth_res.cookie[0]) {
+    unsigned long long s, k;
+    int n = 0;
+    if (sscanf(oauth_res.cookie, "%llx-%llx%n", &s, &k, &n) == 2 && !oauth_res.cookie[n]) {
+      phr->session_id = s;
+      phr->client_key = k;
+    }
+  }
+
+  // get user_id by login
+  if ((r = userlist_clnt_lookup_user(ul_conn, user_login, 0, &user_id, NULL)) < 0) {
+    if (r != -ULS_ERR_INVALID_LOGIN) {
+      FAIL(NEW_SRV_ERR_USERLIST_SERVER_DOWN);
+    }
+    if (!contests_check_register_ip_2(cnts, &phr->ip, phr->ssl_flag)) {
+      FAIL(NEW_SRV_ERR_PERMISSION_DENIED);
+    }
+
+    unsigned char rbuf[16];
+    unsigned char ebuf[32];
+    random_init();
+    random_bytes(rbuf, sizeof(rbuf));
+    int len = base64u_encode(rbuf, sizeof(rbuf), ebuf);
+    ebuf[len] = 0;
+
+    struct userlist_pk_create_user_2 up = {};
+    up.confirm_email_flag = 1;
+    up.use_sha1_flag = 1;
+
+    r = userlist_clnt_create_user_2(ul_conn, ULS_CREATE_USER_2, &up,
+                                    user_login, oauth_res.email,
+                                    ebuf, ebuf, oauth_res.name,
+                                    &user_id);
+    if (r < 0 || user_id <= 0) {
+      FAIL(NEW_SRV_ERR_DATABASE_FAILED);
+    }
+  }
+  // user_id is known
+  // get registration status
+  r = userlist_clnt_get_info(ul_conn, ULS_PRIV_GET_USER_INFO, user_id, phr->contest_id, &xml_text);
+  if (r < 0 || !xml_text) {
+    FAIL(NEW_SRV_ERR_DATABASE_FAILED);
+  }
+  if (!(u = userlist_parse_user_str(xml_text))) {
+    FAIL(NEW_SRV_ERR_DATABASE_FAILED);
+  }
+  if (disable_email_check <= 0) {
+    if (!u->email || !*u->email) {
+      FAIL(NEW_SRV_ERR_PERMISSION_DENIED);
+    }
+    if (strcasecmp(u->email, oauth_res.email) != 0) {
+      FAIL(NEW_SRV_ERR_PERMISSION_DENIED);
+    }
+    if (u->simple_registration > 0) {
+      FAIL(NEW_SRV_ERR_PERMISSION_DENIED);
+    }
+  }
+  const struct userlist_contest *uc = NULL;
+  if (u->contests) {
+    for (const struct xml_tree *p = u->contests->first_down; p; p = p->right) {
+      const struct userlist_contest *tmp = (const struct userlist_contest *) p;
+      if (tmp->id == phr->contest_id) {
+        uc = tmp;
+      }
+    }
+  }
+  if (!uc) {
+    if (!contests_check_register_ip_2(cnts, &phr->ip, phr->ssl_flag)) {
+      FAIL(NEW_SRV_ERR_PERMISSION_DENIED);
+    }
+    if (userlist_clnt_register_contest(ul_conn, ULS_PRIV_REGISTER_CONTEST,
+                                       user_id, phr->contest_id,
+                                       &phr->ip, phr->ssl_flag) < 0) {
+      FAIL(NEW_SRV_ERR_DATABASE_FAILED);
+    }
+    userlist_free(&u->b); u = NULL;
+    xfree(xml_text); xml_text = NULL;
+
+    r = userlist_clnt_get_info(ul_conn, ULS_PRIV_GET_USER_INFO, user_id, phr->contest_id, &xml_text);
+    if (r < 0 || !xml_text) {
+      FAIL(NEW_SRV_ERR_DATABASE_FAILED);
+    }
+    if (!(u = userlist_parse_user_str(xml_text))) {
+      FAIL(NEW_SRV_ERR_DATABASE_FAILED);
+    }
+    if (u->contests) {
+      for (const struct xml_tree *p = u->contests->first_down; p; p = p->right) {
+        const struct userlist_contest *tmp = (const struct userlist_contest *) p;
+        if (tmp->id == phr->contest_id) {
+          uc = tmp;
+        }
+      }
+    }
+    if (!uc) {
+      FAIL(NEW_SRV_ERR_DATABASE_FAILED);
+    }
+
+    // copy user name
+    if (oauth_res.name && *oauth_res.name) {
+      if (userlist_clnt_edit_field(ul_conn, ULS_EDIT_FIELD, user_id, phr->contest_id, 0,
+                                   USERLIST_NC_NAME, oauth_res.name) < 0) {
+        FAIL(NEW_SRV_ERR_DATABASE_FAILED);
+      }
+    }
+  }
+  if (uc->status == USERLIST_REG_OK && (uc->flags & USERLIST_UC_INCOMPLETE) == 0) {
+    // create team cookie and redirect to contest
+    if (!contests_check_team_ip_2(cnts, &phr->ip, phr->ssl_flag)) {
+      FAIL(NEW_SRV_ERR_PERMISSION_DENIED);
+    }
+
+    in_c.ip = phr->ip;
+    in_c.ssl = phr->ssl_flag;
+    in_c.user_id = user_id;
+    in_c.contest_id = phr->contest_id;
+    in_c.role = USER_ROLE_CONTESTANT;
+    in_c.team_login = 1;
+    in_c.client_key = phr->client_key;
+    if (userlist_clnt_create_cookie(ul_conn, ULS_CREATE_COOKIE, &in_c, &out_c) < 0) {
+      FAIL(NEW_SRV_ERR_DATABASE_FAILED);
+    }
+
+    phr->client_key = out_c.client_key;
+    phr->session_id = out_c.cookie;
+
+%><s:url name="MainUrl" ac="main-page" ></s:url><s:redirect url="MainUrl" /><%
+  } else if (uc->status == USERLIST_REG_PENDING || (uc->flags & USERLIST_UC_INCOMPLETE) != 0) {
+    // create contest cookie and redirect to register
+    if (!contests_check_register_ip_2(cnts, &phr->ip, phr->ssl_flag)) {
+      FAIL(NEW_SRV_ERR_PERMISSION_DENIED);
+    }
+
+    in_c.ip = phr->ip;
+    in_c.ssl = phr->ssl_flag;
+    in_c.user_id = user_id;
+    in_c.contest_id = phr->contest_id;
+    in_c.role = USER_ROLE_CONTESTANT;
+    in_c.client_key = phr->client_key;
+    if (userlist_clnt_create_cookie(ul_conn, ULS_CREATE_COOKIE, &in_c, &out_c) < 0) {
+      FAIL(NEW_SRV_ERR_DATABASE_FAILED);
+    }
+
+    phr->client_key = out_c.client_key;
+    phr->session_id = out_c.cookie;
+
+%><s:url name="RegisterUrl" ac="main-page" script="register" ><s:param name="contest_id" value="phr->contest_id" /></s:url><s:redirect url="RegisterUrl" /><%
+  } else {
+    FAIL(NEW_SRV_ERR_PERMISSION_DENIED);
+  }
+
+cleanup:;
+  xfree(user_login_dup);
+  userlist_free(&u->b);
+  xfree(xml_text);
+  oauth_free_result(&oauth_res);
+  html_armor_free(&ab);
+%>

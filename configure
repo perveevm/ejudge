@@ -644,6 +644,7 @@ ac_cv_need_32
 ac_cv_meta_cc
 ac_cv_has_lib_libuuid
 ac_cv_has_lib_libcurl
+ac_cv_has_lib_liblzma
 ac_cv_has_lib_libzip
 ac_cv_has_lib_intl
 ac_cv_has_lib_libiconv
@@ -723,6 +724,7 @@ infodir
 docdir
 oldincludedir
 includedir
+runstatedir
 localstatedir
 sharedstatedir
 sysconfdir
@@ -851,6 +853,7 @@ datadir='${datarootdir}'
 sysconfdir='${prefix}/etc'
 sharedstatedir='${prefix}/com'
 localstatedir='${prefix}/var'
+runstatedir='${localstatedir}/run'
 includedir='${prefix}/include'
 oldincludedir='/usr/include'
 docdir='${datarootdir}/doc/${PACKAGE_TARNAME}'
@@ -1103,6 +1106,15 @@ do
   | -silent | --silent | --silen | --sile | --sil)
     silent=yes ;;
 
+  -runstatedir | --runstatedir | --runstatedi | --runstated \
+  | --runstate | --runstat | --runsta | --runst | --runs \
+  | --run | --ru | --r)
+    ac_prev=runstatedir ;;
+  -runstatedir=* | --runstatedir=* | --runstatedi=* | --runstated=* \
+  | --runstate=* | --runstat=* | --runsta=* | --runst=* | --runs=* \
+  | --run=* | --ru=* | --r=*)
+    runstatedir=$ac_optarg ;;
+
   -sbindir | --sbindir | --sbindi | --sbind | --sbin | --sbi | --sb)
     ac_prev=sbindir ;;
   -sbindir=* | --sbindir=* | --sbindi=* | --sbind=* | --sbin=* \
@@ -1240,7 +1252,7 @@ fi
 for ac_var in	exec_prefix prefix bindir sbindir libexecdir datarootdir \
 		datadir sysconfdir sharedstatedir localstatedir includedir \
 		oldincludedir docdir infodir htmldir dvidir pdfdir psdir \
-		libdir localedir mandir
+		libdir localedir mandir runstatedir
 do
   eval ac_val=\$$ac_var
   # Remove trailing slashes.
@@ -1393,6 +1405,7 @@ Fine tuning of the installation directories:
   --sysconfdir=DIR        read-only single-machine data [PREFIX/etc]
   --sharedstatedir=DIR    modifiable architecture-independent data [PREFIX/com]
   --localstatedir=DIR     modifiable single-machine data [PREFIX/var]
+  --runstatedir=DIR       modifiable per-process data [LOCALSTATEDIR/run]
   --libdir=DIR            object code libraries [EPREFIX/lib]
   --includedir=DIR        C header files [PREFIX/include]
   --oldincludedir=DIR     C header files for non-gcc [/usr/include]
@@ -6607,6 +6620,57 @@ else
 fi
 
 
+ac_fn_c_check_header_mongrel "$LINENO" "lzma.h" "ac_cv_header_lzma_h" "$ac_includes_default"
+if test "x$ac_cv_header_lzma_h" = xyes; then :
+  ac_cv_has_liblzma=1
+else
+  ac_cv_has_liblzma=0
+fi
+
+
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for lzma_version_string in -llzma" >&5
+$as_echo_n "checking for lzma_version_string in -llzma... " >&6; }
+if ${ac_cv_lib_lzma_lzma_version_string+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  ac_check_lib_save_LIBS=$LIBS
+LIBS="-llzma  $LIBS"
+cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+/* Override any GCC internal prototype to avoid an error.
+   Use char because int might match the return type of a GCC
+   builtin and then its argument prototype would still apply.  */
+#ifdef __cplusplus
+extern "C"
+#endif
+char lzma_version_string ();
+int
+main ()
+{
+return lzma_version_string ();
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_link "$LINENO"; then :
+  ac_cv_lib_lzma_lzma_version_string=yes
+else
+  ac_cv_lib_lzma_lzma_version_string=no
+fi
+rm -f core conftest.err conftest.$ac_objext \
+    conftest$ac_exeext conftest.$ac_ext
+LIBS=$ac_check_lib_save_LIBS
+fi
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_cv_lib_lzma_lzma_version_string" >&5
+$as_echo "$ac_cv_lib_lzma_lzma_version_string" >&6; }
+if test "x$ac_cv_lib_lzma_lzma_version_string" = xyes; then :
+  ac_cv_has_lib_liblzma=-llzma
+else
+  ac_cv_has_lib_liblzma=
+fi
+
+
 ac_fn_c_check_header_mongrel "$LINENO" "curl/curl.h" "ac_cv_header_curl_curl_h" "$ac_includes_default"
 if test "x$ac_cv_header_curl_curl_h" = xyes; then :
   ac_cv_has_libcurl=1
@@ -7970,6 +8034,7 @@ fi
 
 
 
+
 if [ x"${ac_cv_has_regex}" = x1 ]
 then
   $as_echo "#define CONF_HAS_REGEX 1" >>confdefs.h
@@ -7991,6 +8056,12 @@ fi
 if [ x"${ac_cv_has_libzip}" = x1 -a x"${ac_cv_has_lib_libzip}" != x ]
 then
   $as_echo "#define CONF_HAS_LIBZIP 1" >>confdefs.h
+
+fi
+
+if [ x"${ac_cv_has_liblzma}" = x1 -a x"${ac_cv_has_lib_liblzma}" != x ]
+then
+  $as_echo "#define CONF_HAS_LIBLZMA 1" >>confdefs.h
 
 fi
 
@@ -8330,7 +8401,7 @@ ac_config_headers="$ac_config_headers config.h"
 subdirs="$subdirs libdwarf"
 
 
-ac_config_files="$ac_config_files Makefile extra/Makefile extra/captest/Makefile checkers/Makefile scripts/Makefile ejudge-config.v scripts/festival plugins/common-mysql/Makefile plugins/userlist-mysql/Makefile plugins/clardb-mysql/Makefile plugins/rundb-mysql/Makefile plugins/common-mongo/Makefile plugins/xuser-mongo/Makefile style/ejudge-upgrade-web cfront/Makefile reuse/Makefile csp/contests/Makefile csp/super-server/Makefile csp_header.make plugins/telegram/Makefile plugins/avatar-mongo/Makefile plugins/status-mongo/Makefile"
+ac_config_files="$ac_config_files Makefile extra/Makefile extra/captest/Makefile checkers/Makefile scripts/Makefile ejudge-config.v scripts/festival plugins/common-mysql/Makefile plugins/userlist-mysql/Makefile plugins/clardb-mysql/Makefile plugins/rundb-mysql/Makefile plugins/common-mongo/Makefile plugins/xuser-mongo/Makefile style/ejudge-upgrade-web cfront/Makefile reuse/Makefile csp/contests/Makefile csp/super-server/Makefile csp_header.make plugins/telegram/Makefile plugins/avatar-mongo/Makefile plugins/status-mongo/Makefile plugins/status-mysql/Makefile plugins/auth-google/Makefile plugins/auth-base/Makefile plugins/auth-vk/Makefile plugins/auth-fb/Makefile plugins/xuser-mysql/Makefile plugins/avatar-mysql/Makefile"
 
 cat >confcache <<\_ACEOF
 # This file is a shell script that caches the results of configure
@@ -9048,6 +9119,13 @@ do
     "plugins/telegram/Makefile") CONFIG_FILES="$CONFIG_FILES plugins/telegram/Makefile" ;;
     "plugins/avatar-mongo/Makefile") CONFIG_FILES="$CONFIG_FILES plugins/avatar-mongo/Makefile" ;;
     "plugins/status-mongo/Makefile") CONFIG_FILES="$CONFIG_FILES plugins/status-mongo/Makefile" ;;
+    "plugins/status-mysql/Makefile") CONFIG_FILES="$CONFIG_FILES plugins/status-mysql/Makefile" ;;
+    "plugins/auth-google/Makefile") CONFIG_FILES="$CONFIG_FILES plugins/auth-google/Makefile" ;;
+    "plugins/auth-base/Makefile") CONFIG_FILES="$CONFIG_FILES plugins/auth-base/Makefile" ;;
+    "plugins/auth-vk/Makefile") CONFIG_FILES="$CONFIG_FILES plugins/auth-vk/Makefile" ;;
+    "plugins/auth-fb/Makefile") CONFIG_FILES="$CONFIG_FILES plugins/auth-fb/Makefile" ;;
+    "plugins/xuser-mysql/Makefile") CONFIG_FILES="$CONFIG_FILES plugins/xuser-mysql/Makefile" ;;
+    "plugins/avatar-mysql/Makefile") CONFIG_FILES="$CONFIG_FILES plugins/avatar-mysql/Makefile" ;;
 
   *) as_fn_error $? "invalid argument: \`$ac_config_target'" "$LINENO" 5;;
   esac

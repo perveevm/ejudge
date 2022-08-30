@@ -1,6 +1,6 @@
-/* -*- mode: c -*- */
+/* -*- mode: c; c-basic-offset: 4 -*- */
 
-/* Copyright (C) 2016-2019 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2016-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -15,7 +15,6 @@
  */
 
 #include "ejudge/telegram.h"
-#include "ejudge/ej_jobs.h"
 #include "ejudge/xml_utils.h"
 #include "ejudge/random.h"
 
@@ -31,16 +30,20 @@
 #include "telegram_chat.h"
 #include "telegram_chat_state.h"
 #include "telegram_subscription.h"
-#include "mongo_conn.h"
+#include "generic_conn.h"
 
 #include "ejudge/cJSON.h"
+
+#define CONNECT_TIMEOUT 30L
 
 #if CONF_HAS_LIBCURL - 0 == 1
 #include <curl/curl.h>
 #endif
 
+#include <pthread.h>
 #include <string.h>
 #include <ctype.h>
+#include <signal.h>
 
 static struct common_plugin_data *
 init_func(void);
@@ -53,22 +56,35 @@ prepare_func(
         struct xml_tree *tree);
 
 static void
-packet_handler_telegram(int uid, int argc, char **argv, void *user);
+set_set_command_handler_func(
+        void *data,
+        tg_set_command_handler_t setter,
+        void *setter_self);
 static void
-packet_handler_telegram_token(int uid, int argc, char **argv, void *user);
-static void
-packet_handler_telegram_reviewed(int uid, int argc, char **argv, void *user);
-static void
-packet_handler_telegram_replied(int uid, int argc, char **argv, void *user);
-static void
-packet_handler_telegram_cf(int uid, int argc, char **argv, void *user);
-static void
-packet_handler_telegram_notify(int uid, int argc, char **argv, void *user);
-static void
-packet_handler_telegram_reminder(int uid, int argc, char **argv, void *user);
+set_set_timer_handler_func(
+        void *data,
+        tg_set_timer_handler_t setter,
+        void *setter_self);
+static int
+start_func(void *data);
 
 static void
-periodic_handler(void *user);
+queue_packet_handler_telegram(int uid, int argc, char **argv, void *user);
+static void
+queue_packet_handler_telegram_token(int uid, int argc, char **argv, void *user);
+static void
+queue_packet_handler_telegram_reviewed(int uid, int argc, char **argv, void *user);
+static void
+queue_packet_handler_telegram_replied(int uid, int argc, char **argv, void *user);
+static void
+queue_packet_handler_telegram_cf(int uid, int argc, char **argv, void *user);
+static void
+queue_packet_handler_telegram_notify(int uid, int argc, char **argv, void *user);
+static void
+queue_packet_handler_telegram_reminder(int uid, int argc, char **argv, void *user);
+
+static void
+queue_periodic_handler(void *user);
 
 struct telegram_plugin_iface plugin_sn_telegram =
 {
@@ -85,6 +101,9 @@ struct telegram_plugin_iface plugin_sn_telegram =
         prepare_func,
     },
     TELEGRAM_PLUGIN_IFACE_VERSION,
+    set_set_command_handler_func,
+    set_set_timer_handler_func,
+    start_func,
 };
 
 struct persistent_bot_state
@@ -99,6 +118,16 @@ struct bot_state
     struct telegram_pbs *pbs;
 };
 
+struct queue_item
+{
+    void (*handler)(int uid, int argc, char **argv, void *user);
+    int uid;
+    int argc;
+    char **argv;
+};
+
+enum { QUEUE_SIZE = 64 };
+
 struct telegram_plugin_data
 {
     struct
@@ -107,10 +136,55 @@ struct telegram_plugin_data
         int a, u;
     } bots;
 
-    struct mongo_conn *conn;
+    struct generic_conn *conn;
+
     int curl_verbose_flag;
     unsigned char *password_file;
+
+    tg_set_command_handler_t set_command_handler;
+    void *set_command_handler_self;
+
+    tg_set_timer_handler_t set_timer_handler;
+    void *set_timer_handler_self;
+
+    pthread_t worker_thread;
+    _Atomic _Bool worker_thread_finish_request;
+
+    pthread_mutex_t q_m;
+    pthread_cond_t  q_c;
+    int q_first;
+    int q_len;
+    struct queue_item queue[QUEUE_SIZE];
 };
+
+static void
+put_to_queue(
+        struct telegram_plugin_data *state,
+        void (*handler)(int uid, int argc, char **argv, void *user),
+        int uid,
+        int argc,
+        char **argv)
+{
+    pthread_mutex_lock(&state->q_m);
+    if (state->q_len == QUEUE_SIZE) {
+        err("telegram_plugin: request queue overflow, request dropped");
+        goto done;
+    }
+    struct queue_item *item = &state->queue[(state->q_first + state->q_len++) % QUEUE_SIZE];
+    memset(item, 0, sizeof(*item));
+    item->handler = handler;
+    item->uid = uid;
+    item->argc = argc;
+    item->argv = calloc(argc + 1, sizeof(item->argv[0]));
+    for (int i = 0; i < argc; ++i) {
+        item->argv[i] = strdup(argv[i]);
+    }
+    if (state->q_len == 1)
+        pthread_cond_signal(&state->q_c);
+
+done:
+    pthread_mutex_unlock(&state->q_m);
+}
 
 static int
 parse_passwd_file(
@@ -190,7 +264,8 @@ init_func(void)
 {
     struct telegram_plugin_data *state = NULL;
     XCALLOC(state, 1);
-    state->conn = mongo_conn_create();
+    pthread_mutex_init(&state->q_m, NULL);
+    pthread_cond_init(&state->q_c, NULL);
     return (struct common_plugin_data*) state;
 }
 
@@ -199,7 +274,7 @@ finish_func(struct common_plugin_data *data)
 {
     struct telegram_plugin_data *state = (struct telegram_plugin_data*) data;
 
-    mongo_conn_free(state->conn);
+    state->conn->vt->free(state->conn);
     xfree(state->password_file);
     memset(state, 0, sizeof(*state));
     xfree(state);
@@ -220,6 +295,12 @@ prepare_func(
         return -1;
     }
 
+    unsigned char *storage = NULL;
+    unsigned char *host = NULL;
+    int port = 0;
+    unsigned char *database = NULL;
+    unsigned char *table_prefix = NULL;
+
     for (struct xml_tree *p = tree->first_down; p; p = p->right) {
         ASSERT(p->tag == spec->default_elem);
         if (!strcmp(p->name[0], "bots")) {
@@ -230,23 +311,45 @@ prepare_func(
                     add_bot_id(state, bot_id);
                 }
             }
+        } else if (!strcmp(p->name[0], "storage")) {
+            if (xml_leaf_elem(p, &storage, 1, 0) < 0) return -1;
         } else if (!strcmp(p->name[0], "host")) {
-            if (xml_leaf_elem(p, &state->conn->host, 1, 0) < 0) return -1;
+            if (xml_leaf_elem(p, &host, 1, 0) < 0) return -1;
         } else if (!strcmp(p->name[0], "port")) {
-            if (xml_parse_int(NULL, "", p->line, p->column, p->text, &state->conn->port) < 0) return -1;
-            if (state->conn->port < 0 || state->conn->port > 65535) {
+            if (xml_parse_int(NULL, "", p->line, p->column, p->text, &port) < 0) return -1;
+            if (port < 0 || port > 65535) {
                 xml_err_elem_invalid(p);
                 return -1;
             }
         } else if (!strcmp(p->name[0], "database")) {
-            if (xml_leaf_elem(p, &state->conn->database, 1, 0) < 0) return -1;
+            if (xml_leaf_elem(p, &database, 1, 0) < 0) return -1;
         } else if (!strcmp(p->name[0], "table_prefix")) {
-            if (xml_leaf_elem(p, &state->conn->table_prefix, 1, 0) < 0) return -1;
+            if (xml_leaf_elem(p, &table_prefix, 1, 0) < 0) return -1;
         } else if (!strcmp(p->name[0], "password_file")) {
             if (xml_leaf_elem(p, &state->password_file, 1, 0) < 0) return -1;
         } else if (!strcmp(p->name[0], "curl_verbose")) {
             state->curl_verbose_flag = 1;
         }
+    }
+
+    struct generic_conn *conn = NULL;
+    if (!storage || !*storage) storage = "mysql";
+    if (!strcmp(storage, "mysql")) {
+        conn = mysql_conn_create();
+    } else if (!strcmp(storage, "mongo")) {
+        conn = mongo_conn_create();
+    } else {
+        err("telegram: invalid storage '%s'", storage);
+        return -1;
+    }
+    state->conn = conn;
+    conn->host = host; host = NULL;
+    conn->port = port;
+    conn->database = database; database = NULL;
+    conn->table_prefix = table_prefix; table_prefix = NULL;
+    conn->ejudge_config = config;
+    if (conn->vt->prepare && conn->vt->prepare(conn, config, NULL) < 0) {
+        return -1;
     }
 
     if (state->password_file) {
@@ -267,23 +370,109 @@ prepare_func(
         if (parse_passwd_file(state, ppath) < 0) return -1;
     }
 
-    ej_jobs_add_handler("telegram", packet_handler_telegram, state);
-    ej_jobs_add_handler("telegram_token", packet_handler_telegram_token, state);
-    ej_jobs_add_handler("telegram_reviewed", packet_handler_telegram_reviewed, state);
-    ej_jobs_add_handler("telegram_replied", packet_handler_telegram_replied, state);
-    ej_jobs_add_handler("telegram_cf", packet_handler_telegram_cf, state);
-    ej_jobs_add_handler("telegram_notify", packet_handler_telegram_notify, state);
-    ej_jobs_add_handler("telegram_reminder", packet_handler_telegram_reminder, state);
-    ej_jobs_add_periodic_handler(periodic_handler, state);
+    return 0;
+}
+
+static void
+set_set_command_handler_func(
+        void *data,
+        tg_set_command_handler_t setter,
+        void *setter_self)
+{
+    struct telegram_plugin_data *state = (struct telegram_plugin_data*) data;
+    state->set_command_handler = setter;
+    state->set_command_handler_self = setter_self;
+}
+
+static void
+set_set_timer_handler_func(
+        void *data,
+        tg_set_timer_handler_t setter,
+        void *setter_self)
+{
+    struct telegram_plugin_data *state = (struct telegram_plugin_data*) data;
+    state->set_timer_handler = setter;
+    state->set_timer_handler_self = setter_self;
+}
+
+static void *
+thread_func(void *data)
+{
+    sigset_t ss;
+    sigfillset(&ss);
+    pthread_sigmask(SIG_BLOCK, &ss, NULL);
+
+    struct telegram_plugin_data *state = (struct telegram_plugin_data*) data;
+    while (!state->worker_thread_finish_request) {
+        pthread_mutex_lock(&state->q_m);
+        while (state->q_len == 0 && !state->worker_thread_finish_request) {
+            pthread_cond_wait(&state->q_c, &state->q_m);
+        }
+        if (state->worker_thread_finish_request) {
+            pthread_mutex_unlock(&state->q_m);
+            break;
+        }
+        // this is local copy of the queue item
+        struct queue_item item = state->queue[state->q_first];
+        memset(&state->queue[state->q_first], 0, sizeof(item));
+        state->q_first = (state->q_first + 1) % QUEUE_SIZE;
+        --state->q_len;
+        pthread_mutex_unlock(&state->q_m);
+
+        item.handler(item.uid, item.argc, item.argv, state);
+
+        for (int i = 0; i < item.argc; ++i) {
+            free(item.argv[i]);
+        }
+        free(item.argv);
+    }
+    return NULL;
+}
+
+static int
+start_func(void *data)
+{
+    struct telegram_plugin_data *state = (struct telegram_plugin_data*) data;
+
+    state->set_command_handler(state->set_command_handler_self,
+                               "telegram",
+                               queue_packet_handler_telegram, state);
+    state->set_command_handler(state->set_command_handler_self,
+                               "telegram_token",
+                               queue_packet_handler_telegram_token, state);
+    state->set_command_handler(state->set_command_handler_self,
+                               "telegram_reviewed",
+                               queue_packet_handler_telegram_reviewed, state);
+    state->set_command_handler(state->set_command_handler_self,
+                               "telegram_replied",
+                               queue_packet_handler_telegram_replied, state);
+    state->set_command_handler(state->set_command_handler_self,
+                               "telegram_cf",
+                               queue_packet_handler_telegram_cf, state);
+    state->set_command_handler(state->set_command_handler_self,
+                               "telegram_notify",
+                               queue_packet_handler_telegram_notify, state);
+    state->set_command_handler(state->set_command_handler_self,
+                               "telegram_reminder",
+                               queue_packet_handler_telegram_reminder, state);
+    state->set_timer_handler(state->set_timer_handler_self,
+                             queue_periodic_handler, state);
+
+    int r = pthread_create(&state->worker_thread, NULL, thread_func, state);
+    if (r) {
+        err("telegram: cannot create worker thread: %s", os_ErrorMsg());
+        return -1;
+    }
+
     return 0;
 }
 
 struct telegram_pbs *
-get_persistent_bot_state(struct mongo_conn *conn, struct bot_state *bs)
+get_persistent_bot_state(struct generic_conn *gc, struct bot_state *bs)
 {
     if (bs->pbs) return bs->pbs;
 
-    bs->pbs = telegram_pbs_fetch(conn, bs->bot_id);
+    bs->pbs = gc->vt->pbs_fetch(gc, bs->bot_id);
     return bs->pbs;
 }
 
@@ -306,6 +495,7 @@ send_message(
         err("cannot initialize curl");
         goto cleanup;
     }
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 
     {
         size_t url_z = 0;
@@ -342,6 +532,7 @@ send_message(
     {
         size_t resp_z = 0;
         FILE *resp_f = open_memstream(&resp_s, &resp_z);
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, CONNECT_TIMEOUT);
         curl_easy_setopt(curl, CURLOPT_AUTOREFERER, 1);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1);
         curl_easy_setopt(curl, CURLOPT_URL, url_s);
@@ -433,6 +624,7 @@ packet_handler_telegram(int uid, int argc, char **argv, void *user)
 
     resp_f = open_memstream(&resp_s, &resp_z);
 
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, CONNECT_TIMEOUT);
     curl_easy_setopt(curl, CURLOPT_AUTOREFERER, 1);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1);
     curl_easy_setopt(curl, CURLOPT_URL, url_s);
@@ -468,6 +660,13 @@ packet_handler_telegram(int uid, int argc, char **argv, void *user)
     if (curl) {
         curl_easy_cleanup(curl);
     }
+}
+
+static void
+queue_packet_handler_telegram(int uid, int argc, char **argv, void *user)
+{
+    struct telegram_plugin_data *state = (struct telegram_plugin_data*) user;
+    put_to_queue(state, packet_handler_telegram, uid, argc, argv);
 }
 
 /*
@@ -517,21 +716,28 @@ packet_handler_telegram_token(int uid, int argc, char **argv, void *user)
     }
 
     time_t current_time = time(NULL);
-    telegram_token_remove_expired(state->conn, current_time);
+    state->conn->vt->token_remove_expired(state->conn, current_time);
 
-    int res = telegram_token_fetch(state->conn, token->token, &other_token);
+    int res = state->conn->vt->token_fetch(state->conn, token->token, &other_token);
     if (res < 0) {
         err("telegram_token: get_token failed");
     } else if (res > 0) {
         err("duplicated token, removing all");
-        telegram_token_remove(state->conn, token->token);
+        state->conn->vt->token_remove(state->conn, token->token);
     } else {
-        telegram_token_save(state->conn, token);
+        state->conn->vt->token_save(state->conn, token);
     }
 
 cleanup:
     telegram_token_free(token);
     telegram_token_free(other_token);
+}
+
+static void
+queue_packet_handler_telegram_token(int uid, int argc, char **argv, void *user)
+{
+    struct telegram_plugin_data *state = (struct telegram_plugin_data*) user;
+    put_to_queue(state, packet_handler_telegram_token, uid, argc, argv);
 }
 
 /*
@@ -574,7 +780,7 @@ packet_handler_telegram_reviewed(int uid, int argc, char **argv, void *user)
         goto cleanup;
     }
 
-    sub = telegram_subscription_fetch(state->conn, argv[1], contest_id, user_id);
+    sub = state->conn->vt->subscription_fetch(state->conn, argv[1], contest_id, user_id);
     if (!sub) goto cleanup;
     if (!sub->review_flag) goto cleanup;
     if (!sub->chat_id) {
@@ -582,7 +788,7 @@ packet_handler_telegram_reviewed(int uid, int argc, char **argv, void *user)
         goto cleanup;
     }
 
-    tc = telegram_chat_fetch(state->conn, sub->chat_id);
+    tc = state->conn->vt->chat_fetch(state->conn, sub->chat_id);
     if (!tc) {
         err("chat_id %lld is not registered", sub->chat_id);
     }
@@ -605,6 +811,13 @@ cleanup:
     telegram_subscription_free(sub);
     telegram_chat_free(tc);
     if (send_result) send_result->b.destroy(&send_result->b);
+}
+
+static void
+queue_packet_handler_telegram_reviewed(int uid, int argc, char **argv, void *user)
+{
+    struct telegram_plugin_data *state = (struct telegram_plugin_data*) user;
+    put_to_queue(state, packet_handler_telegram_reviewed, uid, argc, argv);
 }
 
 /*
@@ -647,7 +860,7 @@ packet_handler_telegram_replied(int uid, int argc, char **argv, void *user)
         goto cleanup;
     }
 
-    sub = telegram_subscription_fetch(state->conn, argv[1], contest_id, user_id);
+    sub = state->conn->vt->subscription_fetch(state->conn, argv[1], contest_id, user_id);
     if (!sub) goto cleanup;
     if (!sub->reply_flag) goto cleanup;
     if (!sub->chat_id) {
@@ -655,7 +868,7 @@ packet_handler_telegram_replied(int uid, int argc, char **argv, void *user)
         goto cleanup;
     }
 
-    tc = telegram_chat_fetch(state->conn, sub->chat_id);
+    tc = state->conn->vt->chat_fetch(state->conn, sub->chat_id);
     if (!tc) {
         err("chat_id %lld is not registered", sub->chat_id);
     }
@@ -678,6 +891,13 @@ cleanup:
     telegram_subscription_free(sub);
     telegram_chat_free(tc);
     if (send_result) send_result->b.destroy(&send_result->b);
+}
+
+static void
+queue_packet_handler_telegram_replied(int uid, int argc, char **argv, void *user)
+{
+    struct telegram_plugin_data *state = (struct telegram_plugin_data*) user;
+    put_to_queue(state, packet_handler_telegram_replied, uid, argc, argv);
 }
 
 /*
@@ -725,11 +945,11 @@ packet_handler_telegram_cf(int uid, int argc, char **argv, void *user)
         goto cleanup;
     }
 
-    tc = telegram_chat_fetch(state->conn, chat_id);
+    tc = state->conn->vt->chat_fetch(state->conn, chat_id);
     if (!tc) {
         tc = telegram_chat_create();
         tc->_id = chat_id;
-        telegram_chat_save(state->conn, tc);
+        state->conn->vt->chat_save(state->conn, tc);
     }
 
     {
@@ -750,6 +970,13 @@ cleanup:
     telegram_subscription_free(sub);
     telegram_chat_free(tc);
     if (send_result) send_result->b.destroy(&send_result->b);
+}
+
+static void
+queue_packet_handler_telegram_cf(int uid, int argc, char **argv, void *user)
+{
+    struct telegram_plugin_data *state = (struct telegram_plugin_data*) user;
+    put_to_queue(state, packet_handler_telegram_cf, uid, argc, argv);
 }
 
 /*
@@ -798,11 +1025,11 @@ packet_handler_telegram_notify(int uid, int argc, char **argv, void *user)
         goto cleanup;
     }
 
-    tc = telegram_chat_fetch(state->conn, chat_id);
+    tc = state->conn->vt->chat_fetch(state->conn, chat_id);
     if (!tc) {
         tc = telegram_chat_create();
         tc->_id = chat_id;
-        telegram_chat_save(state->conn, tc);
+        state->conn->vt->chat_save(state->conn, tc);
     }
 
     {
@@ -824,6 +1051,13 @@ cleanup:
     telegram_subscription_free(sub);
     telegram_chat_free(tc);
     if (send_result) send_result->b.destroy(&send_result->b);
+}
+
+static void
+queue_packet_handler_telegram_notify(int uid, int argc, char **argv, void *user)
+{
+    struct telegram_plugin_data *state = (struct telegram_plugin_data*) user;
+    put_to_queue(state, packet_handler_telegram_notify, uid, argc, argv);
 }
 
 /*
@@ -877,11 +1111,11 @@ packet_handler_telegram_reminder(int uid, int argc, char **argv, void *user)
     if (pr_total < 20 && pr_too_old == 0 && unans_clars == 0) goto cleanup;
 
 
-    tc = telegram_chat_fetch(state->conn, chat_id);
+    tc = state->conn->vt->chat_fetch(state->conn, chat_id);
     if (!tc) {
         tc = telegram_chat_create();
         tc->_id = chat_id;
-        telegram_chat_save(state->conn, tc);
+        state->conn->vt->chat_save(state->conn, tc);
     }
 
     {
@@ -907,6 +1141,13 @@ cleanup:
     xfree(msg_s);
     telegram_chat_free(tc);
     if (send_result) send_result->b.destroy(&send_result->b);
+}
+
+static void
+queue_packet_handler_telegram_reminder(int uid, int argc, char **argv, void *user)
+{
+    struct telegram_plugin_data *state = (struct telegram_plugin_data*) user;
+    put_to_queue(state, packet_handler_telegram_reminder, uid, argc, argv);
 }
 
 static unsigned char *
@@ -1011,7 +1252,7 @@ handle_incoming_message(
 
     if (tem->from) {
         TeUser *teu = tem->from;
-        mu = telegram_user_fetch(state->conn, teu->id);
+        mu = state->conn->vt->user_fetch(state->conn, teu->id);
         if (need_update_user(mu, teu)) {
             info("updating user info for %lld", teu->id);
             telegram_user_free(mu);
@@ -1020,12 +1261,12 @@ handle_incoming_message(
             mu->username = safe_strdup(teu->username);
             mu->first_name = safe_strdup(teu->first_name);
             mu->last_name = safe_strdup(teu->last_name);
-            telegram_user_save(state->conn, mu);
+            state->conn->vt->user_save(state->conn, mu);
         }
     }
     if (tem->chat) {
         TeChat *tc = tem->chat;
-        mc = telegram_chat_fetch(state->conn, tc->id);
+        mc = state->conn->vt->chat_fetch(state->conn, tc->id);
         if (need_update_chat(mc, tc)) {
             info("updating chat info for %lld", tc->id);
             telegram_chat_free(mc);
@@ -1036,7 +1277,7 @@ handle_incoming_message(
             mc->username = safe_strdup(tc->username);
             mc->first_name = safe_strdup(tc->first_name);
             mc->last_name = safe_strdup(tc->last_name);
-            telegram_chat_save(state->conn, mc);
+            state->conn->vt->chat_save(state->conn, mc);
         }
     }
 
@@ -1086,7 +1327,7 @@ handle_incoming_message(
     if (!tem->text) goto cleanup;
 
     // chat state machine is here
-    tcs = telegram_chat_state_fetch(state->conn, mc->_id);
+    tcs = state->conn->vt->chat_state_fetch(state->conn, mc->_id);
     if (!tcs) {
         tcs = telegram_chat_state_create();
         tcs->_id = mc->_id;
@@ -1144,9 +1385,9 @@ handle_incoming_message(
             } else {
                 unsigned char buf[64];
                 snprintf(buf, sizeof(buf), "%d", token_val);
-                telegram_token_remove_expired(state->conn, 0);
+                state->conn->vt->token_remove_expired(state->conn, 0);
 
-                int r = telegram_token_fetch(state->conn, buf, &token);
+                int r = state->conn->vt->token_fetch(state->conn, buf, &token);
                 if (r < 0) {
                     send_result = send_message(state, bs, mc, "Internal error. Operation canceled.", NULL, NULL);
                     telegram_chat_state_reset(tcs);
@@ -1197,13 +1438,13 @@ handle_incoming_message(
             telegram_chat_state_reset(tcs);
             update_state = 1;
         } else if (!strcmp(tem->text, "/done")) {
-            int r = telegram_token_fetch(state->conn, tcs->token, &token);
+            int r = state->conn->vt->token_fetch(state->conn, tcs->token, &token);
             if (r < 0) {
                 send_result = send_message(state, bs, mc, "Internal error. Operation canceled.", NULL, NULL);
             } else if (!r) {
                 send_result = send_message(state, bs, mc, "Token expired. Operation failed.", NULL, NULL);
             } else {
-                sub = telegram_subscription_fetch(state->conn, bs->bot_id, token->contest_id, token->user_id);
+                sub = state->conn->vt->subscription_fetch(state->conn, bs->bot_id, token->contest_id, token->user_id);
                 if (!sub && !strcmp(tcs->command, "/unsubscribe")) {
                     send_result = send_message(state, bs, mc, "You have no subscriptions. Nothing to unsubscribe.", NULL, "{ \"hide_keyboard\": true}");
                 } else {
@@ -1231,9 +1472,9 @@ handle_incoming_message(
                         send_result = send_message(state, bs, mc, msg_s, NULL, "{ \"hide_keyboard\": true}");
                         free(msg_s);
                     }
-                    telegram_subscription_save(state->conn, sub);
+                    state->conn->vt->subscription_save(state->conn, sub);
                 }
-                telegram_token_remove(state->conn, tcs->token);
+                state->conn->vt->token_remove(state->conn, tcs->token);
             }
             telegram_chat_state_reset(tcs);
             update_state = 1;
@@ -1249,7 +1490,7 @@ handle_incoming_message(
     }
 
     if (update_state) {
-        telegram_chat_state_save(state->conn, tcs);
+        state->conn->vt->chat_state_save(state->conn, tcs);
     }
 
 cleanup:
@@ -1295,7 +1536,7 @@ handle_reply(struct telegram_plugin_data *state,
                 */
             }
             if (need_update) {
-                telegram_pbs_save(state->conn, pbs);
+                state->conn->vt->pbs_save(state->conn, pbs);
             }
         }
     }
@@ -1339,6 +1580,7 @@ get_updates(struct telegram_plugin_data *state, struct bot_state *bs)
 
     {
         FILE *resp_f = open_memstream(&resp_s, &resp_z);
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, CONNECT_TIMEOUT);
         curl_easy_setopt(curl, CURLOPT_AUTOREFERER, 1);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1);
         curl_easy_setopt(curl, CURLOPT_URL, url_s);
@@ -1369,7 +1611,7 @@ cleanup:
 }
 
 static void
-periodic_handler(void *user)
+periodic_handler(int uid, int argc, char **argv, void *user)
 {
     struct telegram_plugin_data *state = (struct telegram_plugin_data*) user;
 
@@ -1378,8 +1620,9 @@ periodic_handler(void *user)
     }
 }
 
-/*
- * Local variables:
- *  c-basic-offset: 4
- * End:
- */
+static void
+queue_periodic_handler(void *user)
+{
+    struct telegram_plugin_data *state = (struct telegram_plugin_data*) user;
+    put_to_queue(state, periodic_handler, 0, 0, 0);
+}

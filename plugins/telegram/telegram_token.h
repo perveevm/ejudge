@@ -1,8 +1,8 @@
-/* -*- c -*- */
+/* -*- mode: c; c-basic-offset: 4 -*- */
 #ifndef __TELEGRAM_TOKEN_H__
 #define __TELEGRAM_TOKEN_H__
 
-/* Copyright (C) 2016-2019 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2016-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -17,14 +17,6 @@
  */
 
 #include "ejudge/config.h"
-
-#if HAVE_LIBMONGOC - 0 > 0
-struct _bson_t;
-typedef struct _bson_t ej_bson_t;
-#elif HAVE_LIBMONGO_CLIENT - 0 == 1
-struct _bson;
-typedef struct _bson ej_bson_t;
-#endif
 
 #include <time.h>
 
@@ -47,27 +39,6 @@ struct telegram_token
 struct telegram_token *
 telegram_token_free(struct telegram_token *token);
 struct telegram_token *
-telegram_token_parse_bson(const ej_bson_t *bson);
-struct telegram_token *
 telegram_token_create(void);
-ej_bson_t *
-telegram_token_unparse_bson(const struct telegram_token *token);
-
-struct mongo_conn;
-
-void
-telegram_token_remove_expired(struct mongo_conn *conn, time_t current_time);
-void
-telegram_token_remove(struct mongo_conn *conn, const unsigned char *token);
-int
-telegram_token_fetch(struct mongo_conn *conn, const unsigned char *token_str, struct telegram_token **p_token);
-int
-telegram_token_save(struct mongo_conn *conn, const struct telegram_token *token);
 
 #endif
-
-/*
- * Local variables:
- *  c-basic-offset: 4
- * End:
- */

@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2008-2017 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2008-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -20,6 +20,8 @@
 #include "ejudge/xml_utils.h"
 #include "ejudge/pathutl.h"
 #include "ejudge/errlog.h"
+#include "ejudge/base64.h"
+#include "ejudge/ej_uuid.h"
 
 #include "ejudge/xalloc.h"
 #include "ejudge/logger.h"
@@ -32,6 +34,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <sys/time.h>
 
 static struct common_plugin_data *
 init_func(void);
@@ -133,6 +136,41 @@ escape_string_func(
         struct common_mysql_state *state,
         FILE *f,
         const unsigned char *str);
+static void
+write_datetime_func(
+        struct common_mysql_state *state,
+        FILE *f,
+        const unsigned char *pfx,
+        const struct timeval *ptv);
+static int
+parse_int64_func(
+        struct common_mysql_state *state,
+        int index,
+        long long *p_val);
+static void
+unparse_spec_2_func(
+        struct common_mysql_state *state,
+        FILE *fout,
+        int spec_num,
+        const struct common_mysql_parse_spec *specs,
+        unsigned long long skip_mask,
+        const void *data,
+        ...);
+static void
+unparse_spec_3_func(
+        struct common_mysql_state *state,
+        FILE *fout,
+        int spec_num,
+        const struct common_mysql_parse_spec *specs,
+        unsigned long long skip_mask,
+        const void *data,
+        ...);
+static void
+write_escaped_bin_func(
+        struct common_mysql_state *state,
+        FILE *f,
+        const unsigned char *pfx,
+        const struct common_mysql_binary *bin);
 
 /* plugin entry point */
 struct common_mysql_iface plugin_common_mysql =
@@ -176,6 +214,11 @@ struct common_mysql_iface plugin_common_mysql =
   parse_int_func,
 
   escape_string_func,
+  write_datetime_func,
+  parse_int64_func,
+  unparse_spec_2_func,
+  unparse_spec_3_func,
+  write_escaped_bin_func,
 };
 
 static struct common_plugin_data *
@@ -661,7 +704,7 @@ parse_spec_func(
       err("column %d (%s) cannot be NULL", i, specs[i].name);
       return -1;
     }
-    if (row[i] && strlen(row[i]) != lengths[i]) {
+    if (specs[i].format != 'x' && row[i] && strlen(row[i]) != lengths[i]) {
       err("column %d (%s) cannot be binary", i, specs[i].name);
       return -1;
     }
@@ -680,6 +723,16 @@ parse_spec_func(
       p_uq = XPDEREF(unsigned long long, data, specs[i].offset);
       *p_uq = uq;
       break;
+
+    case 'l': {
+      errno = 0;
+      eptr = NULL;
+      long long llv = strtoll(row[i], &eptr, 10);
+      if (errno || *eptr) goto invalid_format;
+      long long *p_llv = XPDEREF(long long, data, specs[i].offset);
+      *p_llv = llv;
+      break;
+    }
 
     case 'd':
     case 'e':
@@ -767,6 +820,40 @@ parse_spec_func(
       p_time = XPDEREF(time_t, data, specs[i].offset);
       *p_time = t;
       break;
+    case 'T': {
+      struct timeval *ptv = NULL;
+      const char *str = row[i];
+      int us = 0;
+      ptv = XPDEREF(struct timeval, data, specs[i].offset);
+      ptv->tv_sec = 0; ptv->tv_usec = 0;
+      if (!str) break;
+      // special handling for '0' case
+      if (sscanf(str, "%d%n", &x, &n) == 1 && !str[n] && !x) break;
+      // 'YYYY-MM-DD hh:mm:ss[.uuuuuu]'
+      if (sscanf(str, "%d-%d-%d %d:%d:%d%n",
+                 &d_year, &d_mon, &d_day, &d_hour, &d_min, &d_sec, &n) != 6)
+        goto invalid_format;
+      if (str[n] == '.') {
+        str += n + 1; n = 0;
+        if (sscanf(str, "%d%n", &us, &n) != 1) goto invalid_format;
+      }
+      if (str[n]) goto invalid_format;
+      if (!d_year && !d_mon && !d_day && !d_hour && !d_min && !d_sec && !us)
+        break;
+      memset(&tt, 0, sizeof(tt));
+      tt.tm_year = d_year - 1900;
+      tt.tm_mon = d_mon - 1;
+      tt.tm_mday = d_day;
+      tt.tm_hour = d_hour;
+      tt.tm_min = d_min;
+      tt.tm_sec = d_sec;
+      tt.tm_isdst = -1;
+      if ((t = mktime(&tt)) == (time_t) -1) goto invalid_format;
+      if (t < 0) t = 0;
+      ptv->tv_sec = t;
+      ptv->tv_usec = us;
+      break;
+    }
     case 'a':
       if (!row[i]) {
         p_time = XPDEREF(time_t, data, specs[i].offset);
@@ -821,6 +908,45 @@ parse_spec_func(
       if (xml_parse_full_cookie(row[i], p_uq, p_uq + 1) < 0)
         goto invalid_format;
       break;
+    case 'U': { // base64u-encoded 256 bit
+      char *dst_ptr = XPDEREF(char, data, specs[i].offset);
+      if (!row[i] || !lengths[i]) {
+        memset(dst_ptr, 0, 32);
+      } else if (lengths[i] >= 43) {
+        // exact 256 bits or more
+        int err_flag = 0;
+        base64u_decode(row[i], 43, dst_ptr, &err_flag);
+        if (err_flag) goto invalid_format;
+      } else {
+        memset(dst_ptr, 0, 32);
+        int err_flag = 0;
+        base64u_decode(row[i], lengths[i], dst_ptr, &err_flag);
+        if (err_flag) goto invalid_format;
+      }
+      break;
+    }
+    case 'g': {
+      ej_uuid_t *dst_ptr = XPDEREF(ej_uuid_t, data, specs[i].offset);
+      if (!row[i] || !lengths[i]) {
+        memset(dst_ptr, 0, sizeof(*dst_ptr));
+      } else {
+        if (ej_uuid_parse(row[i], dst_ptr) < 0) goto invalid_format;
+      }
+      break;
+    }
+
+    case 'x': {
+      struct common_mysql_binary *bin = XPDEREF(struct common_mysql_binary, data, specs[i].offset);
+      if (!row[i]) {
+        bin->size = 0;
+        bin->data = NULL;
+      } else {
+        bin->size = lengths[i];
+        bin->data = xmemdup(row[i], lengths[i]);
+      }
+      break;
+    }
+
     default:
       err("unhandled format %d", specs[i].format);
       abort();
@@ -877,6 +1003,12 @@ unparse_spec_func(
       }
       break;
 
+    case 'l': {
+      long long *p_llv = XPDEREF(long long, data, specs[i].offset);
+      fprintf(fout, "%s%lld", sep, *p_llv);
+      break;
+    }
+
     case 'd':
       p_int = XPDEREF(int, data, specs[i].offset);
       val = *p_int;
@@ -916,6 +1048,11 @@ unparse_spec_func(
       write_timestamp_func(state, fout, sep, *p_time);
       break;
 
+    case 'T': {
+      const struct timeval *ptv = XPDEREF(struct timeval, data, specs[i].offset);
+      write_datetime_func(state, fout, sep, ptv);
+      break;
+    }
     case 'a':
       p_time = XPDEREF(time_t, data, specs[i].offset);
       write_date_func(state, fout, sep, *p_time);
@@ -936,6 +1073,24 @@ unparse_spec_func(
       fprintf(fout, "%s'%s'", sep,
               xml_unparse_full_cookie(u_buf, sizeof(u_buf), p_uq, p_uq + 1));
       break;
+
+    case 'g': {
+      ej_uuid_t *p_uuid = XPDEREF(ej_uuid_t, data, specs[i].offset);
+      char uuid_str[40];
+      if (!ej_uuid_is_nonempty(*p_uuid) && specs[i].null_allowed) {
+        fprintf(fout, "%sNULL", sep);
+      } else {
+        ej_uuid_unparse_r(uuid_str, sizeof(uuid_str), p_uuid, NULL);
+        fprintf(fout, "%s'%s'", sep, uuid_str);
+      }
+      break;
+    }
+
+    case 'x': {
+      const struct common_mysql_binary *bin = XPDEREF(struct common_mysql_binary, data, specs[i].offset);
+      write_escaped_bin_func(state, fout, sep, bin);
+      break;
+    }
 
     default:
       err("unhandled format %d", specs[i].format);
@@ -1043,7 +1198,374 @@ parse_int_func(
   return 0;
 }
 
-/*
- * Local variables:
- * End:
- */
+static void
+write_datetime_func(
+        struct common_mysql_state *state,
+        FILE *f,
+        const unsigned char *pfx,
+        const struct timeval *ptv)
+{
+  if (!pfx) pfx = "";
+
+  if (!ptv) {
+    fprintf(f, "%sNULL", pfx);
+    return;
+  }
+  if (ptv->tv_sec <= 0) {
+    fprintf(f, "%sDEFAULT", pfx);
+    return;
+  }
+
+  struct tm ttm = {};
+  localtime_r(&ptv->tv_sec, &ttm);
+  fprintf(f, "%s'%04d-%02d-%02d %02d:%02d:%02d",
+          pfx, ttm.tm_year + 1900, ttm.tm_mon + 1, ttm.tm_mday,
+          ttm.tm_hour, ttm.tm_min, ttm.tm_sec);
+  if (ptv->tv_usec > 0) {
+    fprintf(f, ".%06d", (int) ptv->tv_usec);
+  }
+  fprintf(f, "'");
+}
+
+static int
+parse_int64_func(
+        struct common_mysql_state *state,
+        int index,
+        long long *p_val)
+{
+  if (index >= state->field_count) {
+    return -1;
+  }
+  const char *s = state->row[index];
+  if (!s) {
+    return -1;
+  }
+  char *eptr = NULL;
+  errno = 0;
+  long long val = strtoll(s, &eptr, 10);
+  if (*eptr || errno || s == eptr) {
+    return -1;
+  }
+  *p_val = val;
+  return 0;
+}
+
+static void
+unparse_spec_2_func(
+        struct common_mysql_state *state,
+        FILE *fout,
+        int spec_num,
+        const struct common_mysql_parse_spec *specs,
+        unsigned long long skip_mask,
+        const void *data,
+        ...)
+{
+  int i, val;
+  va_list args;
+  const unsigned char *sep = "";
+  const unsigned char *str;
+  unsigned char **p_str;
+  const time_t *p_time;
+  const int *p_int;
+  const unsigned long long *p_uq;
+  unsigned long long uq;
+  ej_ip4_t *p_ip;
+  ej_ip_t *p_ipv6;
+  unsigned char u_buf[64];
+
+  va_start(args, data);
+  for (i = 0; i < spec_num; ++i) {
+    if ((skip_mask & (1ULL << i)) != 0) continue;
+
+    switch (specs[i].format) {
+    case 0: break;
+    case 'q':
+      p_uq = XPDEREF(unsigned long long, data, specs[i].offset);
+      uq = *p_uq;
+      fprintf(fout, "%s'%016llx'", sep, uq);
+      break;
+
+    case 'e':
+      p_int = XPDEREF(int, data, specs[i].offset);
+      val = *p_int;
+      if (val == -1) {
+        fprintf(fout, "%sDEFAULT", sep);
+      } else {
+        fprintf(fout, "%s%d", sep, val);
+      }
+      break;
+
+    case 'l': {
+      long long *p_llv = XPDEREF(long long, data, specs[i].offset);
+      fprintf(fout, "%s%lld", sep, *p_llv);
+      break;
+    }
+
+    case 'd':
+      p_int = XPDEREF(int, data, specs[i].offset);
+      val = *p_int;
+      fprintf(fout, "%s%d", sep, val);
+      break;
+
+    case 'D':
+      val = va_arg(args, int);
+      fprintf(fout, "%s%d", sep, val);
+      break;
+
+    case 'b':
+      p_int = XPDEREF(int, data, specs[i].offset);
+      val = *p_int;
+      if (val) val = 1;
+      fprintf(fout, "%s%d", sep, val);
+      break;
+
+    case 'B':
+      val = va_arg(args, int);
+      if (val) val = 1;
+      fprintf(fout, "%s%d", sep, val);
+      break;
+
+    case 's':
+      p_str = XPDEREF(unsigned char *, data, specs[i].offset);
+      write_escaped_string_func(state, fout, sep, *p_str);
+      break;
+
+    case 'S':
+      str = va_arg(args, const unsigned char *);
+      write_escaped_string_func(state, fout, sep, str);
+      break;
+
+    case 't':
+      p_time = XPDEREF(time_t, data, specs[i].offset);
+      write_timestamp_func(state, fout, sep, *p_time);
+      break;
+
+    case 'T': {
+      const struct timeval *ptv = XPDEREF(struct timeval, data, specs[i].offset);
+      write_datetime_func(state, fout, sep, ptv);
+      break;
+    }
+    case 'a':
+      p_time = XPDEREF(time_t, data, specs[i].offset);
+      write_date_func(state, fout, sep, *p_time);
+      break;
+
+    case 'i':
+      p_ip = XPDEREF(ej_ip4_t, data, specs[i].offset);
+      fprintf(fout, "%s'%s'", sep, xml_unparse_ip(*p_ip));
+      break;
+
+    case 'I':
+      p_ipv6 = XPDEREF(ej_ip_t, data, specs[i].offset);
+      fprintf(fout, "%s'%s'", sep, xml_unparse_ipv6(p_ipv6));
+      break;
+
+    case 'u': // 128-bit
+      p_uq = XPDEREF(ej_cookie_t, data, specs[i].offset);
+      fprintf(fout, "%s'%s'", sep,
+              xml_unparse_full_cookie(u_buf, sizeof(u_buf), p_uq, p_uq + 1));
+      break;
+
+    case 'g': {
+      ej_uuid_t *p_uuid = XPDEREF(ej_uuid_t, data, specs[i].offset);
+      char uuid_str[40];
+      if (!ej_uuid_is_nonempty(*p_uuid) && specs[i].null_allowed) {
+        fprintf(fout, "%sNULL", sep);
+      } else {
+        ej_uuid_unparse_r(uuid_str, sizeof(uuid_str), p_uuid, NULL);
+        fprintf(fout, "%s'%s'", sep, uuid_str);
+      }
+      break;
+    }
+
+    case 'x': {
+      const struct common_mysql_binary *bin = XPDEREF(struct common_mysql_binary, data, specs[i].offset);
+      write_escaped_bin_func(state, fout, sep, bin);
+      break;
+    }
+
+    default:
+      err("unhandled format %d", specs[i].format);
+      abort();
+    }
+    sep = ", ";
+  }
+  va_end(args);
+}
+
+static void
+unparse_spec_3_func(
+        struct common_mysql_state *state,
+        FILE *fout,
+        int spec_num,
+        const struct common_mysql_parse_spec *specs,
+        unsigned long long skip_mask,
+        const void *data,
+        ...)
+{
+  int i, val;
+  va_list args;
+  const unsigned char *sep = "";
+  const unsigned char *str;
+  unsigned char **p_str;
+  const time_t *p_time;
+  const int *p_int;
+  const unsigned long long *p_uq;
+  unsigned long long uq;
+  ej_ip4_t *p_ip;
+  ej_ip_t *p_ipv6;
+  unsigned char u_buf[64];
+
+  va_start(args, data);
+  for (i = 0; i < spec_num; ++i) {
+    if ((skip_mask & (1ULL << i)) != 0) continue;
+
+    if (specs[i].format) {
+      fprintf(fout, "%s%s = ", sep, specs[i].name);
+    }
+    switch (specs[i].format) {
+    case 0: break;
+    case 'q':
+      p_uq = XPDEREF(unsigned long long, data, specs[i].offset);
+      uq = *p_uq;
+      fprintf(fout, "'%016llx'", uq);
+      break;
+
+    case 'e':
+      p_int = XPDEREF(int, data, specs[i].offset);
+      val = *p_int;
+      if (val == -1) {
+        fprintf(fout, "DEFAULT");
+      } else {
+        fprintf(fout, "%d", val);
+      }
+      break;
+
+    case 'l': {
+      long long *p_llv = XPDEREF(long long, data, specs[i].offset);
+      fprintf(fout, "%lld", *p_llv);
+      break;
+    }
+
+    case 'd':
+      p_int = XPDEREF(int, data, specs[i].offset);
+      val = *p_int;
+      fprintf(fout, "%d", val);
+      break;
+
+    case 'D':
+      val = va_arg(args, int);
+      fprintf(fout, "%d", val);
+      break;
+
+    case 'b':
+      p_int = XPDEREF(int, data, specs[i].offset);
+      val = *p_int;
+      if (val) val = 1;
+      fprintf(fout, "%d", val);
+      break;
+
+    case 'B':
+      val = va_arg(args, int);
+      if (val) val = 1;
+      fprintf(fout, "%d", val);
+      break;
+
+    case 's':
+      p_str = XPDEREF(unsigned char *, data, specs[i].offset);
+      write_escaped_string_func(state, fout, "", *p_str);
+      break;
+
+    case 'S':
+      str = va_arg(args, const unsigned char *);
+      write_escaped_string_func(state, fout, "", str);
+      break;
+
+    case 't':
+      p_time = XPDEREF(time_t, data, specs[i].offset);
+      write_timestamp_func(state, fout, "", *p_time);
+      break;
+
+    case 'T': {
+      const struct timeval *ptv = XPDEREF(struct timeval, data, specs[i].offset);
+      write_datetime_func(state, fout, "", ptv);
+      break;
+    }
+    case 'a':
+      p_time = XPDEREF(time_t, data, specs[i].offset);
+      write_date_func(state, fout, "", *p_time);
+      break;
+
+    case 'i':
+      p_ip = XPDEREF(ej_ip4_t, data, specs[i].offset);
+      fprintf(fout, "'%s'", xml_unparse_ip(*p_ip));
+      break;
+
+    case 'I':
+      p_ipv6 = XPDEREF(ej_ip_t, data, specs[i].offset);
+      fprintf(fout, "'%s'", xml_unparse_ipv6(p_ipv6));
+      break;
+
+    case 'u': // 128-bit
+      p_uq = XPDEREF(ej_cookie_t, data, specs[i].offset);
+      fprintf(fout, "'%s'",
+              xml_unparse_full_cookie(u_buf, sizeof(u_buf), p_uq, p_uq + 1));
+      break;
+
+    case 'g': {
+      ej_uuid_t *p_uuid = XPDEREF(ej_uuid_t, data, specs[i].offset);
+      char uuid_str[40];
+      if (!ej_uuid_is_nonempty(*p_uuid) && specs[i].null_allowed) {
+        fprintf(fout, "NULL");
+      } else {
+        ej_uuid_unparse_r(uuid_str, sizeof(uuid_str), p_uuid, NULL);
+        fprintf(fout, "'%s'", uuid_str);
+      }
+      break;
+    }
+
+    case 'x': {
+      const struct common_mysql_binary *bin = XPDEREF(struct common_mysql_binary, data, specs[i].offset);
+      write_escaped_bin_func(state, fout, "", bin);
+      break;
+    }
+
+    default:
+      err("unhandled format %d", specs[i].format);
+      abort();
+    }
+    sep = ", ";
+  }
+  va_end(args);
+}
+
+static void
+write_escaped_bin_func(
+        struct common_mysql_state *state,
+        FILE *f,
+        const unsigned char *pfx,
+        const struct common_mysql_binary *bin)
+{
+  size_t len2;
+  unsigned char *str2;
+
+  if (!pfx) pfx = "";
+  if (!bin || !bin->data) {
+    fprintf(f, "%sNULL", pfx);
+    return;
+  }
+
+  if (bin->size < 128000) {
+    len2 = 2 * bin->size + 1;
+    str2 = (unsigned char *) alloca(len2);
+    mysql_real_escape_string(state->conn, str2, bin->data, bin->size);
+    fprintf(f, "%s'%s'", pfx, str2);
+    return;
+  }
+
+  len2 = 2 * bin->size + 1;
+  str2 = (unsigned char*) malloc(len2);
+  mysql_real_escape_string(state->conn, str2, bin->data, bin->size);
+  fprintf(f, "%s'%s'", pfx, str2);
+  free(str2);
+}

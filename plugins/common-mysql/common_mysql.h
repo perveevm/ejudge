@@ -3,7 +3,7 @@
 #ifndef __COMMON_MYSQL_H__
 #define __COMMON_MYSQL_H__
 
-/* Copyright (C) 2008-2015 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2008-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -22,10 +22,17 @@
 
 struct common_mysql_iface;
 struct common_mysql_state;
+struct common_mysql_binary;
 
 #ifndef EJUDGE_SKIP_MYSQL
 
 #include <mysql.h>
+
+struct common_mysql_binary
+{
+  size_t size;
+  unsigned char *data;
+};
 
 struct common_mysql_state
 {
@@ -152,6 +159,41 @@ struct common_mysql_iface
         struct common_mysql_state *state,
         FILE *f,
         const unsigned char *str);
+
+  void (*write_datetime)(
+        struct common_mysql_state *state,
+        FILE *f,
+        const unsigned char *pfx,
+        const struct timeval *ptv);
+
+  int (*parse_int64)(
+        struct common_mysql_state *state,
+        int index,
+        long long *p_val);
+
+  void (*unparse_spec_2)(
+        struct common_mysql_state *state,
+        FILE *fout,
+        int spec_num,
+        const struct common_mysql_parse_spec *specs,
+        unsigned long long skip_mask,
+        const void *data,
+        ...);
+
+  void (*unparse_spec_3)(
+        struct common_mysql_state *state,
+        FILE *fout,
+        int spec_num,
+        const struct common_mysql_parse_spec *specs,
+        unsigned long long skip_mask,
+        const void *data,
+        ...);
+
+  void (*write_escaped_bin)(
+        struct common_mysql_state *state,
+        FILE *f,
+        const unsigned char *pfx,
+        const struct common_mysql_binary *bin);
 };
 
 #define db_error_fail(s) do { s->i->error(s); goto fail; } while (0)

@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2008-2018 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2008-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -30,6 +30,7 @@
 #include "unix/unix_fileutl.h"
 #include "ejudge/xml_utils.h"
 #include "ejudge/random.h"
+#include "ejudge/ej_uuid.h"
 
 #include "ejudge/xalloc.h"
 #include "ejudge/logger.h"
@@ -40,6 +41,12 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <errno.h>
+
+enum
+{
+  RUNLOG_VERSION_3 = 3,
+  RUNLOG_CURRENT_VERSION = RUNLOG_VERSION_3,
+};
 
 struct rldb_file_state
 {
@@ -103,7 +110,7 @@ add_entry_func(
         struct rldb_plugin_cnts *cdata,
         int i,
         const struct run_entry *re,
-        int flags);
+        uint64_t mask);
 static int
 undo_add_entry_func(
         struct rldb_plugin_cnts *cdata,
@@ -116,7 +123,8 @@ change_status_func(
         int new_test,
         int new_passed_mode,
         int new_score,
-        int judge_id);
+        int judge_id,
+        const ej_uuid_t *judge_uuid);
 static int
 start_func(
         struct rldb_plugin_cnts *cdata,
@@ -154,11 +162,6 @@ set_hidden_func(
         int run_id,
         int new_hidden);
 static int
-set_judge_id_func(
-        struct rldb_plugin_cnts *cdata,
-        int run_id,
-        int new_judge_id);
-static int
 set_pages_func(
         struct rldb_plugin_cnts *cdata,
         int run_id,
@@ -168,19 +171,9 @@ set_entry_func(
         struct rldb_plugin_cnts *cdata,
         int run_id,
         const struct run_entry *in,
-        int flags);
+        uint64_t mask);
 static int
 squeeze_func(struct rldb_plugin_cnts *cdata);
-static int
-change_status_2_func(
-        struct rldb_plugin_cnts *cdata,
-        int run_id,
-        int new_status,
-        int new_test,
-        int new_passed_mode,
-        int new_score,
-        int judge_id,
-        int is_marked);
 static int
 check_func(
         struct rldb_plugin_cnts *cdata,
@@ -193,7 +186,6 @@ change_status_3_func(
         int new_test,
         int new_passed_mode,
         int new_score,
-        int judge_id,
         int is_marked,
         int has_user_score,
         int user_status,
@@ -204,6 +196,11 @@ change_status_4_func(
         struct rldb_plugin_cnts *cdata,
         int run_id,
         int new_status);
+static int
+run_set_is_checked_func(
+        struct rldb_plugin_cnts *cdata,
+        int run_id,
+        int is_checked);
 
 struct rldb_plugin_iface rldb_plugin_file =
 {
@@ -240,16 +237,25 @@ struct rldb_plugin_iface rldb_plugin_file =
   set_status_func,
   clear_entry_func,
   set_hidden_func,
-  set_judge_id_func,
+  NULL, //set_judge_id,
   set_pages_func,
   set_entry_func,
   squeeze_func,
   NULL, // put_entry
   NULL, // put_header
-  change_status_2_func,
+  NULL, // change_status_2
   check_func,
   change_status_3_func,
   change_status_4_func,
+  NULL, // fetch_user_runs
+  NULL, // add_entry_2
+  NULL, // user_run_header_set_start_time
+  NULL, // user_run_header_set_stop_time
+  NULL, // user_run_header_set_duration
+  NULL, // user_run_header_set_is_checked
+  NULL, // user_run_header_delete
+  NULL, // append_run
+  run_set_is_checked_func,
 };
 
 static struct common_plugin_data *
@@ -525,7 +531,7 @@ write_full_runlog_current_version(
   if ((run_fd = sf_open(path, O_RDWR | O_CREAT | O_TRUNC, 0666)) < 0)
     return -1;
 
-  rls->head.version = 2;
+  rls->head.version = RUNLOG_CURRENT_VERSION;
   if (do_write(run_fd, &rls->head, sizeof(rls->head)) < 0) return -1;
   if (rls->run_u > 0) {
     if (do_write(run_fd, rls->runs, sizeof(rls->runs[0]) * rls->run_u) < 0)
@@ -659,7 +665,7 @@ read_runlog_version_1(struct rldb_file_cnts *cs)
     pn->time = po->timestamp;
     pn->size = po->size;
     pn->a.ip = po->ip;
-    memcpy(&pn->sha1, &po->sha1, sizeof(pn->sha1));
+    memcpy(&pn->h.sha1, &po->sha1, sizeof(pn->h.sha1));
     pn->user_id = po->team;
     pn->prob_id = po->problem;
     pn->score = po->score;
@@ -673,11 +679,212 @@ read_runlog_version_1(struct rldb_file_cnts *cs)
     pn->is_readonly = po->is_readonly;
     pn->pages = po->pages;
     pn->score_adj = po->score_adj;
-    pn->judge_id = po->judge_id;
+    pn->j.judge_id = po->judge_id;
     pn->nsec = po->nsec;
   }
 
   xfree(runs_v1);
+  return 0;
+}
+
+/* structure size is 128 bytes */
+struct run_header_v2
+{
+  unsigned char version;        /* current version is 2 */
+  unsigned char _pad1[19];      /* skip fields of version 1 header */
+  unsigned char byte_order;     /* 0 - little-endian, the only supported yet */
+  unsigned char _pad2[11];      /* pad to the 32-byte boundary */
+  ej_time64_t start_time;
+  ej_time64_t sched_time;
+  ej_time64_t duration;
+  ej_time64_t stop_time;
+  ej_time64_t finish_time;      /* when the contest expected to finish */
+  ej_time64_t saved_duration;
+  ej_time64_t saved_stop_time;
+  ej_time64_t saved_finish_time;
+  int next_run_id;              /* the first free run_id + 1 (i.e. 0 means "unknown", 1 means 0, etc) */
+  unsigned char _pad3[28];
+};
+
+/* structure size is 128 bytes */
+struct run_entry_v2
+{
+  rint32_t       run_id;        /* 4 */
+  ej_size_t      size;          /* 4 */
+  ej_time64_t    time;          /* 8 */
+  rint32_t       nsec;          /* 4 */
+  rint32_t       user_id;       /* 4 */
+  rint32_t       prob_id;       /* 4 */
+  rint32_t       lang_id;       /* 4 */
+  union
+  {
+    ej_ip4_t       ip;
+    unsigned char  ipv6[16];
+  }              a;             /* 16 */
+  ruint32_t      sha1[5];       /* 20 */
+  rint32_t       score;         /* 4 */
+  rint16_t       test;          /* 2 */
+  signed char    passed_mode;   /* 1 */
+  unsigned char  store_flags;   /* 1 */
+  rint32_t       score_adj;     /* 4 */
+  rint16_t       locale_id;     /* 2 */
+  ruint16_t      judge_id;      /* 2 */
+  unsigned char  status;        /* 1 */
+  unsigned char  is_imported;   /* 1 */
+  unsigned char  variant;       /* 1 */
+  unsigned char  is_hidden;     /* 1 */
+  unsigned char  is_readonly;   /* 1 */
+  unsigned char  pages;         /* 1 */
+  unsigned char  ipv6_flag;     /* 1 */
+  unsigned char  ssl_flag;      /* 1 */
+  rint16_t       mime_type;     /* 2 */
+  unsigned char  eoln_type;     /* 1 */
+  unsigned char  is_marked;     /* 1 */
+  ej_uuid_t      run_uuid;      /* 16 */
+  unsigned char  token_flags;   /* 1 */
+  unsigned char  token_count;   /* 1 */
+  unsigned char  _unused[6];    /* 6 */
+  rint32_t       saved_score;   /* 4 */
+  rint16_t       saved_test;    /* 2 */
+  unsigned char  saved_status;  /* 1 */
+  unsigned char  is_saved;      /* 1 */
+  /* total is 128 bytes */
+};
+
+static int
+is_runlog_version_2(struct rldb_file_cnts *cs)
+{
+  struct run_header_v2 header_v2;
+  struct stat stbuf;
+  int r;
+
+  memset(&header_v2, 0, sizeof(header_v2));
+  if (sf_lseek(cs->run_fd, 0, SEEK_SET, "run") == (off_t) -1) return -1;
+  if ((r = sf_read(cs->run_fd, &header_v2, sizeof(header_v2), "run")) < 0)
+    return -1;
+  if (r != sizeof(header_v2)) return 0;
+  if (header_v2.version != 2) return 0;
+  if (fstat(cs->run_fd, &stbuf) < 0) return -1;
+  if (stbuf.st_size < sizeof(header_v2)) return 0;
+  stbuf.st_size -= sizeof(header_v2);
+  if (stbuf.st_size % sizeof(struct run_entry_v2) != 0) return 0;
+  return 1;
+}
+
+static void
+copy_entry_v2_to_v3(struct run_entry *pn, const struct run_entry_v2 *po)
+{
+  memset(pn, 0, sizeof(*pn));
+
+  pn->run_id = po->run_id;
+  pn->size = po->size;
+  pn->time = po->time;
+  pn->nsec = po->nsec;
+  pn->user_id = po->user_id;
+  pn->prob_id = po->prob_id;
+  pn->lang_id = po->lang_id;
+  pn->ipv6_flag = po->ipv6_flag;
+  if (po->ipv6_flag) {
+    memcpy(pn->a.ipv6, po->a.ipv6, sizeof(pn->a.ipv6));
+  } else {
+    pn->a.ip = po->a.ip;
+  }
+  pn->ssl_flag = po->ssl_flag;
+  pn->is_imported = po->is_imported;
+  pn->is_hidden = po->is_hidden;
+  pn->is_readonly = po->is_readonly;
+  pn->is_marked = po->is_marked;
+  pn->is_saved = po->is_saved;
+  pn->score = po->score;
+  pn->status = po->status;
+  pn->passed_mode = po->passed_mode;
+  pn->store_flags = po->store_flags;
+  pn->variant = po->variant;
+  pn->test = po->test;
+  pn->token_flags = po->token_flags;
+  pn->token_count = po->token_count;
+  memcpy(pn->h.sha1, po->sha1, sizeof(pn->h.sha1));
+  pn->run_uuid = po->run_uuid;
+  pn->j.judge_id = po->judge_id;
+  pn->score_adj = po->score_adj;
+  pn->saved_score = po->saved_score;
+  pn->saved_test = po->saved_test;
+  pn->saved_status = po->saved_status;
+  pn->eoln_type = po->eoln_type;
+  pn->locale_id = po->locale_id;
+  pn->mime_type = po->mime_type;
+  pn->pages = po->pages;
+}
+
+static int
+read_runlog_version_2(struct rldb_file_cnts *cs)
+{
+  struct runlog_state *rls = cs->rl_state;
+  int rem;
+  struct stat stbuf;
+  struct run_header_v2 header_v2;
+  int run_v2_u, i;
+  struct run_entry_v2 *runs_v2 = 0;
+
+  info("reading runs log version 2 (binary)");
+
+  /* calculate the size of the file */
+  if (fstat(cs->run_fd, &stbuf) < 0) {
+    err("read_runlog_version_2: fstat() failed: %s", os_ErrorMsg());
+    return -1;
+  }
+  if (sf_lseek(cs->run_fd, 0, SEEK_SET, "run") == (off_t) -1) return -1;
+  if (stbuf.st_size < sizeof (header_v2)) {
+    err("read_runlog_version_2: file is too small");
+    return -1;
+  }
+
+  // read header
+  if (do_read(cs->run_fd, &header_v2, sizeof(header_v2)) < 0) return -1;
+  info("run log version %d", header_v2.version);
+  if (header_v2.version != 2) {
+    err("unsupported run log version %d", rls->head.version);
+    return -1;
+  }
+
+  stbuf.st_size -= sizeof(header_v2);
+  if ((rem = stbuf.st_size % sizeof(struct run_entry_v2)) != 0) {
+    err("bad runs file size: remainder %d", rem);
+    return -1;
+  }
+  run_v2_u = stbuf.st_size / sizeof(struct run_entry_v2);
+  if (run_v2_u > 0) {
+    XCALLOC(runs_v2, run_v2_u);
+    if (do_read(cs->run_fd, runs_v2, sizeof(runs_v2[0]) * run_v2_u) < 0)
+      return -1;
+  }
+
+  // assign the header
+  memset(&rls->head, 0, sizeof(rls->head));
+  rls->head.version = 3;
+  rls->head.byte_order = 0;
+  rls->head.start_time = header_v2.start_time;
+  rls->head.sched_time = header_v2.sched_time;
+  rls->head.duration = header_v2.duration;
+  rls->head.stop_time = header_v2.stop_time;
+  rls->head.finish_time = header_v2.finish_time;
+  rls->head.saved_duration = header_v2.saved_duration;
+  rls->head.saved_stop_time = header_v2.saved_stop_time;
+  rls->head.saved_finish_time = header_v2.saved_finish_time;
+
+  // copy version 2 runlog to version 3 runlog
+  rls->run_a = 128;
+  rls->run_u = run_v2_u;
+  while (run_v2_u > rls->run_a) rls->run_a *= 2;
+  XCALLOC(rls->runs, rls->run_a);
+  for (i = 0; i < rls->run_a; ++i)
+    rls->runs[i].status = RUN_EMPTY;
+
+  for (i = 0; i < rls->run_u; i++) {
+    copy_entry_v2_to_v3(&rls->runs[i], &runs_v2[i]);
+  }
+
+  xfree(runs_v2);
   return 0;
 }
 
@@ -715,7 +922,7 @@ read_runlog(
   if (filesize == 0) {
     /* runs file is empty */
     XMEMZERO(&rls->head, 1);
-    rls->head.version = 2;
+    rls->head.version = RUNLOG_CURRENT_VERSION;
     rls->head.duration = init_duration;
     rls->head.sched_time = init_sched_time;
     rls->head.finish_time = init_finish_time;
@@ -724,13 +931,13 @@ read_runlog(
     return 0;
   }
 
-  if (sizeof(struct run_entry) != 128) abort();
+  if (sizeof(struct run_entry) != 256) abort();
 
   // read header
   if (do_read(cs->run_fd, &rls->head, sizeof(rls->head)) < 0)
     return -1;
   info("run log version %d", rls->head.version);
-  if (rls->head.version != 2) {
+  if (rls->head.version != RUNLOG_CURRENT_VERSION) {
     err("unsupported run log version %d", rls->head.version);
     return -1;
   }
@@ -802,8 +1009,9 @@ do_run_open(
   }
   if ((cs->run_fd = sf_open(path, oflags, 0666)) < 0) return -1;
 
-  if ((i = is_runlog_version_0(cs)) < 0) return -1;
-  else if (i) {
+  if ((i = is_runlog_version_0(cs)) < 0) {
+    return -1;
+  } else if (i) {
     if (read_runlog_version_0(cs) < 0) return -1;
     if (flags != RUN_LOG_READONLY) {
       if (save_runlog_backup(path, 0) < 0) return -1;
@@ -811,11 +1019,22 @@ do_run_open(
       if ((cs->run_fd = write_full_runlog_current_version(cs, path)) < 0)
         return -1;
     }
-  } else if ((i = is_runlog_version_1(cs)) < 0) return -1;
-  else if (i) {
+  } else if ((i = is_runlog_version_1(cs)) < 0) {
+    return -1;
+  } else if (i) {
     if (read_runlog_version_1(cs) < 0) return -1;
     if (flags != RUN_LOG_READONLY) {
       if (save_runlog_backup(path, ".v1") < 0) return -1;
+      close(cs->run_fd);
+      if ((cs->run_fd = write_full_runlog_current_version(cs, path)) < 0)
+        return -1;
+    }
+  } else if ((i = is_runlog_version_2(cs)) < 0) {
+    return -1;
+  } else if (i) {
+    if (read_runlog_version_2(cs) < 0) return -1;
+    if (flags != RUN_LOG_READONLY) {
+      if (save_runlog_backup(path, ".v2") < 0) return -1;
       close(cs->run_fd);
       if ((cs->run_fd = write_full_runlog_current_version(cs, path)) < 0)
         return -1;
@@ -1143,7 +1362,7 @@ add_entry_func(
         struct rldb_plugin_cnts *cdata,
         int run_id,
         const struct run_entry *re,
-        int flags)
+        uint64_t mask)
 {
   struct rldb_file_cnts *cs = (struct rldb_file_cnts*) cdata;
   struct runlog_state *rls = cs->rl_state;
@@ -1152,95 +1371,100 @@ add_entry_func(
   ASSERT(run_id >= 0 && run_id < rls->run_a);
   de = &rls->runs[run_id];
 
-  if ((flags & RE_SIZE)) {
+  if ((mask & RE_SIZE)) {
     de->size = re->size;
   }
-  if ((flags & RE_IP)) {
+  if ((mask & RE_IP)) {
     de->a = re->a;
     de->ipv6_flag = re->ipv6_flag;
   }
-  if ((flags & RE_SHA1)) {
-    memcpy(de->sha1, re->sha1, sizeof(de->sha1));
+  if ((mask & RE_SHA1)) {
+    memcpy(de->h.sha1, re->h.sha1, sizeof(de->h.sha1));
   }
-  if ((flags & RE_RUN_UUID)) {
+  if ((mask & RE_RUN_UUID)) {
     memcpy(&de->run_uuid, &re->run_uuid, sizeof(de->run_uuid));
   }
-  if ((flags & RE_USER_ID)) {
+  if ((mask & RE_USER_ID)) {
     de->user_id = re->user_id;
   }
-  if ((flags & RE_PROB_ID)) {
+  if ((mask & RE_PROB_ID)) {
     de->prob_id = re->prob_id;
   }
-  if ((flags & RE_LANG_ID)) {
+  if ((mask & RE_LANG_ID)) {
     de->lang_id = re->lang_id;
   }
-  if ((flags & RE_LOCALE_ID)) {
+  if ((mask & RE_LOCALE_ID)) {
     de->locale_id = re->locale_id;
   }
-  if ((flags & RE_STATUS)) {
+  if ((mask & RE_STATUS)) {
     de->status = re->status;
   }
-  if ((flags & RE_TEST)) {
+  if ((mask & RE_TEST)) {
     de->test = re->test;
   }
-  if ((flags & RE_SCORE)) {
+  if ((mask & RE_SCORE)) {
     de->score = re->score;
   }
-  if ((flags & RE_IS_IMPORTED)) {
+  if ((mask & RE_IS_IMPORTED)) {
     de->is_imported = re->is_imported;
   }
-  if ((flags & RE_VARIANT)) {
+  if ((mask & RE_VARIANT)) {
     de->variant = re->variant;
   }
-  if ((flags & RE_IS_HIDDEN)) {
+  if ((mask & RE_IS_HIDDEN)) {
     de->is_hidden = re->is_hidden;
   }
-  if ((flags & RE_IS_READONLY)) {
+  if ((mask & RE_IS_READONLY)) {
     de->is_readonly = re->is_readonly;
   }
-  if ((flags & RE_PAGES)) {
+  if ((mask & RE_PAGES)) {
     de->pages = re->pages;
   }
-  if ((flags & RE_SCORE_ADJ)) {
+  if ((mask & RE_SCORE_ADJ)) {
     de->score_adj = re->score_adj;
   }
-  if ((flags & RE_JUDGE_ID)) {
-    de->judge_id = re->judge_id;
+  if ((mask & RE_JUDGE_UUID)) {
+    de->judge_uuid_flag = 1;
+    de->j.judge_uuid = re->j.judge_uuid;
+  } else if ((mask & RE_JUDGE_ID)) {
+    de->judge_uuid_flag = 0;
+    memset(&de->j, 0, sizeof(de->j));
+    de->j.judge_id = re->j.judge_id;
   }
-  if ((flags & RE_SSL_FLAG)) {
+  if ((mask & RE_SSL_FLAG)) {
     de->ssl_flag = re->ssl_flag;
   }
-  if ((flags & RE_MIME_TYPE)) {
+  if ((mask & RE_MIME_TYPE)) {
     de->mime_type = re->mime_type;
   }
-  if ((flags & RE_IS_MARKED)) {
+  if ((mask & RE_IS_MARKED)) {
     de->is_marked = re->is_marked;
   }
-  if ((flags & RE_IS_SAVED)) {
+  if ((mask & RE_IS_SAVED)) {
     de->is_saved = re->is_saved;
   }
-  if ((flags & RE_SAVED_STATUS)) {
+  if ((mask & RE_SAVED_STATUS)) {
     de->saved_status = re->saved_status;
   }
-  if ((flags & RE_SAVED_SCORE)) {
+  if ((mask & RE_SAVED_SCORE)) {
     de->saved_score = re->saved_score;
   }
-  if ((flags & RE_SAVED_TEST)) {
+  if ((mask & RE_SAVED_TEST)) {
     de->saved_test = re->saved_test;
   }
-  if ((flags & RE_PASSED_MODE)) {
+  if ((mask & RE_PASSED_MODE)) {
     de->passed_mode = re->passed_mode;
   }
-  if ((flags & RE_EOLN_TYPE)) {
+  if ((mask & RE_EOLN_TYPE)) {
     de->eoln_type = re->eoln_type;
   }
-  if ((flags & RE_STORE_FLAGS)) {
+  if ((mask & RE_STORE_FLAGS)) {
     de->store_flags = re->store_flags;
   }
-  if ((flags & RE_TOKEN_FLAGS)) {
+  if ((mask & RE_TOKEN_FLAGS)) {
     de->token_flags = re->token_flags;
   }
-  if ((flags & RE_TOKEN_COUNT)) {
+  if ((mask & RE_TOKEN_COUNT)) {
     de->token_count = re->token_count;
   }
 
@@ -1279,7 +1503,8 @@ change_status_func(
         int new_test,
         int new_passed_mode,
         int new_score,
-        int judge_id)
+        int judge_id,
+        const ej_uuid_t *judge_uuid)
 {
   struct rldb_file_cnts *cs = (struct rldb_file_cnts*) cdata;
   struct runlog_state *rls = cs->rl_state;
@@ -1287,11 +1512,19 @@ change_status_func(
   ASSERT(rls->run_f == 0);
   ASSERT(run_id >= 0 && run_id < rls->run_u);
 
-  rls->runs[run_id].status = new_status;
-  rls->runs[run_id].test = new_test;
-  rls->runs[run_id].passed_mode = !!new_passed_mode;
-  rls->runs[run_id].score = new_score;
-  rls->runs[run_id].judge_id = judge_id;
+  struct run_entry *re = &rls->runs[run_id];
+  re->status = new_status;
+  re->test = new_test;
+  re->passed_mode = !!new_passed_mode;
+  re->score = new_score;
+  if (judge_uuid && ej_uuid_is_nonempty(*judge_uuid)) {
+    re->judge_uuid_flag = 1;
+    re->j.judge_uuid = *judge_uuid;
+  } else {
+    re->judge_uuid_flag = 0;
+    memset(&re->j, 0, sizeof(re->j));
+    re->j.judge_id = judge_id;
+  }
   return do_flush_entry(cs, run_id);
 }
 
@@ -1426,22 +1659,6 @@ set_hidden_func(
 }
 
 static int
-set_judge_id_func(
-        struct rldb_plugin_cnts *cdata,
-        int run_id,
-        int new_judge_id)
-{
-  struct rldb_file_cnts *cs = (struct rldb_file_cnts*) cdata;
-  struct runlog_state *rls = cs->rl_state;
-
-  ASSERT(rls->run_f == 0);
-  ASSERT(run_id >= 0 && run_id < rls->run_u);
-
-  rls->runs[run_id].judge_id = new_judge_id;
-  return do_flush_entry(cs, run_id);
-}
-
-static int
 set_pages_func(
         struct rldb_plugin_cnts *cdata,
         int run_id,
@@ -1462,7 +1679,7 @@ set_entry_func(
         struct rldb_plugin_cnts *cdata,
         int run_id,
         const struct run_entry *in,
-        int flags)
+        uint64_t mask)
 {
   struct rldb_file_cnts *cs = (struct rldb_file_cnts*) cdata;
   struct runlog_state *rls = cs->rl_state;
@@ -1532,32 +1749,6 @@ squeeze_func(struct rldb_plugin_cnts *cdata)
 }
 
 static int
-change_status_2_func(
-        struct rldb_plugin_cnts *cdata,
-        int run_id,
-        int new_status,
-        int new_test,
-        int new_passed_mode,
-        int new_score,
-        int judge_id,
-        int is_marked)
-{
-  struct rldb_file_cnts *cs = (struct rldb_file_cnts*) cdata;
-  struct runlog_state *rls = cs->rl_state;
-
-  ASSERT(rls->run_f == 0);
-  ASSERT(run_id >= 0 && run_id < rls->run_u);
-
-  rls->runs[run_id].status = new_status;
-  rls->runs[run_id].test = new_test;
-  rls->runs[run_id].passed_mode = !!new_passed_mode;
-  rls->runs[run_id].score = new_score;
-  rls->runs[run_id].judge_id = judge_id;
-  rls->runs[run_id].is_marked = is_marked;
-  return do_flush_entry(cs, run_id);
-}
-
-static int
 check_func(
         struct rldb_plugin_cnts *cdata,
         FILE *log_f)
@@ -1582,7 +1773,6 @@ change_status_3_func(
         int new_test,
         int new_passed_mode,
         int new_score,
-        int judge_id,
         int is_marked,
         int has_user_score,
         int user_status,
@@ -1595,16 +1785,18 @@ change_status_3_func(
   ASSERT(rls->run_f == 0);
   ASSERT(run_id >= 0 && run_id < rls->run_u);
 
-  rls->runs[run_id].status = new_status;
-  rls->runs[run_id].test = new_test;
-  rls->runs[run_id].passed_mode = !!new_passed_mode;
-  rls->runs[run_id].score = new_score;
-  rls->runs[run_id].judge_id = judge_id;
-  rls->runs[run_id].is_marked = is_marked;
-  rls->runs[run_id].is_saved = has_user_score;
-  rls->runs[run_id].saved_status = user_status;
-  rls->runs[run_id].saved_test = user_tests_passed;
-  rls->runs[run_id].saved_score = user_score;
+  struct run_entry *re = &rls->runs[run_id];
+  re->status = new_status;
+  re->test = new_test;
+  re->passed_mode = !!new_passed_mode;
+  re->score = new_score;
+  re->judge_uuid_flag = 0;
+  memset(&re->j, 0, sizeof(re->j));
+  re->is_marked = is_marked;
+  re->is_saved = has_user_score;
+  re->saved_status = user_status;
+  re->saved_test = user_tests_passed;
+  re->saved_score = user_score;
   return do_flush_entry(cs, run_id);
 }
 
@@ -1620,14 +1812,32 @@ change_status_4_func(
   ASSERT(rls->run_f == 0);
   ASSERT(run_id >= 0 && run_id < rls->run_u);
 
-  rls->runs[run_id].status = new_status;
-  rls->runs[run_id].test = 0;
-  rls->runs[run_id].score = -1;
-  rls->runs[run_id].judge_id = 0;
-  rls->runs[run_id].is_marked = 0;
-  rls->runs[run_id].is_saved = 0;
-  rls->runs[run_id].saved_status = 0;
-  rls->runs[run_id].saved_test = 0;
-  rls->runs[run_id].saved_score = 0;
+  struct run_entry *re = &rls->runs[run_id];
+  re->status = new_status;
+  re->test = 0;
+  re->score = -1;
+  re->judge_uuid_flag = 0;
+  memset(&re->j, 0, sizeof(re->j));
+  re->is_marked = 0;
+  re->is_saved = 0;
+  re->saved_status = 0;
+  re->saved_test = 0;
+  re->saved_score = 0;
+  return do_flush_entry(cs, run_id);
+}
+
+static int
+run_set_is_checked_func(
+        struct rldb_plugin_cnts *cdata,
+        int run_id,
+        int is_checked)
+{
+  struct rldb_file_cnts *cs = (struct rldb_file_cnts*) cdata;
+  struct runlog_state *rls = cs->rl_state;
+
+  ASSERT(rls->run_f == 0);
+  ASSERT(run_id >= 0 && run_id < rls->run_u);
+
+  rls->runs[run_id].is_checked = is_checked;
   return do_flush_entry(cs, run_id);
 }

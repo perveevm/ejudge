@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2006-2019 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2006-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -170,6 +170,7 @@ ns_write_priv_all_runs(
     u->tree_mem = filter_tree_new();
     filter_expr_set_string(filter_expr, u->tree_mem, parse_error_func, cs);
     filter_expr_init_parser(u->tree_mem, parse_error_func, cs);
+    filter_expr_nerrs = 0;
     i = filter_expr_parse();
     if (i + filter_expr_nerrs == 0 && filter_expr_lval &&
         filter_expr_lval->type == FILTER_TYPE_BOOL) {
@@ -599,7 +600,7 @@ ns_write_priv_all_runs(
       }
       if (pe->status == RUN_VIRTUAL_START || pe->status == RUN_VIRTUAL_STOP) {
         examinable_str = "";
-        if (pe->judge_id > 0) examinable_str = "!";
+        if (pe->is_checked > 0) examinable_str = "!";
         run_time = pe->time;
         if (!env.rhead.start_time) run_time = 0;
         if (env.rhead.start_time > run_time) run_time = env.rhead.start_time;
@@ -811,7 +812,7 @@ ns_write_priv_all_runs(
         fprintf(f, "<td%s>%s</td>", cl, xml_unparse_ip(pe->a.ip));
       }
       if (run_fields & (1 << RUN_VIEW_SHA1)) {
-        fprintf(f, "<td%s>%s</td>", cl, unparse_sha1(pe->sha1));
+        fprintf(f, "<td%s>%s</td>", cl, unparse_sha1(pe->h.sha1));
       }
       if (run_fields & (1 << RUN_VIEW_USER_ID)) {
         fprintf(f, "<td%s>%d</td>", cl, pe->user_id);
@@ -871,24 +872,10 @@ ns_write_priv_all_runs(
       }
 
       run_status_str(pe->status, statstr, sizeof(statstr), prob_type, 0);
-      
-
-      struct super_run_status_vector srsv;
-      memset(&srsv, 0, sizeof(srsv));
-      ns_scan_heartbeat_dirs(cs, &srsv);
-      
-      int cur_test = -1;
-      for (int jid = 0; jid < srsv.u; ++jid) {
-        const struct super_run_status *srs = &srsv.v[jid]->status;
-        if (srs->run_id == rid) {
-            cur_test = srs->test_num;
-            break;
-        }
-      }
       write_html_run_status(cs, f, start_time, pe, 0, 1, attempts, disq_attempts, ce_attempts,
                             prev_successes, "b1", 0,
-                            enable_js_status_menu, run_fields, effective_time, cur_test);
-      super_run_status_vector_free(&srsv, 0);
+                            enable_js_status_menu, run_fields, effective_time);
+
       if (run_fields & (1 << RUN_VIEW_SCORE_ADJ)) {
         fprintf(f, "<td%s>%d</td>", cl, pe->score_adj);
       }
@@ -2192,8 +2179,8 @@ ns_priv_edit_run_action(
       fprintf(log_f, "invalid 'sha1' field value\n");
       FAIL(NEW_SRV_ERR_INV_PARAM);
     }
-    if (r > 0 && memcmp(info.sha1, new_sha1, sizeof(info.sha1)) != 0) {
-      memcpy(new_info.sha1, new_sha1, sizeof(new_info.sha1));
+    if (r > 0 && memcmp(info.h.sha1, new_sha1, sizeof(info.h.sha1)) != 0) {
+      memcpy(new_info.h.sha1, new_sha1, sizeof(new_info.h.sha1));
       mask |= RE_SHA1;
     }
   }
@@ -3084,7 +3071,7 @@ ns_download_runs(
     }
     serial++;
   }
-  need_remove = 0;
+  need_remove = 1;
 
   snprintf(name3, sizeof(name3), "contest_%d_%04d%02d%02d%02d%02d%02d",
            cnts->id,
@@ -3367,17 +3354,15 @@ do_add_row(
     prob_uuid = prob->uuid;
   }
 
-  ej_uuid_t run_uuid;
+  ej_uuid_t run_uuid = {};
   int store_flags = 0;
-  gettimeofday(&precise_time, 0);
-  ej_uuid_generate(&run_uuid);
-  if (cs->global->uuid_run_store > 0 && run_get_uuid_hash_state(cs->runlog_state) >= 0 && ej_uuid_is_nonempty(run_uuid)) {
+  if (cs->global->uuid_run_store > 0 && run_get_uuid_hash_state(cs->runlog_state) >= 0) {
     store_flags = STORE_FLAGS_UUID;
     if (testing_report_bson_available()) store_flags = STORE_FLAGS_UUID_BSON;
   }
   run_id = run_add_record(cs->runlog_state,
-                          precise_time.tv_sec, precise_time.tv_usec * 1000,
-                          run_size, re->sha1, &run_uuid,
+                          &precise_time,
+                          run_size, re->h.sha1, &run_uuid,
                           &phr->ip, phr->ssl_flag, phr->locale_id,
                           re->user_id, re->prob_id, re->lang_id, re->eoln_type,
                           re->variant, re->is_hidden, re->mime_type,
@@ -3656,7 +3641,7 @@ ns_upload_csv_runs(
         }
       }
     }
-    sha_buffer(run_text, run_size, runs[row].sha1);
+    sha_buffer(run_text, run_size, runs[row].h.sha1);
 
     if (col_ind[CSV_TESTS] >= 0) {
       if (!(s = rr->v[col_ind[CSV_TESTS]]) || !*s) {
@@ -3856,7 +3841,7 @@ ns_upload_csv_results(
         if (run_id < 0 && add_flag) {
           pe->run_id = -1;
           pe->size = run_size;
-          memcpy(pe->sha1, sha1, sizeof(pe->sha1));
+          memcpy(pe->h.sha1, sha1, sizeof(pe->h.sha1));
           ipv6_to_run_entry(&phr->ip, pe);
           pe->ssl_flag = phr->ssl_flag;
           pe->locale_id = phr->locale_id;
@@ -3892,7 +3877,7 @@ ns_upload_csv_results(
         if (run_id < 0 && add_flag) {
           pe->run_id = -1;
           pe->size = run_size;
-          memcpy(pe->sha1, sha1, sizeof(pe->sha1));
+          memcpy(pe->h.sha1, sha1, sizeof(pe->h.sha1));
           ipv6_to_run_entry(&phr->ip, pe);
           pe->ssl_flag = phr->ssl_flag;
           pe->locale_id = phr->locale_id;
@@ -3927,7 +3912,7 @@ ns_upload_csv_results(
         if (run_id < 0 && add_flag) {
           pe->run_id = -1;
           pe->size = run_size;
-          memcpy(pe->sha1, sha1, sizeof(pe->sha1));
+          memcpy(pe->h.sha1, sha1, sizeof(pe->h.sha1));
           ipv6_to_run_entry(&phr->ip, pe);
           pe->ssl_flag = phr->ssl_flag;
           pe->locale_id = phr->locale_id;
@@ -3964,7 +3949,7 @@ ns_upload_csv_results(
         if (run_id < 0 && add_flag) {
           pe->run_id = -1;
           pe->size = run_size;
-          memcpy(pe->sha1, sha1, sizeof(pe->sha1));
+          memcpy(pe->h.sha1, sha1, sizeof(pe->h.sha1));
           ipv6_to_run_entry(&phr->ip, pe);
           pe->ssl_flag = phr->ssl_flag;
           pe->locale_id = phr->locale_id;
@@ -4433,19 +4418,21 @@ ns_write_olympiads_user_runs(
 
   ASSERT(global->score_system == SCORE_OLYMPIAD);
   if (global->is_virtual) {
-    if (run_get_virtual_start_entry(cs->runlog_state, phr->user_id, &re) < 0) {
+    start_time = run_get_virtual_start_time(cs->runlog_state, phr->user_id);
+    if (start_time <= 0) {
       accepting_mode = 0;
       start_time = run_get_start_time(cs->runlog_state);
     } else {
       if (run_get_virtual_stop_time(cs->runlog_state, phr->user_id, 0) <= 0) {
         accepting_mode = 1;
       } else {
-        if (!re.judge_id && global->disable_virtual_auto_judge <= 0)
+        if (!run_get_virtual_is_checked(cs->runlog_state, phr->user_id)
+            && global->disable_virtual_auto_judge <= 0) {
           accepting_mode = 1;
+        }
         if (global->disable_virtual_auto_judge > 0 && cs->testing_finished <= 0)
           accepting_mode = 1;
       }
-      start_time = re.time;
     }
     if (cs->upsolving_mode) accepting_mode = 1;
   } else {
@@ -4496,7 +4483,7 @@ ns_write_olympiads_user_runs(
     if (re.prob_id > 0 && re.prob_id <= cs->max_prob)
       prob = cs->probs[re.prob_id];
     if (prob) {
-      if (prob->variant_num <= 0) {
+      if (prob->variant_num <= 0 || prob->hide_variant > 0) {
         prob_name_ptr = prob->short_name;
       } else {
         variant = re.variant;
@@ -5248,6 +5235,7 @@ ns_get_user_problems_summary(
         int accepting_mode,
         time_t start_time,
         time_t stop_time,
+        const ej_ip_t *ip,
         UserProblemInfo *pinfo)       /* user problem status */
 {
   const struct section_global_data *global = cs->global;
@@ -5554,7 +5542,7 @@ ns_get_user_problems_summary(
       if (re.status == RUN_SUMMONED) {
         cur_pinfo->summoned_flag = 1;
       }
-      if (re.status == RUN_OK && cur_prob->provide_ok) {
+      if ((re.status == RUN_OK || re.status == RUN_PENDING_REVIEW) && cur_prob->provide_ok) {
         for (int oki = 0; cur_prob->provide_ok[oki]; ++oki) {
           for (int p2i = 1; p2i <= cs->max_prob; ++p2i) {
             const struct section_problem_data *prob2 = cs->probs[p2i];
@@ -5709,6 +5697,24 @@ ns_get_user_problems_summary(
     if (!serve_is_problem_started(cs, user_id, cur_prob))
       continue;
 
+    // check the allowed IP list
+    int ip_allowed = 1;
+    if (cur_prob->allow_ip) {
+      ip_allowed = 0;
+      int j;
+      for (j = 0; cur_prob->allow_ip[j]; ++j) {
+        ej_ip_t ip_addr, ip_mask;
+        if (xml_parse_ipv6_mask(NULL, "", 0, 0, cur_prob->allow_ip[j], &ip_addr, &ip_mask) >= 0) {
+          if (ipv6_match_mask(&ip_addr, &ip_mask, ip)) {
+            break;
+          }
+        }
+      }
+      if (cur_prob->allow_ip[j]) {
+        ip_allowed = 1;
+      }
+    }
+
     // the problem is completely disabled before requirements are met
     // check requirements
     if (cur_prob->require) {
@@ -5759,7 +5765,8 @@ ns_get_user_problems_summary(
       pinfo[prob_id].status |= PROB_STATUS_VIEWABLE;
 
     if (start_time > 0 && cs->current_time >= start_time
-        && (stop_time <= 0 || cs->current_time < stop_time || cs->upsolving_mode)
+        && (stop_time <= 0 || cs->current_time < stop_time)
+        && ip_allowed
         && !is_deadlined && cur_prob->disable_user_submit <= 0
         && (cur_prob->disable_submit_after_ok <= 0 || !pinfo[prob_id].solved_flag))
       pinfo[prob_id].status |= PROB_STATUS_SUBMITTABLE;
@@ -5776,7 +5783,7 @@ ns_get_user_problems_summary(
         for (int other_id = 1; other_id <= cs->max_prob; ++other_id) {
           const struct section_problem_data *other_prob = cs->probs[other_id];
           if (other_prob) {
-            if (other_prob->short_name && !strcmp(cur_prob->provide_ok[jj], other_prob->short_name)) {
+            if (/*other_prob->short_name &&*/ !strcmp(cur_prob->provide_ok[jj], other_prob->short_name)) {
               pinfo[other_id].status &= ~PROB_STATUS_SUBMITTABLE;
               break;
             } else if (other_prob->internal_name && !strcmp(cur_prob->provide_ok[jj], other_prob->internal_name)) {
@@ -6535,7 +6542,7 @@ fill_user_run_info(
   ri->size = pre->size;
 
   if (global->show_sha1 > 0 && gen_strings_flag > 0) {
-    ri->abbrev_sha1 = strdup(unparse_abbrev_sha1(pre->sha1));
+    ri->abbrev_sha1 = strdup(unparse_abbrev_sha1(pre->h.sha1));
   }
 
   collect_run_status(cs, start_time, pre, separate_user_score,
@@ -6886,27 +6893,14 @@ new_write_user_runs(
     fprintf(f, "<td%s>%s</td>", cl, prob_str);
     fprintf(f, "<td%s>%s</td>", cl, lang_str);
     if (global->show_sha1 > 0) {
-      fprintf(f, "<td%s><tt>%s</tt></td>", cl, unparse_abbrev_sha1(re.sha1));
+      fprintf(f, "<td%s><tt>%s</tt></td>", cl, unparse_abbrev_sha1(re.h.sha1));
     }
 
-
-    struct super_run_status_vector srsv;
-    memset(&srsv, 0, sizeof(srsv));
-    ns_scan_heartbeat_dirs(state, &srsv);
-    
-    int cur_test = -1;
-    for (int jid = 0; jid < srsv.u; ++jid) {
-        const struct super_run_status *srs = &srsv.v[jid]->status;
-        if (srs->run_id == i) {
-	    cur_test = srs->test_num;
-            break;
-        }
-    }
     write_html_run_status(state, f, start_time, &re, separate_user_score /* user_mode */,
                           0, attempts, disq_attempts, ce_attempts,
                           prev_successes, table_class, 0, 0, RUN_VIEW_DEFAULT,
-                          effective_time, cur_test);
-    super_run_status_vector_free(&srsv, 0);
+                          effective_time);
+
     if (enable_src_view) {
       fprintf(f, "<td%s>", cl);
       fprintf(f, "%s", ns_aref(href, sizeof(href), phr, NEW_SRV_ACTION_VIEW_SOURCE, "run_id=%d", i));
@@ -8952,7 +8946,7 @@ write_json_run_info(
   for (int i = 0; i <= cs->max_prob; ++i) {
     pinfo[i].best_run = -1;
   }
-  ns_get_user_problems_summary(cs, phr->user_id, phr->login, accepting_mode, start_time, stop_time, pinfo);
+  ns_get_user_problems_summary(cs, phr->user_id, phr->login, accepting_mode, start_time, stop_time, &phr->ip, pinfo);
 
   int message_count = 0;
   if (pre->run_uuid.v[0] || pre->run_uuid.v[1] || pre->run_uuid.v[2] || pre->run_uuid.v[3]) {
@@ -9028,7 +9022,7 @@ write_json_run_info(
       fprintf(fout, ",\n      \"is_src_enabled\": %s", to_json_bool(ri.is_src_enabled));
       const struct section_language_data *lang = NULL;
       if (ri.lang_id > 0 && ri.lang_id <= cs->max_lang) lang = cs->langs[ri.lang_id];
-      if (lang && lang->src_sfx) {
+      if (lang /*&& lang->src_sfx*/) {
         fprintf(fout, ",\n      \"src_sfx\": \"%s\"", json_armor_buf(&ab, lang->src_sfx));
       }
     }

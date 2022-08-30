@@ -3,7 +3,7 @@
 #ifndef __TEAM_EXTRA_H__
 #define __TEAM_EXTRA_H__
 
-/* Copyright (C) 2004-2019 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2004-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -24,6 +24,7 @@
 
 struct team_warning
 {
+  int serial_id;                /* primary key for warnings table */
   time_t date;                  /* the date of issue */
   int issuer_id;                /* the issuer id */
   ej_ip_t issuer_ip;            /* the ip of the issuer */
@@ -35,6 +36,8 @@ struct team_extra
 {
   // primary key
   ej_uuid_t uuid;
+  // alternate primary key (for mysql)
+  int serial_id;
 
   int is_dirty;
   int user_id;

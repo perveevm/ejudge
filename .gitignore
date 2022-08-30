@@ -15,10 +15,13 @@ newrevinfo
 ej-batch
 ej-compile
 ej-compile-control
+ej-agent
 ej-contests
 ej-contests-control
 ej-convert-clars
 ej-convert-runs
+ej-convert-status
+ej-convert-xuser
 ej-fix-db
 ej-import-contest
 ej-jobs
@@ -54,7 +57,6 @@ csp_header.make
 filter_expr.c
 filter_expr.h
 filter_scan.c
-genmatcher
 /Makefile.in
 autom4te.cache
 struct-sizes
@@ -63,7 +65,9 @@ ej-suid-exec
 ej-suid-chown
 ej-suid-kill
 ej-suid-ipcrm
-genmatcher2
+ej-suid-container
 ejudge-suid-setup
 make-js-actions
 ejudge-change-contests
+.idea
+ej-suid-update-scripts

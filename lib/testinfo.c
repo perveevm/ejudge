@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2003-2018 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2003-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -29,6 +29,118 @@
 #if defined __GNUC__ && defined __MINGW32__
 #include <malloc.h>
 #endif
+
+enum
+{
+  Tag_params = 0,
+  Tag_environ,
+  Tag_checker_env,
+  Tag_interactor_env,
+  Tag_init_env,
+  Tag_compiler_env,
+  Tag_style_checker_env,
+  Tag_ok_language,
+  Tag_comment,
+  Tag_team_comment,
+  Tag_source_stub,
+  Tag_working_dir,
+  Tag_program_name,
+  Tag_exit_code,
+  Tag_max_open_file_count,
+  Tag_max_process_count,
+  Tag_time_limit_ms,
+  Tag_real_time_limit_ms,
+  Tag_max_vm_size,
+  Tag_max_stack_size,
+  Tag_max_file_size,
+  Tag_max_rss_size,
+  Tag_check_stderr,
+  Tag_disable_stderr,
+  Tag_enable_subst,
+  Tag_compiler_must_fail,
+  Tag_allow_compile_error,
+  Tag_disable_valgrind,
+  Tag_ignore_exit_code
+};
+
+/// TRIE_STRINGS_BEGIN
+static __attribute__((unused)) const char * const tag_table[] =
+{
+  "params",
+  "environ",
+  "checker_env",
+  "interactor_env",
+  "init_env",
+  "compiler_env",
+  "style_checker_env",
+  "ok_language",
+  "comment",
+  "team_comment",
+  "source_stub",
+  "working_dir",
+  "program_name",
+  "exit_code",
+  "max_open_file_count",
+  "max_process_count",
+  "time_limit_ms",
+  "real_time_limit_ms",
+  "max_vm_size",
+  "max_stack_size",
+  "max_file_size",
+  "max_rss_size",
+  "check_stderr",
+  "disable_stderr",
+  "enable_subst",
+  "compiler_must_fail",
+  "allow_compile_error",
+  "disable_valgrind",
+  "ignore_exit_code",
+};
+/// TRIE_STRINGS_END
+
+#define XOFFSET(type,field)       ((long) &((type*) 0)->field)
+#define TESTINFO_OFFSET(f)        XOFFSET(struct testinfo_struct, f)
+#define XPDEREF(type,base,offset) (((type*) (((char*) (base)) + (offset))))
+static unsigned int tag_offsets[] =
+{
+  [Tag_params] = TESTINFO_OFFSET(cmd),
+  [Tag_environ] = TESTINFO_OFFSET(env),
+  [Tag_checker_env] = TESTINFO_OFFSET(checker_env),
+  [Tag_interactor_env] = TESTINFO_OFFSET(interactor_env),
+  [Tag_init_env] = TESTINFO_OFFSET(init_env),
+  [Tag_compiler_env] = TESTINFO_OFFSET(compiler_env),
+  [Tag_style_checker_env] = TESTINFO_OFFSET(style_checker_env),
+  [Tag_ok_language] = TESTINFO_OFFSET(ok_language),
+  [Tag_comment] = TESTINFO_OFFSET(comment),
+  [Tag_team_comment] = TESTINFO_OFFSET(team_comment),
+  [Tag_source_stub] = TESTINFO_OFFSET(source_stub),
+  [Tag_working_dir] = TESTINFO_OFFSET(working_dir),
+  [Tag_program_name] = TESTINFO_OFFSET(program_name),
+  [Tag_exit_code] = TESTINFO_OFFSET(exit_code),
+  [Tag_max_open_file_count] = TESTINFO_OFFSET(max_open_file_count),
+  [Tag_max_process_count] = TESTINFO_OFFSET(max_process_count),
+  [Tag_time_limit_ms] = TESTINFO_OFFSET(time_limit_ms),
+  [Tag_real_time_limit_ms] = TESTINFO_OFFSET(real_time_limit_ms),
+  [Tag_max_vm_size] = TESTINFO_OFFSET(max_vm_size),
+  [Tag_max_stack_size] = TESTINFO_OFFSET(max_stack_size),
+  [Tag_max_file_size] = TESTINFO_OFFSET(max_file_size),
+  [Tag_max_rss_size] = TESTINFO_OFFSET(max_rss_size),
+  [Tag_check_stderr] = TESTINFO_OFFSET(check_stderr),
+  [Tag_disable_stderr] = TESTINFO_OFFSET(disable_stderr),
+  [Tag_enable_subst] = TESTINFO_OFFSET(enable_subst),
+  [Tag_compiler_must_fail] = TESTINFO_OFFSET(compiler_must_fail),
+  [Tag_allow_compile_error] = TESTINFO_OFFSET(allow_compile_error),
+  [Tag_disable_valgrind] = TESTINFO_OFFSET(disable_valgrind),
+  [Tag_ignore_exit_code] = TESTINFO_OFFSET(ignore_exit_code),
+};
+
+struct trie_data;
+extern const struct trie_data testinfo_trie;
+
+int
+trie_check_16(
+        const struct trie_data *td,
+        const unsigned char *str);
 
 struct line_buf
 {
@@ -358,49 +470,49 @@ unparse_str_array(int arr_u, char **arr_v)
 unsigned char *
 testinfo_unparse_cmdline(const struct testinfo_struct *ti)
 {
-  return unparse_str_array(ti->cmd_argc, ti->cmd_argv);
+  return unparse_str_array(ti->cmd.u, ti->cmd.v);
 }
 
 unsigned char *
 testinfo_unparse_environ(const struct testinfo_struct *ti)
 {
-  return unparse_str_array(ti->env_u, ti->env_v);
+  return unparse_str_array(ti->env.u, ti->env.v);
 }
 
 unsigned char *
 testinfo_unparse_checker_env(const struct testinfo_struct *ti)
 {
-  return unparse_str_array(ti->checker_env_u, ti->checker_env_v);
+  return unparse_str_array(ti->checker_env.u, ti->checker_env.v);
 }
 
 unsigned char *
 testinfo_unparse_interactor_env(const struct testinfo_struct *ti)
 {
-  return unparse_str_array(ti->interactor_env_u, ti->interactor_env_v);
+  return unparse_str_array(ti->interactor_env.u, ti->interactor_env.v);
 }
 
 unsigned char *
 testinfo_unparse_init_env(const struct testinfo_struct *ti)
 {
-  return unparse_str_array(ti->init_env_u, ti->init_env_v);
+  return unparse_str_array(ti->init_env.u, ti->init_env.v);
 }
 
 unsigned char *
 testinfo_unparse_compiler_env(const struct testinfo_struct *ti)
 {
-  return unparse_str_array(ti->compiler_env_u, ti->compiler_env_v);
+  return unparse_str_array(ti->compiler_env.u, ti->compiler_env.v);
 }
 
 unsigned char *
 testinfo_unparse_style_checker_env(const struct testinfo_struct *ti)
 {
-  return unparse_str_array(ti->style_checker_env_u, ti->style_checker_env_v);
+  return unparse_str_array(ti->style_checker_env.u, ti->style_checker_env.v);
 }
 
 unsigned char *
 testinfo_unparse_ok_language(const struct testinfo_struct *ti)
 {
-  return unparse_str_array(ti->ok_language_u, ti->ok_language_v);
+  return unparse_str_array(ti->ok_language.u, ti->ok_language.v);
 }
 
 static void
@@ -470,6 +582,7 @@ parse_line(const unsigned char *str, size_t len, testinfo_t *pt, struct testinfo
   size_t len2;
   struct cmdline_buf cmd;
   int retval = 0, x, n;
+  int tag;
 
   if (sh && pt->enable_subst > 0) {
     subst_str = sh->substitute(sh, str);
@@ -506,111 +619,82 @@ parse_line(const unsigned char *str, size_t len, testinfo_t *pt, struct testinfo
     return retval;
   }
 
-  if (!strcmp(name_buf, "params")) {
-    if (pt->cmd_argc >= 0) FAIL(TINF_E_VAR_REDEFINED);
-    pt->cmd_argc = cmd.u;
-    pt->cmd_argv = (char**) cmd.v;
+  switch ((tag = trie_check_16(&testinfo_trie, name_buf))) {
+  case Tag_params:
+  case Tag_environ:
+  case Tag_checker_env:
+  case Tag_interactor_env:
+  case Tag_init_env:
+  case Tag_compiler_env:
+  case Tag_style_checker_env:
+  case Tag_ok_language:
+  {
+    struct testinfo_array *ta = XPDEREF(struct testinfo_array, pt, tag_offsets[tag]);
+    if (ta->u >= 0) FAIL(TINF_E_VAR_REDEFINED);
+    ta->u = cmd.u;
+    ta->v = (char**) cmd.v;
     memset(&cmd, 0, sizeof(cmd));
-  } else if (!strcmp(name_buf, "environ")) {
-    if (pt->env_u > 0) FAIL(TINF_E_VAR_REDEFINED);
-    pt->env_u = cmd.u;
-    pt->env_v = (char**) cmd.v;
-    memset(&cmd, 0, sizeof(cmd));
-  } else if (!strcmp(name_buf, "checker_env")) {
-    if (pt->checker_env_u > 0) FAIL(TINF_E_VAR_REDEFINED);
-    pt->checker_env_u = cmd.u;
-    pt->checker_env_v = (char**) cmd.v;
-    memset(&cmd, 0, sizeof(cmd));
-  } else if (!strcmp(name_buf, "interactor_env")) {
-    if (pt->interactor_env_u > 0) FAIL(TINF_E_VAR_REDEFINED);
-    pt->interactor_env_u = cmd.u;
-    pt->interactor_env_v = (char**) cmd.v;
-    memset(&cmd, 0, sizeof(cmd));
-  } else if (!strcmp(name_buf, "init_env")) {
-    if (pt->init_env_u > 0) FAIL(TINF_E_VAR_REDEFINED);
-    pt->init_env_u = cmd.u;
-    pt->init_env_v = (char**) cmd.v;
-    memset(&cmd, 0, sizeof(cmd));
-  } else if (!strcmp(name_buf, "compiler_env")) {
-    if (pt->compiler_env_u > 0) FAIL(TINF_E_VAR_REDEFINED);
-    pt->compiler_env_u = cmd.u;
-    pt->compiler_env_v = (char**) cmd.v;
-    memset(&cmd, 0, sizeof(cmd));
-  } else if (!strcmp(name_buf, "style_checker_env")) {
-    if (pt->style_checker_env_u > 0) FAIL(TINF_E_VAR_REDEFINED);
-    pt->style_checker_env_u = cmd.u;
-    pt->style_checker_env_v = (char**) cmd.v;
-    memset(&cmd, 0, sizeof(cmd));
-  } else if (!strcmp(name_buf, "ok_language")) {
-    if (pt->ok_language_u > 0) FAIL(TINF_E_VAR_REDEFINED);
-    pt->ok_language_u = cmd.u;
-    pt->ok_language_v = (char**) cmd.v;
-    memset(&cmd, 0, sizeof(cmd));
-  } else if (!strcmp(name_buf, "comment")
-             || !strcmp(name_buf, "team_comment")
-             || !strcmp(name_buf, "source_stub")
-             || !strcmp(name_buf, "working_dir")
-             || !strcmp(name_buf, "program_name")) {
-    if (!strcmp(name_buf, "comment")) {
-      ppval = (unsigned char**) ((void*) &pt->comment);
-    } else if (!strcmp(name_buf, "source_stub")) {
-      ppval = (unsigned char**) ((void*) &pt->source_stub);
-    } else if (!strcmp(name_buf, "working_dir")) {
-      ppval = (unsigned char**) ((void*)&pt->working_dir);
-    } else if (!strcmp(name_buf, "program_name")) {
-      ppval = (unsigned char**) ((void*)&pt->program_name);
-    } else {
-      ppval = (unsigned char**) ((void*)&pt->team_comment);
-    }
+    break;
+  }
+  case Tag_comment:
+  case Tag_team_comment:
+  case Tag_source_stub:
+  case Tag_working_dir:
+  case Tag_program_name:
+    ppval = XPDEREF(unsigned char *, pt, tag_offsets[tag]);
     if (*ppval) FAIL(TINF_E_VAR_REDEFINED);
     if (cmd.u < 1) FAIL(TINF_E_EMPTY_VALUE);
     if (cmd.u > 1) FAIL(TINF_E_MULTIPLE_VALUE);
     *ppval = cmd.v[0];
     cmd.v[0] = 0;
-  } else if (!strcmp(name_buf, "exit_code")) {
+    break;
+  case Tag_exit_code:
     if (cmd.u < 1) FAIL(TINF_E_EMPTY_VALUE);
     if (cmd.u > 1) FAIL(TINF_E_MULTIPLE_VALUE);
     if (sscanf(cmd.v[0], "%d%n", &x, &n) != 1 || cmd.v[0][n]
-        || x < 0 || x > 127)
+        || x < 0 || x > 255)
       FAIL(TINF_E_INVALID_VALUE);
     pt->exit_code = x;
-  } else if (!strcmp(name_buf, "max_open_file_count")) {
+    break;
+  case Tag_max_open_file_count:
+  case Tag_max_process_count:
+  {
+    int *pint = XPDEREF(int, pt, tag_offsets[tag]);
     if (cmd.u < 1) FAIL(TINF_E_EMPTY_VALUE);
     if (cmd.u > 1) FAIL(TINF_E_MULTIPLE_VALUE);
     if (sscanf(cmd.v[0], "%d%n", &x, &n) != 1 || cmd.v[0][n] || x < 0 || x > 1024)
       FAIL(TINF_E_INVALID_VALUE);
-    pt->max_open_file_count = x;
-  } else if (!strcmp(name_buf, "max_process_count")) {
-    if (cmd.u < 1) FAIL(TINF_E_EMPTY_VALUE);
-    if (cmd.u > 1) FAIL(TINF_E_MULTIPLE_VALUE);
-    if (sscanf(cmd.v[0], "%d%n", &x, &n) != 1 || cmd.v[0][n] || x < 0 || x > 1024)
-      FAIL(TINF_E_INVALID_VALUE);
-    pt->max_process_count = x;
-  } else if (!strcmp(name_buf, "time_limit_ms")) {
-    if (cmd.u < 1) FAIL(TINF_E_EMPTY_VALUE);
-    if (cmd.u > 1) FAIL(TINF_E_MULTIPLE_VALUE);
-    if (sscanf(cmd.v[0], "%d%n", &x, &n) != 1 || cmd.v[0][n] || x <= 0)
-      FAIL(TINF_E_INVALID_VALUE);
-    pt->time_limit_ms = x;
-  } else if (!strcmp(name_buf, "real_time_limit_ms")) {
+    *pint = x;
+    break;
+  }
+  case Tag_time_limit_ms:
+  case Tag_real_time_limit_ms:
+  {
+    int *pint = XPDEREF(int, pt, tag_offsets[tag]);
     if (cmd.u < 1) FAIL(TINF_E_EMPTY_VALUE);
     if (cmd.u > 1) FAIL(TINF_E_MULTIPLE_VALUE);
     if (sscanf(cmd.v[0], "%d%n", &x, &n) != 1 || cmd.v[0][n] || x <= 0)
       FAIL(TINF_E_INVALID_VALUE);
-    pt->real_time_limit_ms = x;
-  } else if (!strcmp(name_buf, "max_vm_size")) {
+    *pint = x;
+    break;
+  }
+  case Tag_max_vm_size:
+  case Tag_max_stack_size:
+  case Tag_max_file_size:
+  case Tag_max_rss_size:
     if (cmd.u < 1) FAIL(TINF_E_EMPTY_VALUE);
     if (cmd.u > 1) FAIL(TINF_E_MULTIPLE_VALUE);
-    if (parse_size(cmd.v[0], &pt->max_vm_size) < 0) FAIL(TINF_E_INVALID_VALUE);
-  } else if (!strcmp(name_buf, "max_stack_size")) {
-    if (cmd.u < 1) FAIL(TINF_E_EMPTY_VALUE);
-    if (cmd.u > 1) FAIL(TINF_E_MULTIPLE_VALUE);
-    if (parse_size(cmd.v[0], &pt->max_stack_size) < 0) FAIL(TINF_E_INVALID_VALUE);
-  } else if (!strcmp(name_buf, "max_file_size")) {
-    if (cmd.u < 1) FAIL(TINF_E_EMPTY_VALUE);
-    if (cmd.u > 1) FAIL(TINF_E_MULTIPLE_VALUE);
-    if (parse_size(cmd.v[0], &pt->max_file_size) < 0) FAIL(TINF_E_INVALID_VALUE);
-  } else if (!strcmp(name_buf, "check_stderr")) {
+    if (parse_size(cmd.v[0], XPDEREF(long long, pt, tag_offsets[tag])) < 0) FAIL(TINF_E_INVALID_VALUE);
+    break;
+  case Tag_check_stderr:
+  case Tag_disable_stderr:
+  case Tag_enable_subst:
+  case Tag_compiler_must_fail:
+  case Tag_allow_compile_error:
+  case Tag_disable_valgrind:
+  case Tag_ignore_exit_code:
+  {
+    int *pint = XPDEREF(int, pt, tag_offsets[tag]);
     if (cmd.u < 1) {
       x = 1;
     } else {
@@ -619,50 +703,13 @@ parse_line(const unsigned char *str, size_t len, testinfo_t *pt, struct testinfo
           || x < 0 || x > 1)
         FAIL(TINF_E_INVALID_VALUE);
     }
-    pt->check_stderr = x;
-  } else if (!strcmp(name_buf, "disable_stderr")) {
-    if (cmd.u < 1) {
-      x = 1;
-    } else {
-      if (cmd.u > 1) FAIL(TINF_E_MULTIPLE_VALUE);
-      if (sscanf(cmd.v[0], "%d%n", &x, &n) != 1 || cmd.v[0][n]
-          || x < 0 || x > 1)
-        FAIL(TINF_E_INVALID_VALUE);
-    }
-    pt->disable_stderr = x;
-  } else if (!strcmp(name_buf, "enable_subst")) {
-    if (cmd.u < 1) {
-      x = 1;
-    } else {
-      if (cmd.u > 1) FAIL(TINF_E_MULTIPLE_VALUE);
-      if (sscanf(cmd.v[0], "%d%n", &x, &n) != 1 || cmd.v[0][n]
-          || x < 0 || x > 1)
-        FAIL(TINF_E_INVALID_VALUE);
-    }
-    pt->enable_subst = x;
-  } else if (!strcmp(name_buf, "compiler_must_fail")) {
-    if (cmd.u < 1) {
-      x = 1;
-    } else {
-      if (cmd.u > 1) FAIL(TINF_E_MULTIPLE_VALUE);
-      if (sscanf(cmd.v[0], "%d%n", &x, &n) != 1 || cmd.v[0][n]
-          || x < 0 || x > 1)
-        FAIL(TINF_E_INVALID_VALUE);
-    }
-    pt->compiler_must_fail = x;
-  } else if (!strcmp(name_buf, "disable_valgrind")) {
-    if (cmd.u < 1) {
-      x = 1;
-    } else {
-      if (cmd.u > 1) FAIL(TINF_E_MULTIPLE_VALUE);
-      if (sscanf(cmd.v[0], "%d%n", &x, &n) != 1 || cmd.v[0][n]
-          || x < 0 || x > 1)
-        FAIL(TINF_E_INVALID_VALUE);
-    }
-    pt->disable_valgrind = x;
-  } else {
+    *pint = x;
+    break;
+  }
+  default:
     FAIL(TINF_E_INVALID_VAR_NAME);
   }
+
   free_cmdline(&cmd);
   free(subst_str);
   return 0;
@@ -707,13 +754,15 @@ testinfo_parse(const char *path, testinfo_t *pt, struct testinfo_subst_handler *
   int retval;
 
   memset(pt, 0, sizeof(*pt));
-  pt->cmd_argc = -1;
+  pt->cmd.u = -1;
   pt->disable_stderr = -1;
   pt->max_open_file_count = -1;
   pt->max_process_count = -1;
   pt->max_vm_size = -1LL;
   pt->max_stack_size = -1LL;
   pt->max_file_size = -1LL;
+  pt->max_rss_size = -1LL;
+  pt->ignore_exit_code = -1;
   if (!(fin = fopen(path, "r"))) {
     memset(pt, 0, sizeof(*pt));
     return -TINF_E_CANNOT_OPEN;
@@ -734,52 +783,19 @@ testinfo_free(testinfo_t *pt)
 
   if (!pt) return;
 
-  if (pt->cmd_argc > 0 && pt->cmd_argv) {
-    for (i = 0; i < pt->cmd_argc; i++)
-      if (pt->cmd_argv[i]) free(pt->cmd_argv[i]);
-    free(pt->cmd_argv);
-  }
-  if (pt->env_u > 0 && pt->env_v) {
-    for (i = 0; i < pt->env_u; ++i) {
-      if (pt->env_v[i]) free(pt->env_v[i]);
+  static const int array_tags[] =
+  {
+    Tag_params, Tag_environ, Tag_checker_env, Tag_interactor_env,
+    Tag_init_env, Tag_compiler_env, Tag_style_checker_env, Tag_ok_language, 0
+  };
+  for (int ti = 0; array_tags[ti]; ++ti) {
+    struct testinfo_array *ta = XPDEREF(struct testinfo_array, pt, tag_offsets[array_tags[ti]]);
+    if (ta->u > 0 && ta->v) {
+      for (i = 0; i < ta->u; ++i) {
+        free(ta->v[i]);
+      }
     }
-    free(pt->env_v);
-  }
-  if (pt->checker_env_u > 0 && pt->checker_env_v) {
-    for (i = 0; i < pt->checker_env_u; ++i) {
-      if (pt->checker_env_v[i]) free(pt->checker_env_v[i]);
-    }
-    free(pt->checker_env_v);
-  }
-  if (pt->interactor_env_u > 0 && pt->interactor_env_v) {
-    for (i = 0; i < pt->interactor_env_u; ++i) {
-      if (pt->interactor_env_v[i]) free(pt->interactor_env_v[i]);
-    }
-    free(pt->interactor_env_v);
-  }
-  if (pt->init_env_u > 0 && pt->init_env_v) {
-    for (i = 0; i < pt->init_env_u; ++i) {
-      if (pt->init_env_v[i]) free(pt->init_env_v[i]);
-    }
-    free(pt->init_env_v);
-  }
-  if (pt->compiler_env_u > 0 && pt->compiler_env_v) {
-    for (i = 0; i < pt->compiler_env_u; ++i) {
-      if (pt->compiler_env_v[i]) free(pt->compiler_env_v[i]);
-    }
-    free(pt->compiler_env_v);
-  }
-  if (pt->style_checker_env_u > 0 && pt->style_checker_env_v) {
-    for (i = 0; i < pt->style_checker_env_u; ++i) {
-      if (pt->style_checker_env_v[i]) free(pt->style_checker_env_v[i]);
-    }
-    free(pt->style_checker_env_v);
-  }
-  if (pt->ok_language_u > 0 && pt->ok_language_v) {
-    for (i = 0; i < pt->ok_language_u; ++i) {
-      free(pt->ok_language_v[i]);
-    }
-    free(pt->ok_language_v);
+    free(ta->v);
   }
   if (pt->comment) free(pt->comment);
   if (pt->team_comment) free(pt->team_comment);

@@ -1,3 +1,19 @@
+/* -*- mode: c; c-basic-offset: 4 -*- */
+
+/* Copyright (C) 2015-2020 Alexander Chernov <cher@ejudge.ru> */
+
+/*
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ */
+
 #include <sys/types.h>
 #include <pwd.h>
 #include <grp.h>
@@ -17,8 +33,21 @@
 #include <sys/sem.h>
 #include <sys/shm.h>
 
+#include "config.h"
+
+#if defined EJUDGE_PRIMARY_USER
+#define PRIMARY_USER EJUDGE_PRIMARY_USER
+#else
+#define PRIMARY_USER "ejudge"
+#endif
+
+#if defined EJUDGE_EXEC_USER
+#define EXEC_USER EJUDGE_EXEC_USER
+#define EXEC_GROUP EJUDGE_EXEC_USER
+#else
 #define EXEC_USER "ejexec"
 #define EXEC_GROUP "ejexec"
+#endif
 
 static int
 getl(char *buf, size_t size, FILE *f)
@@ -168,25 +197,46 @@ scan_shm(int search_uid, int *p_count, FILE *rep_f)
 int
 main(int argc, char **argv)
 {
-    struct passwd *pwd = getpwnam(EXEC_USER);
-    endpwent();
-    if (!pwd) {
-        fprintf(stderr, "%s: user '%s' does not exist\n", argv[0], EXEC_USER);
-        abort();
+    int primary_uid = -1;
+    int exec_uid = -1;
+    {
+        struct passwd *pwd = getpwnam(EXEC_USER);
+        if (!pwd) {
+            fprintf(stderr, "%s: user '%s' does not exist\n", argv[0], EXEC_USER);
+            abort();
+        }
+        exec_uid = pwd->pw_uid;
+        if (exec_uid <= 0) {
+            fprintf(stderr, "%s: user '%s' has uid %d\n", argv[0], EXEC_USER, exec_uid);
+            abort();
+        }
+        endpwent();
     }
-    if (pwd->pw_uid <= 0) {
-        fprintf(stderr, "%s: user '%s' has uid %d\n", argv[0], EXEC_USER, pwd->pw_uid);
-        abort();
+    {
+        struct passwd *pwd = getpwnam(PRIMARY_USER);
+        if (!pwd) {
+            fprintf(stderr, "%s: user '%s' does not exist\n", argv[0], PRIMARY_USER);
+            abort();
+        }
+        primary_uid = pwd->pw_uid;
+        if (primary_uid <= 0) {
+            fprintf(stderr, "%s: user '%s' has uid %d\n", argv[0], PRIMARY_USER, primary_uid);
+            abort();
+        }
+        if (getuid() != primary_uid) {
+            fprintf(stderr, "%s: only user '%s' can run this program\n", argv[0], PRIMARY_USER);
+            abort();
+        }
     }
 
     char *rep_s = NULL;
     size_t rep_z = 0;
     FILE *rep_f = open_memstream(&rep_s, &rep_z);
     int count = 0;
-    int retval = scan_msg(pwd->pw_uid, &count, rep_f)
-        | scan_sem(pwd->pw_uid, &count, rep_f)
-        | scan_shm(pwd->pw_uid, &count, rep_f)
-        | scan_posix_mqueue(pwd->pw_uid, &count, rep_f);
+    int retval = scan_msg(exec_uid, &count, rep_f)
+        | scan_sem(exec_uid, &count, rep_f)
+        | scan_shm(exec_uid, &count, rep_f)
+        | scan_posix_mqueue(exec_uid, &count, rep_f);
     fclose(rep_f); rep_f = NULL;
     if (count > 0) {
         printf("System V IPC scan found the following objects:\n");

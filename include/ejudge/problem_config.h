@@ -2,7 +2,7 @@
 #ifndef __PROBLEM_CONFIG_H__
 #define __PROBLEM_CONFIG_H__
 
-/* Copyright (C) 2012-2019 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2012-2021 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or
@@ -90,6 +90,7 @@ struct problem_config_section
   ejintbool_t stand_last_column;
   ejintbool_t disable_security;
   ejintbool_t enable_suid_run;
+  ejintbool_t enable_container;
   ejintbool_t enable_multi_header;
   ejintbool_t use_lang_multi_header;
   ejintbool_t require_any;
@@ -102,6 +103,7 @@ struct problem_config_section
   ejintbool_t hide_variant;
   ejintbool_t enable_extended_info;
   ejintbool_t stop_on_first_fail;
+  ejintbool_t enable_control_socket;
 
   int id;
   int real_time_limit;
@@ -118,6 +120,7 @@ struct problem_config_section
   int compile_error_penalty;
   int min_tests_to_accept;
   int checker_real_time_limit;
+  int checker_time_limit_ms;
   int priority_adjustment;
   int score_multiplier;
   int prev_runs_to_show;
@@ -134,8 +137,12 @@ struct problem_config_section
   size_t max_vm_size;
   size_t max_data_size;
   size_t max_stack_size;
+  size_t max_rss_size;
   size_t max_core_size;
   size_t max_file_size;
+  size_t checker_max_vm_size;
+  size_t checker_max_stack_size;
+  size_t checker_max_rss_size;
 
   unsigned char *type;
   unsigned char *short_name;
@@ -188,6 +195,7 @@ struct problem_config_section
   unsigned char *footer_pat;
   unsigned char *compiler_env_pat;
   unsigned char *uuid;
+  unsigned char *container_options;
 
   char **test_sets;
   char **date_penalty;
@@ -201,6 +209,7 @@ struct problem_config_section
   char **lang_time_adj_millis;
   char **lang_max_vm_size;
   char **lang_max_stack_size;
+  char **lang_max_rss_size;
   char **personal_deadline;
   char **score_view;
   char **score_view_text;
@@ -214,6 +223,7 @@ struct problem_config_section
   ejenvlist_t init_env;
   ejenvlist_t start_env;
   ejenvlist_t statement_env;
+  ejenvlist_t lang_compiler_container_options;
 };
 
 void

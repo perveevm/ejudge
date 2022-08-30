@@ -1,6 +1,6 @@
 /* -*- c -*- */
 
-/* Copyright (C) 2006-2018 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2006-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -458,12 +458,24 @@ handle_options(const unsigned char *opt)
 }
 
 static int
+is_runtime_error(tTask *tsk, struct testinfo_struct *ptinfo)
+{
+  if (task_IsAbnormal(tsk) <= 0) return 0;
+  if (!ptinfo) return 1;
+  if (ptinfo->exit_code > 0) {
+    return task_Status(tsk) != TSK_EXITED || task_ExitCode(tsk) != ptinfo->exit_code;
+  }
+  return ptinfo->ignore_exit_code <= 0;
+}
+
+static int
 run_program(int argc, char *argv[], long *p_cpu_time, long *p_real_time)
 {
   tTask *tsk = 0;
   int i;
   int retcode = RUN_CHECK_FAILED;
   struct testinfo_struct tinfo;
+  struct testinfo_struct *ptinfo = NULL;
   unsigned char input_path[PATH_MAX];
   unsigned char output_path[PATH_MAX];
   unsigned char error_path[PATH_MAX];
@@ -511,8 +523,11 @@ run_program(int argc, char *argv[], long *p_cpu_time, long *p_real_time)
     }
   }
 
-  if (info_file && (i = testinfo_parse(info_file, &tinfo, NULL)) < 0) {
-    fatal("testinfo file parse error: %s", testinfo_strerror(-i));
+  if (info_file) {
+    if ((i = testinfo_parse(info_file, &tinfo, NULL)) < 0) {
+      fatal("testinfo file parse error: %s", testinfo_strerror(-i));
+    }
+    ptinfo = &tinfo;
   }
 
   if (test_file) {
@@ -545,7 +560,7 @@ run_program(int argc, char *argv[], long *p_cpu_time, long *p_real_time)
   if (!(tsk = task_New())) fatal("cannot create task");
   task_SetQuietFlag(tsk);
   task_pnAddArgs(tsk, argc, argv);
-  task_pnAddArgs(tsk, tinfo.cmd_argc, tinfo.cmd_argv);
+  task_pnAddArgs(tsk, tinfo.cmd.u, tinfo.cmd.v);
   task_SetPathAsArg0(tsk);
   if (working_dir) task_SetWorkingDir(tsk, working_dir);
   if (test_file) {
@@ -570,20 +585,37 @@ run_program(int argc, char *argv[], long *p_cpu_time, long *p_real_time)
   if (clear_env_flag) task_ClearEnv(tsk);
   for (i = 0; i < env_vars.u; i++)
     task_PutEnv(tsk, env_vars.v[i]);
-  for (i = 0; i < tinfo.env_u; ++i) {
-    task_PutEnv(tsk, tinfo.env_v[i]);
+  for (i = 0; i < tinfo.env.u; ++i) {
+    task_PutEnv(tsk, tinfo.env.v[i]);
   }
-  if (time_limit_millis > 0)
-    if (task_SetMaxTimeMillis(tsk, time_limit_millis) < 0)
-      fatal("--time-limit-millis is not supported");
-  if (time_limit > 0) task_SetMaxTime(tsk, time_limit);
-  if (real_time_limit > 0) task_SetMaxRealTime(tsk, real_time_limit);
+  if (tinfo.time_limit_ms > 0) {
+    if (task_SetMaxTimeMillis(tsk, tinfo.time_limit_ms) < 0)
+      fatal("time limit in ms is not supported");
+  } else {
+    if (time_limit_millis > 0)
+      if (task_SetMaxTimeMillis(tsk, time_limit_millis) < 0)
+        fatal("--time-limit-millis is not supported");
+    if (time_limit > 0) task_SetMaxTime(tsk, time_limit);
+  }
+  if (tinfo.real_time_limit_ms > 0) {
+    task_SetMaxRealTimeMillis(tsk, tinfo.real_time_limit_ms);
+  } else {
+    if (real_time_limit > 0) task_SetMaxRealTime(tsk, real_time_limit);
+  }
   if (kill_signal)
     if (task_SetKillSignal(tsk, kill_signal) < 0)
       fatal("invalid value for --kill-signal option");
   if (no_core_dump) task_DisableCoreDump(tsk);
-  if (max_vm_size) task_SetVMSize(tsk, max_vm_size);
-  if (max_stack_size) task_SetStackSize(tsk, max_stack_size);
+  if (tinfo.max_vm_size > 0) {
+    task_SetVMSize(tsk, tinfo.max_vm_size);
+  } else if (max_vm_size) {
+    task_SetVMSize(tsk, max_vm_size);
+  }
+  if (tinfo.max_stack_size > 0) {
+    task_SetStackSize(tsk, tinfo.max_stack_size);
+  } else if (max_stack_size) {
+    task_SetStackSize(tsk, max_stack_size);
+  }
   if (max_data_size) task_SetDataSize(tsk, max_data_size);
   if (memory_limit)
     if (task_EnableMemoryLimitError(tsk) < 0)
@@ -622,9 +654,7 @@ run_program(int argc, char *argv[], long *p_cpu_time, long *p_real_time)
               "Description: time limit exceeded\n");
     }
     retcode = RUN_TIME_LIMIT_ERR;
-  } else if (task_IsAbnormal(tsk)
-             && (!info_file || tinfo.exit_code <= 0 || task_Status(tsk) != TSK_EXITED
-                 || task_ExitCode(tsk) != tinfo.exit_code)) {
+  } else if (is_runtime_error(tsk, ptinfo)) {
     if (all_tests <= 0) {
       fprintf(stderr, "Status: RT\n");
       if (task_Status(tsk) == TSK_SIGNALED) {

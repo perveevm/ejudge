@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2008-2019 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2008-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -206,7 +206,7 @@ struct clar_entry_internal
   unsigned char *subj;
 };
 
-#define CLAR_VERSION 7
+#define CLAR_VERSION 9
 
 enum { CLARS_ROW_WIDTH = 24 };
 
@@ -242,7 +242,7 @@ static const struct common_mysql_parse_spec clars_spec[CLARS_ROW_WIDTH] =
 static const char create_clars_query[] =
 "CREATE TABLE %sclars("
 "        clar_id INT UNSIGNED NOT NULL,"
-"        uuid CHAR(40) NOT NULL,"
+"        uuid CHAR(40) CHARSET utf8 COLLATE utf8_bin NOT NULL,"
 "        contest_id INT UNSIGNED NOT NULL,"
 "        size INT UNSIGNED NOT NULL DEFAULT 0,"
 "        create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
@@ -271,7 +271,7 @@ static const char create_clars_query[] =
 "        KEY clars_run_uuid_k (run_uuid),"
 "        KEY clars_user_from_k (user_from),"
 "        KEY clars_user_to_k (user_to)"
-"        );";
+"        ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_bin;";
 
 struct clartext_entry_internal
 {
@@ -300,7 +300,7 @@ static const char create_texts_query[] =
 "        clar_text VARBINARY(4096),"
 "        PRIMARY KEY (clar_id, contest_id),"
 "        UNIQUE KEY clartexts_uuid_uk (uuid)"
-"        );";
+"        ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_bin;";
 
 static int
 do_create(struct cldb_mysql_state *state)
@@ -428,6 +428,22 @@ do_open(struct cldb_mysql_state *state)
     if (mi->simple_fquery(md, "UPDATE %sconfig SET config_val = '7' WHERE config_key = 'clar_version' ;", md->table_prefix) < 0)
       return -1;
     clar_version = 7;
+  }
+  if (clar_version == 7) {
+    if (mi->simple_fquery(md, "ALTER TABLE %sclartexts ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_bin;", md->table_prefix) < 0)
+      return -1;
+    if (mi->simple_fquery(md, "ALTER TABLE %sclars ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_bin;", md->table_prefix) < 0)
+      return -1;
+    if (mi->simple_fquery(md, "UPDATE %sconfig SET config_val = '8' WHERE config_key = 'clar_version' ;", md->table_prefix) < 0)
+      return -1;
+    clar_version = 8;
+  }
+  if (clar_version == 8) {
+    if (mi->simple_fquery(md, "ALTER TABLE %sclars MODIFY uuid CHAR(40) CHARSET utf8 COLLATE utf8_bin NOT NULL;", md->table_prefix) < 0)
+      return -1;
+    if (mi->simple_fquery(md, "UPDATE %sconfig SET config_val = '9' WHERE config_key = 'clar_version' ;", md->table_prefix) < 0)
+      return -1;
+    clar_version = 9;
   }
 
   // just in case

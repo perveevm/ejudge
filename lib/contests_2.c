@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2008-2017 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2008-2021 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -75,7 +75,8 @@ contests_write_header(
     CONTEST_A_PERSONAL, CONTEST_A_ALLOW_REG_DATA_EDIT,
     CONTEST_A_ENABLE_USER_TELEGRAM, CONTEST_A_ENABLE_AVATAR, CONTEST_A_ENABLE_LOCAL_PAGES,
     CONTEST_A_DISABLE_MEMBER_DELETE, CONTEST_A_CLOSED, CONTEST_A_INVISIBLE,
-    CONTEST_A_MANAGED, CONTEST_A_RUN_MANAGED, CONTEST_A_OLD_RUN_MANAGED, CONTEST_A_READY,
+    CONTEST_A_MANAGED, CONTEST_A_RUN_MANAGED, CONTEST_A_OLD_RUN_MANAGED, CONTEST_A_READY, CONTEST_A_READ_ONLY_NAME,
+    CONTEST_A_ENABLE_OAUTH, CONTEST_A_ENABLE_REMINDERS,
     0
   };
   for (i = 0; flist[i]; ++i) {
@@ -366,6 +367,20 @@ contests_unparse(
     }
     fprintf(f, "  </%s>\n", contests_elem_map[CONTEST_SLAVE_RULES]);
   }
+  if (cnts->oauth_rules) {
+    fprintf(f, "  <%s>\n", contests_elem_map[CONTEST_OAUTH_RULES]);
+    for (p = cnts->oauth_rules->first_down; p; p = p->right) {
+      if (p->tag == CONTEST_OAUTH_RULE) {
+        fprintf(f, "    <%s", contests_elem_map[CONTEST_OAUTH_RULE]);
+        for (struct xml_attr *a = p->first; a; a = a->next) {
+          // FIXME: XML escape?
+          fprintf(f, " %s=\"%s\"", contests_attr_map[a->tag], a->text);
+        }
+        fprintf(f, " />\n");
+      }
+    }
+    fprintf(f, "  </%s>\n", contests_elem_map[CONTEST_OAUTH_RULES]);
+  }
   fprintf(f, "</%s>", contests_elem_map[CONTEST_CONTEST]);
 }
 
@@ -560,7 +575,7 @@ contests_remove_nth_permission(struct contest_desc *cnts, int n)
 
   for (j = 0, perms = CNTS_FIRST_PERM(cnts);
        perms && n != j;
-       perms = CNTS_NEXT_PERM_NC(perms), ++j)
+       perms = CNTS_NEXT_PERM_NC(perms), ++j) {}
   if (!perms || n != j) return -1;
 
   xml_unlink_node(&perms->b);
@@ -586,6 +601,33 @@ contests_add_permission(
        cap_node = CNTS_NEXT_PERM_NC(cap_node))
     if (!strcmp(cap_node->login, login)) {
       cap_node->caps |= caps;
+      return 0;
+    }
+
+  if (!cnts->caps_node) {
+    cnts->caps_node = contests_new_node(CONTEST_CAPS);
+    xml_link_node_last(&cnts->b, cnts->caps_node);
+  }
+  cap_node = (typeof(cap_node)) contests_new_node(CONTEST_CAP);
+  if (!cnts->capabilities.first) cnts->capabilities.first = cap_node;
+  cap_node->login = xstrdup(login);
+  cap_node->caps = caps;
+  xml_link_node_last(cnts->caps_node, &cap_node->b);
+  return 1;
+}
+
+int
+contests_upsert_permission(
+        struct contest_desc *cnts,
+        const unsigned char *login,
+        opcap_t caps)
+{
+  struct opcap_list_item *cap_node;
+
+  for (cap_node = CNTS_FIRST_PERM(cnts); cap_node;
+       cap_node = CNTS_NEXT_PERM_NC(cap_node))
+    if (!strcmp(cap_node->login, login)) {
+      cap_node->caps = caps;
       return 0;
     }
 

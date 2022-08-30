@@ -2,7 +2,7 @@
 #ifndef __COMPILE_PACKET_PRIV_H__
 #define __COMPILE_PACKET_PRIV_H__
 
-/* Copyright (C) 2005-2019 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2005-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -18,7 +18,7 @@
 
 #include "ejudge/integral.h"
 
-#define EJ_COMPILE_PACKET_VERSION 7
+#define EJ_COMPILE_PACKET_VERSION 9
 
 /* various private data structures and constants for compile packets */
 
@@ -37,6 +37,7 @@ struct compile_request_bin_packet
   ej_size64_t max_vm_size;      /* the process VM limit */
   ej_size64_t max_stack_size;   /* the process stack size */
   ej_size64_t max_file_size;    /* the maximum file size */
+  ej_size64_t max_rss_size;     /* the maximum resident set size */
   rint32_t style_check_only;    /* only perform style check */
   rint32_t ts1;                 /* the time, when comp. request was queued */
   rint32_t ts1_us;              /* the microsecond component */
@@ -46,7 +47,9 @@ struct compile_request_bin_packet
   rint32_t env_num;             /* the number of env. variables */
   rint32_t sc_env_num;          /* the number of style checker env. vars */
   rint32_t use_uuid;            /* use UUID instead of run_id */
+  rint32_t use_container;       /* use ej-suid-container for compilation */
   ej_uuid_t uuid;               /* UUID */
+  ej_uuid_t judge_uuid;         /* judging UUID */
   rint32_t multi_header;        /* multi-header mode */
   rint32_t lang_header;         /* lang-specific multi-header mode */
   rint32_t user_id;
@@ -58,7 +61,8 @@ struct compile_request_bin_packet
   rint32_t user_login_len;
   rint32_t exam_cypher_len;
   rint32_t contest_server_id_len;/* the length of the contest server id */
-  unsigned char pad[8] ;        /* padding to 16-byte boundary */
+  rint32_t container_options_len;/* the length of the container options */
+  unsigned char pad[8];          /* padding to 16-byte boundary */
   /* style checker command (aligned to 16 byte boundary) */
   /* run_block (aligned to 16 byte boundary) */
   /* env variable length array (aligned to 16-byte address boundary) */
@@ -89,6 +93,7 @@ struct compile_reply_bin_packet
   rint32_t run_block_len;       /* the length of the run block */
   rint32_t use_uuid;
   ej_uuid_t uuid;              /* UUID */
+  ej_uuid_t judge_uuid;        /* judgind UUID */
   rint32_t zip_mode;
   unsigned char pad[4];        /* padding to 64-byte boundary */
   /* run block (aligned to 16 byte boundary) */

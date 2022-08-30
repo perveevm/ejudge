@@ -2,6 +2,7 @@
 %><%@include "reg_includes.csp"
 %><%
 #include "ejudge/ejudge_cfg.h"
+#include "ejudge/oauth.h"
 %><%@set ac_prefix = "NEW_SRV_ACTION_"
 %><%@set err_prefix = "NEW_SRV_ERR_"
 %><%@set getter_name = "csp_get_reg_login_page"
@@ -99,6 +100,34 @@
 </tr></table></div>
 
 <%@include "reg_separator.csp"
+%>
+<%
+  if (phr->action != NEW_SRV_ACTION_REG_ACCOUNT_CREATED_PAGE && phr->config && phr->config->enable_oauth) {
+%>
+<s:url name="LoginWithGoogleUrl" script="client" ac="'oauth-login-1'">
+    <s:param name="contest_id" value="phr->contest_id" />
+    <s:param name="provider" value='"google"' />
+</s:url>
+<s:url name="LoginWithVKUrl" script="client" ac="'oauth-login-1'">
+    <s:param name="contest_id" value="phr->contest_id" />
+    <s:param name="provider" value='"vk"' />
+</s:url>
+<p>
+<%
+    if (oauth_is_available_num(phr->config, 1)) {
+%>
+<s:a url="LoginWithGoogleUrl"><img src="<s:config name="style-prefix" />icons/btn_google_signin_dark_normal_web.png" alt="google auth"></img></s:a>
+<%
+    }
+    if (oauth_is_available_num(phr->config, 2)) {
+%>
+<s:a url="LoginWithVKUrl"><img src="<s:config name="style-prefix" />icons/vk-logo.jpeg" alt="vk auth" width="46"></img></s:a>
+<%
+    }
+%>
+</p>
+<%
+  }
 %>
 <%
   if (phr->action == NEW_SRV_ACTION_REG_ACCOUNT_CREATED_PAGE) {

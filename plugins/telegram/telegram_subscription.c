@@ -1,6 +1,6 @@
-/* -*- mode: c -*- */
+/* -*- mode: c; c-basic-offset: 4 -*- */
 
-/* Copyright (C) 2016-2019 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2016-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -33,7 +33,20 @@
 #include <errno.h>
 #include <string.h>
 
+#if HAVE_LIBMONGOC - 0 > 0
+struct _bson_t;
+typedef struct _bson_t ej_bson_t;
+#elif HAVE_LIBMONGO_CLIENT - 0 == 1
+struct _bson;
+typedef struct _bson ej_bson_t;
+#endif
+
 #define TELEGRAM_SUBSCRIPTIONS_TABLE_NAME "telegram_subscriptions"
+
+static struct telegram_subscription *
+telegram_subscription_parse_bson(const ej_bson_t *bson);
+static ej_bson_t *
+telegram_subscription_unparse_bson(const struct telegram_subscription *subscription);
 
 struct telegram_subscription *
 telegram_subscription_free(struct telegram_subscription *sub)
@@ -64,7 +77,7 @@ telegram_subscription_create(const unsigned char *bot_id, int contest_id, int us
     return sub;
 }
 
-struct telegram_subscription *
+static struct telegram_subscription *
 telegram_subscription_parse_bson(const ej_bson_t *bson)
 {
 #if HAVE_LIBMONGOC - 0 > 0
@@ -132,7 +145,7 @@ cleanup:
 #endif
 }
 
-ej_bson_t *
+static ej_bson_t *
 telegram_subscription_unparse_bson(const struct telegram_subscription *sub)
 {
 #if HAVE_LIBMONGOC - 0 > 0
@@ -197,7 +210,7 @@ struct telegram_subscription *
 telegram_subscription_fetch(struct mongo_conn *conn, const unsigned char *bot_id, int contest_id, int user_id)
 {
 #if HAVE_LIBMONGOC - 0 > 0
-    if (!mongo_conn_open(conn)) return NULL;
+    if (!conn->b.vt->open(&conn->b)) return NULL;
 
     unsigned char buf[1024];
     if (!bot_id || !*bot_id || contest_id <= 0 || user_id <= 0) return NULL;
@@ -209,7 +222,7 @@ telegram_subscription_fetch(struct mongo_conn *conn, const unsigned char *bot_id
     const bson_t *doc = NULL;
     struct telegram_subscription *retval = NULL;
 
-    if (!(coll = mongoc_client_get_collection(conn->client, conn->database, TELEGRAM_SUBSCRIPTIONS_TABLE_NAME))) {
+    if (!(coll = mongoc_client_get_collection(conn->client, conn->b.database, TELEGRAM_SUBSCRIPTIONS_TABLE_NAME))) {
         err("get_collection failed\n");
         goto cleanup;
     }
@@ -283,7 +296,7 @@ int
 telegram_subscription_save(struct mongo_conn *conn, const struct telegram_subscription *sub)
 {
 #if HAVE_LIBMONGOC - 0 > 0
-    if (!mongo_conn_open(conn)) return -1;
+    if (!conn->b.vt->open(&conn->b)) return -1;
 
     int retval = -1;
     mongoc_collection_t *coll = NULL;
@@ -291,7 +304,7 @@ telegram_subscription_save(struct mongo_conn *conn, const struct telegram_subscr
     bson_t *bson = NULL;
     bson_error_t error;
 
-    if (!(coll = mongoc_client_get_collection(conn->client, conn->database, TELEGRAM_SUBSCRIPTIONS_TABLE_NAME))) {
+    if (!(coll = mongoc_client_get_collection(conn->client, conn->b.database, TELEGRAM_SUBSCRIPTIONS_TABLE_NAME))) {
         err("get_collection failed\n");
         goto cleanup;
     }
@@ -336,9 +349,3 @@ cleanup:
     return 0;
 #endif
 }
-
-/*
- * Local variables:
- *  c-basic-offset: 4
- * End:
- */

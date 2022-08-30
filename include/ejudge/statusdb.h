@@ -3,7 +3,7 @@
 #ifndef __STATUSDB_H__
 #define __STATUSDB_H__
 
-/* Copyright (C) 2019 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2019-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -75,8 +75,9 @@ struct prot_serve_status
     unsigned char online_view_judge_score;
     unsigned char online_final_visibility;
     unsigned char online_valuer_judge_comments;
+    unsigned char disable_virtual_start;
 
-    unsigned char _pad[20];
+    unsigned char _pad[19];
 
     /* 144 */
     // priority adjustments for problems
@@ -95,7 +96,8 @@ statusdb_open(
         const struct contest_desc *cnts,
         const struct section_global_data *global,
         const unsigned char *plugin_name,
-        int flags);
+        int flags,
+        int enable_migrate);
 
 void
 statusdb_close(
@@ -125,5 +127,13 @@ statusdb_remove(
         const struct ejudge_cfg *config,
         const struct contest_desc *cnts,
         const struct section_global_data *global);
+
+int
+statusdb_has_status(
+        struct statusdb_state *sds,
+        const struct ejudge_cfg *config,
+        const struct contest_desc *cnts,
+        const struct section_global_data *global,
+        int flags);
 
 #endif /* __STATUSDB_H__ */

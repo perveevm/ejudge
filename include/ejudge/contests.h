@@ -3,7 +3,7 @@
 #ifndef __CONTESTS_H__
 #define __CONTESTS_H__
 
-/* Copyright (C) 2002-2020 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2002-2021 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -137,6 +137,8 @@ enum
     CONTEST_CONTENT_PLUGIN,
     CONTEST_CONTENT_URL_PREFIX,
     CONTEST_COMMENT,
+    CONTEST_OAUTH_RULES,
+    CONTEST_OAUTH_RULE,
 
     CONTEST_LAST_TAG
   };
@@ -184,6 +186,12 @@ enum
     CONTEST_A_ENABLE_AVATAR,
     CONTEST_A_ENABLE_LOCAL_PAGES,
     CONTEST_A_IS_PASSWORD,
+    CONTEST_A_READ_ONLY_NAME,
+    CONTEST_A_ENABLE_OAUTH,
+    CONTEST_A_DOMAIN,
+    CONTEST_A_STRIP_DOMAIN,
+    CONTEST_A_DISABLE_EMAIL_CHECK,
+    CONTEST_A_ENABLE_REMINDERS,
 
     CONTEST_LAST_ATTR
   };
@@ -331,6 +339,9 @@ struct contest_desc
   ejbytebool_t enable_user_telegram;
   ejbytebool_t enable_avatar;
   ejbytebool_t enable_local_pages;
+  ejbytebool_t read_only_name;
+  ejbytebool_t enable_oauth;
+  ejbytebool_t enable_reminders;
 
   time_t         reg_deadline;
   time_t         sched_time;
@@ -423,6 +434,7 @@ struct contest_desc
   unsigned char *content_url_prefix;
 
   struct xml_tree *slave_rules;
+  struct xml_tree *oauth_rules;
 
   int user_contest_num;
   int default_locale_num;
@@ -531,6 +543,11 @@ contests_set_permission(
         struct contest_desc *cnts,
         int num,
         opcap_t caps);
+int
+contests_upsert_permission(
+        struct contest_desc *cnts,
+        const unsigned char *login,
+        opcap_t caps);
 
 void
 contests_set_default(
@@ -599,9 +616,8 @@ contests_set_member_counts(
 #define CNTS_FIRST_IP_NC(a) ((struct contest_ip*) (a)->b.first_down)
 #define CNTS_NEXT_IP_NC(p)  ((struct contest_ip*) (p)->b.right)
 
-/* This is INTENTIONALLY not an `extern' variable */
 struct ejudge_cfg;
-struct ejudge_cfg *ejudge_config GCC_ATTRIB((common));
+extern struct ejudge_cfg *ejudge_config;
 
 int
 contests_guess_id(const char *path);
@@ -609,5 +625,11 @@ contests_guess_id(const char *path);
 int contests_get_register_access_type(const struct contest_desc *cnts);
 int contests_get_users_access_type(const struct contest_desc *cnts);
 int contests_get_participant_access_type(const struct contest_desc *cnts);
+
+int contests_apply_oauth_rules(
+        const struct contest_desc *cnts,
+        const unsigned char *email,
+        unsigned char **p_login,
+        int *p_disable_email_check);
 
 #endif /* __CONTESTS_H__ */

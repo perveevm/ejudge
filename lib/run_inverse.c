@@ -1,6 +1,6 @@
 /* -*- c -*- */
 
-/* Copyright (C) 2010-2019 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2010-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -347,6 +347,15 @@ invoke_test_checker(
   if (srpp->checker_real_time_limit_ms > 0) {
     task_SetMaxRealTimeMillis(tsk, srpp->checker_real_time_limit_ms);
   }
+  if (srpp->checker_time_limit_ms > 0) {
+    task_SetMaxTimeMillis(tsk, srpp->checker_time_limit_ms);
+  }
+  if (srpp->checker_max_stack_size > 0) {
+    task_SetStackSize(tsk, srpp->checker_max_stack_size);
+  }
+  if (srpp->checker_max_vm_size > 0) {
+    task_SetVMSize(tsk, srpp->checker_max_vm_size);
+  }
 
   fflush(log_f);
 
@@ -559,6 +568,9 @@ invoke_test_program(
   if (srpp->max_vm_size > 0) {
     task_SetVMSize(tsk, srpp->max_vm_size);
   }
+  if (srpp->max_rss_size > 0) {
+    task_SetRSSSize(tsk, srpp->max_rss_size);
+  }
   /* no security restrictions and memory limits */
   if (task_Start(tsk) < 0) {
     perr(log_f, "failed to start %s on test %d", check_exe, num);
@@ -631,6 +643,15 @@ invoke_checker(
   task_AddArg(tsk, correct_path);
   if (srpp->checker_real_time_limit_ms > 0) {
     task_SetMaxRealTimeMillis(tsk, srpp->checker_real_time_limit_ms);
+  }
+  if (srpp->checker_time_limit_ms > 0) {
+    task_SetMaxTimeMillis(tsk, srpp->checker_time_limit_ms);
+  }
+  if (srpp->checker_max_stack_size > 0) {
+    task_SetStackSize(tsk, srpp->checker_max_stack_size);
+  }
+  if (srpp->checker_max_vm_size > 0) {
+    task_SetVMSize(tsk, srpp->checker_max_vm_size);
   }
   if (srpp->checker_env) {
     for (i = 0; srpp->checker_env[i]; ++i)
@@ -1105,7 +1126,7 @@ run_inverse_testing(
   get_current_time(&reply_pkt->ts5, &reply_pkt->ts5_us);
 
   /* create the testing report */
-  report_xml = testing_report_alloc(srgp->contest_id, reply_pkt->run_id, reply_pkt->judge_id);
+  report_xml = testing_report_alloc(srgp->contest_id, reply_pkt->run_id, reply_pkt->judge_id, &reply_pkt->judge_uuid);
   report_xml->status = RUN_CHECK_FAILED;
   report_xml->scoring_system = srgp->scoring_system_val;
   report_xml->archive_available = 0;

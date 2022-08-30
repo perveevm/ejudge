@@ -3,7 +3,7 @@
 #ifndef __EJUDGE_CFG_H__
 #define __EJUDGE_CFG_H__ 1
 
-/* Copyright (C) 2002-2019 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2002-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -44,6 +44,15 @@ struct ejudge_cfg_user_map
   unsigned char *local_user_str;
 };
 
+struct ejudge_cfg_oauth_user_map
+{
+  struct xml_tree b;
+
+  unsigned char *oauth_user_str;
+  unsigned char *local_user_str;
+  unsigned char *provider;
+};
+
 struct ejudge_cfg;
 struct ejudge_cfg_caps_file
 {
@@ -65,6 +74,9 @@ struct ejudge_cfg
   int enable_cookie_ip_check;  // supported since 2.3.29
   int enable_contest_select;
   int disable_new_users;
+  int force_container;
+  int enable_compile_container;
+  int enable_oauth;
 
   // WebSocket port number
   int contests_ws_port;
@@ -117,6 +129,7 @@ struct ejudge_cfg
   unsigned char *caps_file;
   unsigned char *contest_server_id;
   struct xml_tree *user_map;
+  struct xml_tree *oauth_user_map;
   struct xml_tree *compile_servers;
 
   opcaplist_t capabilities;
@@ -125,6 +138,7 @@ struct ejudge_cfg
   struct xml_tree *plugin_list;
   struct xml_tree *hosts_options;
   struct xml_tree *buttons;
+  struct xml_tree *compiler_options;
 
   struct ejudge_cfg_caps_file *caps_file_info;
   unsigned char *ejudge_xml_path;
@@ -199,5 +213,16 @@ const unsigned char *
 ejudge_cfg_get_telegram_bot_id(
         const struct ejudge_cfg *cfg,
         const unsigned char *bot_user_id);
+
+const unsigned char *
+ejudge_cfg_oauth_user_map_find(
+        const struct ejudge_cfg *cfg,
+        const unsigned char *oauth_user_str,
+        const unsigned char *provider);
+
+const unsigned char *
+ejudge_cfg_get_compiler_option(
+        const struct ejudge_cfg *cfg,
+        const unsigned char *compiler);
 
 #endif /* __EJUDGE_CFG_H__ */

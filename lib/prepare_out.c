@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2005-2019 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2005-2021 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -912,6 +912,9 @@ prepare_unparse_lang(
   if (lang->run_max_vm_size > 0) {
     fprintf(f, "run_max_vm_size = %s\n", ll_to_size_str(size_buf, sizeof(size_buf), lang->run_max_vm_size));
   }
+  if (lang->run_max_rss_size > 0) {
+    fprintf(f, "run_max_rss_size = %s\n", ll_to_size_str(size_buf, sizeof(size_buf), lang->run_max_rss_size));
+  }
 
   if (lang->compiler_env) {
     for (i = 0; lang->compiler_env[i]; i++) {
@@ -934,6 +937,9 @@ prepare_unparse_lang(
     fprintf(f, "compiler_env = \"EJUDGE_LIBS=%s\"\n", CARMOR(libs));
   }
   do_xstr(f, &ab, "style_checker_env", lang->style_checker_env);
+  if (lang->container_options && *lang->container_options) {
+    fprintf(f, "container_options = \"%s\"\n", CARMOR(lang->container_options));
+  }
   fprintf(f, "\n");
 
   if (lang->unhandled_vars) fprintf(f, "%s\n", lang->unhandled_vars);
@@ -1272,11 +1278,21 @@ prepare_unparse_prob(
     fprintf(f, "real_time_limit = %d\n", prob->real_time_limit);
   if (prob->checker_real_time_limit >= 0)
     fprintf(f, "checker_real_time_limit = %d\n", prob->checker_real_time_limit);
+  if (prob->checker_time_limit_ms >= 0)
+    fprintf(f, "checker_time_limit_ms = %d\n", prob->checker_time_limit_ms);
+  if (prob->checker_max_vm_size >= 0)
+    fprintf(f, "checker_max_vm_size = %s\n", ll_to_size_str(size_buf, sizeof(size_buf), prob->checker_max_vm_size));
+  if (prob->checker_max_stack_size >= 0)
+    fprintf(f, "checker_max_stack_size = %s\n", ll_to_size_str(size_buf, sizeof(size_buf), prob->checker_max_stack_size));
+  if (prob->checker_max_rss_size >= 0)
+    fprintf(f, "checker_max_rss_size = %s\n", ll_to_size_str(size_buf, sizeof(size_buf), prob->checker_max_rss_size));
 
   if (prob->max_vm_size >= 0)
     fprintf(f, "max_vm_size = %s\n", ll_to_size_str(size_buf, sizeof(size_buf), prob->max_vm_size));
   if (prob->max_stack_size >= 0)
     fprintf(f, "max_stack_size = %s\n", ll_to_size_str(size_buf, sizeof(size_buf), prob->max_stack_size));
+  if (prob->max_rss_size >= 0)
+    fprintf(f, "max_rss_size = %s\n", ll_to_size_str(size_buf, sizeof(size_buf), prob->max_rss_size));
   if (prob->max_data_size >= 0)
     fprintf(f, "max_data_size = %s\n", ll_to_size_str(size_buf, sizeof(size_buf), prob->max_data_size));
   if (prob->max_core_size >= 0)
@@ -1406,6 +1422,7 @@ prepare_unparse_prob(
     fprintf(f,"style_checker_cmd = \"%s\"\n",CARMOR(prob->style_checker_cmd));
   do_xstr(f, &ab, "style_checker_env", prob->style_checker_env);
   do_xstr(f, &ab, "lang_compiler_env", prob->lang_compiler_env);
+  do_xstr(f, &ab, "lang_compiler_container_options", prob->lang_compiler_container_options);
   if (prob->test_checker_cmd && prob->test_checker_cmd[0]) {
     fprintf(f,"test_checker_cmd = \"%s\"\n", CARMOR(prob->test_checker_cmd));
   }
@@ -1428,11 +1445,13 @@ prepare_unparse_prob(
   do_xstr(f, &ab, "lang_time_adj_millis", prob->lang_time_adj_millis);
   do_xstr(f, &ab, "lang_max_vm_size", prob->lang_max_vm_size);
   do_xstr(f, &ab, "lang_max_stack_size", prob->lang_max_stack_size);
+  do_xstr(f, &ab, "lang_max_rss_size", prob->lang_max_rss_size);
   do_xstr(f, &ab, "test_sets", prob->test_sets);
   do_xstr(f, &ab, "disable_language", prob->disable_language);
   do_xstr(f, &ab, "enable_language", prob->enable_language);
   do_xstr(f, &ab, "require", prob->require);
   do_xstr(f, &ab, "provide_ok", prob->provide_ok);
+  do_xstr(f, &ab, "allow_ip", prob->allow_ip);
   do_xstr(f, &ab, "score_view", prob->score_view);
   do_xstr(f, &ab, "statement_env", prob->statement_env);
 
@@ -1458,6 +1477,8 @@ prepare_unparse_prob(
     fprintf(f, "footer_pat = \"%s\"\n", CARMOR(prob->footer_pat));
   if (prob->compiler_env_pat && prob->compiler_env_pat[0])
     fprintf(f, "compiler_env_pat = \"%s\"\n", CARMOR(prob->compiler_env_pat));
+  if (prob->container_options && prob->container_options[0])
+    fprintf(f, "container_options = \"%s\"\n", CARMOR(prob->container_options));
   if (prob->ignore_prev_ac >= 0)
     unparse_bool(f, "ignore_prev_ac", prob->ignore_prev_ac);
   if (prob->team_enable_rep_view >= 0)
@@ -1496,6 +1517,8 @@ prepare_unparse_prob(
     unparse_bool(f, "disable_security", prob->disable_security);
   if (prob->enable_suid_run >= 0)
     unparse_bool(f, "enable_suid_run", prob->enable_suid_run);
+  if (prob->enable_container >= 0)
+    unparse_bool(f, "enable_container", prob->enable_container);
   if (prob->enable_multi_header >= 0)
     unparse_bool(f, "enable_multi_header", prob->enable_multi_header);
   if (prob->use_lang_multi_header >= 0)
@@ -1548,6 +1571,10 @@ prepare_unparse_prob(
   if ((prob->abstract > 0 && prob->stop_on_first_fail > 0)
       || (!prob->abstract && prob->stop_on_first_fail >= 0)) {
     unparse_bool(f, "stop_on_first_fail", prob->stop_on_first_fail);
+  }
+  if ((prob->abstract > 0 && prob->enable_control_socket > 0)
+      || (!prob->abstract && prob->enable_control_socket >= 0)) {
+    unparse_bool(f, "enable_control_socket", prob->enable_control_socket);
   }
   if ((prob->abstract > 0 && prob->hide_variant > 0)
       || (!prob->abstract && prob->hide_variant >= 0)) {
@@ -1723,11 +1750,21 @@ prepare_unparse_actual_prob(
     fprintf(f, "real_time_limit = %d\n", prob->real_time_limit);
   if (prob->checker_real_time_limit > 0)
     fprintf(f, "checker_real_time_limit = %d\n", prob->checker_real_time_limit);
+  if (prob->checker_time_limit_ms > 0)
+    fprintf(f, "checker_time_limit_ms = %d\n", prob->checker_time_limit_ms);
+  if (prob->checker_max_vm_size >= 0)
+    fprintf(f, "checker_max_vm_size = %s\n", ll_to_size_str(size_buf, sizeof(size_buf), prob->checker_max_vm_size));
+  if (prob->checker_max_stack_size >= 0)
+    fprintf(f, "checker_max_stack_size = %s\n", ll_to_size_str(size_buf, sizeof(size_buf), prob->checker_max_stack_size));
+  if (prob->checker_max_rss_size >= 0)
+    fprintf(f, "checker_max_rss_size = %s\n", ll_to_size_str(size_buf, sizeof(size_buf), prob->checker_max_rss_size));
 
   if (prob->max_vm_size >= 0)
     fprintf(f, "max_vm_size = %s\n", ll_to_size_str(size_buf, sizeof(size_buf), prob->max_vm_size));
   if (prob->max_stack_size >= 0)
     fprintf(f, "max_stack_size = %s\n", ll_to_size_str(size_buf, sizeof(size_buf), prob->max_stack_size));
+  if (prob->max_rss_size >= 0)
+    fprintf(f, "max_rss_size = %s\n", ll_to_size_str(size_buf, sizeof(size_buf), prob->max_rss_size));
   if (prob->max_data_size >= 0)
     fprintf(f, "max_data_size = %s\n", ll_to_size_str(size_buf, sizeof(size_buf), prob->max_data_size));
   if (prob->max_core_size >= 0)
@@ -1821,7 +1858,7 @@ prepare_unparse_actual_prob(
   if ((show_paths || (global && global->advanced_layout > 0)) && prob->style_checker_cmd && prob->style_checker_cmd[0])
     fprintf(f,"style_checker_cmd = \"%s\"\n",CARMOR(prob->style_checker_cmd));
   do_xstr(f, &ab, "style_checker_env", prob->style_checker_env);
-  do_xstr(f, &ab, "lang_compiler_env", prob->lang_compiler_env);
+  do_xstr(f, &ab, "lang_compiler_container_options", prob->lang_compiler_container_options);
   if ((show_paths || (global && global->advanced_layout > 0)) && prob->test_checker_cmd && prob->test_checker_cmd[0]) {
     fprintf(f,"test_checker_cmd = \"%s\"\n", CARMOR(prob->test_checker_cmd));
   }
@@ -1844,11 +1881,13 @@ prepare_unparse_actual_prob(
   do_xstr(f, &ab, "lang_time_adj_millis", prob->lang_time_adj_millis);
   do_xstr(f, &ab, "lang_max_vm_size", prob->lang_max_vm_size);
   do_xstr(f, &ab, "lang_max_stack_size", prob->lang_max_stack_size);
+  do_xstr(f, &ab, "lang_max_rss_size", prob->lang_max_rss_size);
   do_xstr(f, &ab, "test_sets", prob->test_sets);
   do_xstr(f, &ab, "disable_language", prob->disable_language);
   do_xstr(f, &ab, "enable_language", prob->enable_language);
   do_xstr(f, &ab, "require", prob->require);
   do_xstr(f, &ab, "provide_ok", prob->provide_ok);
+  do_xstr(f, &ab, "allow_ip", prob->allow_ip);
   do_xstr(f, &ab, "score_view", prob->score_view);
   do_xstr(f, &ab, "date_penalty", prob->date_penalty);
   do_xstr(f, &ab, "group_start_date", prob->group_start_date);
@@ -1873,6 +1912,8 @@ prepare_unparse_actual_prob(
     fprintf(f, "footer_pat = \"%s\"\n", CARMOR(prob->footer_pat));
   if (prob->compiler_env_pat && prob->compiler_env_pat[0])
     fprintf(f, "compiler_env_pat = \"%s\"\n", CARMOR(prob->compiler_env_pat));
+  if (prob->container_options && prob->container_options[0])
+    fprintf(f, "container_options = \"%s\"\n", CARMOR(prob->container_options));
   if (prob->ignore_prev_ac > 0)
     unparse_bool(f, "ignore_prev_ac", prob->ignore_prev_ac);
   if (prob->team_enable_rep_view > 0)
@@ -1911,6 +1952,8 @@ prepare_unparse_actual_prob(
     unparse_bool(f, "disable_security", prob->disable_security);
   if (prob->enable_suid_run > 0)
     unparse_bool(f, "enable_suid_run", prob->enable_suid_run);
+  if (prob->enable_container > 0)
+    unparse_bool(f, "enable_container", prob->enable_container);
   if (prob->enable_multi_header > 0)
     unparse_bool(f, "enable_multi_header", prob->enable_multi_header);
   if (prob->use_lang_multi_header > 0)
@@ -1953,6 +1996,8 @@ prepare_unparse_actual_prob(
     unparse_bool(f, "enable_extended_info", prob->enable_extended_info);
   if (prob->stop_on_first_fail > 0)
     unparse_bool(f, "stop_on_first_fail", prob->stop_on_first_fail);
+  if (prob->enable_control_socket > 0)
+    unparse_bool(f, "enable_control_socket", prob->enable_control_socket);
   if (prob->hide_variant > 0)
     unparse_bool(f, "hide_variant", prob->hide_variant);
   if (prob->enable_text_form > 0)

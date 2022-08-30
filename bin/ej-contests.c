@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2006-2019 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2006-2021 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -33,6 +33,9 @@
 #include "ejudge/xml_utils.h"
 #include "ejudge/cJSON.h"
 #include "ejudge/misctext.h"
+#include "ejudge/base64.h"
+#include "ejudge/userlist_clnt.h"
+#include "ejudge/oauth.h"
 
 #include "ejudge/xalloc.h"
 #include "ejudge/osdeps.h"
@@ -79,7 +82,7 @@ static struct server_framework_params params =
 
 static struct server_framework_state *state = 0;
 static unsigned char *ejudge_xml_path;
-struct ejudge_cfg *ejudge_config;
+//struct ejudge_cfg *ejudge_config;
 
 struct userlist_clnt *ul_conn;
 int ul_uid;
@@ -483,7 +486,7 @@ cmd_http_request(
     hr.out_z = 0;
     hr.out_f = open_memstream(&hr.out_t, &hr.out_z);
     if (hr.client_key) {
-      fprintf(hr.out_f, "Set-Cookie: EJSID=%016llx; Path=/\n", hr.client_key);
+      fprintf(hr.out_f, "Set-Cookie: EJSID=%016llx; Path=/; SameSite=Lax\n", hr.client_key);
     }
     fprintf(hr.out_f, "Location: %s\n\n", hr.redirect);
     fclose(hr.out_f); hr.out_f = NULL;
@@ -515,7 +518,7 @@ cmd_http_request(
     fprintf(hdr_f, "Cache-Control: no-cache\n");
     fprintf(hdr_f, "Pragma: no-cache\n");
     if (hr.client_key) {
-      fprintf(hdr_f, "Set-Cookie: EJSID=%016llx; Path=/\n", hr.client_key);
+      fprintf(hdr_f, "Set-Cookie: EJSID=%016llx; Path=/; SameSite=Lax\n", hr.client_key);
     }
     putc('\n', hdr_f);
     if (hr.out_z > 0) {
@@ -889,6 +892,11 @@ static void *forced_symbols[] __attribute__((unused,used)) =
 {
   &ej_bson_force_link_dummy,
   &ej_bson_new_force_link_dummy,
+  &base64u_encode,
+  &base64u_decode,
+  &userlist_clnt_api_key_request,
+  &oauth_get_redirect_url,
+  &userlist_clnt_edit_field,
 };
 
 int

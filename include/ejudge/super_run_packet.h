@@ -2,7 +2,7 @@
 #ifndef __SUPER_RUN_PACKET_H__
 #define __SUPER_RUN_PACKET_H__
 
-/* Copyright (C) 2012-2019 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2012-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or
@@ -48,6 +48,7 @@ struct super_run_in_global_packet
   ejintbool_t detect_violations;
   ejintbool_t enable_memory_limit_error;
   ejintbool_t suid_run;
+  ejintbool_t enable_container;
   ejintbool_t enable_max_stack_size;
   int user_id;
   unsigned char *user_login;
@@ -81,11 +82,13 @@ struct super_run_in_global_packet
   int time_limit_retry_count;
   unsigned char *checker_locale;
   unsigned char *run_uuid;
+  unsigned char *judge_uuid;
   ejintbool_t zip_mode;
   ejintbool_t testlib_mode;
   unsigned char *contest_server_id;
   ejintbool_t separate_run_spool_mode;
   ejintbool_t bson_available;
+  unsigned char *lang_container_options;
 
   int scoring_system_val META_ATTRIB((meta_hidden));
 };
@@ -124,6 +127,10 @@ struct super_run_in_problem_packet
   ejintbool_t accept_partial;
   int min_tests_to_accept;
   int checker_real_time_limit_ms;
+  int checker_time_limit_ms;
+  ej_size64_t checker_max_vm_size;
+  ej_size64_t checker_max_stack_size;
+  ej_size64_t checker_max_rss_size;
   unsigned char *short_name;
   unsigned char *long_name;
   unsigned char *internal_name;
@@ -163,6 +170,7 @@ struct super_run_in_problem_packet
   ej_size64_t max_vm_size;
   ej_size64_t max_data_size;
   ej_size64_t max_stack_size;
+  ej_size64_t max_rss_size;
   ej_size64_t max_core_size;
   ej_size64_t max_file_size;
   int max_open_file_count;
@@ -175,6 +183,9 @@ struct super_run_in_problem_packet
   unsigned char *uuid;
   ejintbool_t enable_extended_info;
   ejintbool_t stop_on_first_fail;
+  ejintbool_t enable_control_socket;
+  unsigned char *container_options;
+  int test_count;
 
   int type_val META_ATTRIB((meta_hidden));
 };

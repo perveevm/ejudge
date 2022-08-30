@@ -3,7 +3,7 @@
 #ifndef __ULDB_PLUGIN_H__
 #define __ULDB_PLUGIN_H__
 
-/* Copyright (C) 2006-2018 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2006-2020 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -33,6 +33,7 @@ struct userlist_user_info;
 struct userlist_contest;
 struct contest_desc;
 struct userlist_members;
+struct userlist_api_key;
 
 /* version of the plugin interface structure */
 #define ULDB_PLUGIN_IFACE_VERSION 3
@@ -291,6 +292,35 @@ struct uldb_plugin_iface
   int (*get_client_key)(void *,
                         ej_cookie_t,
                         const struct userlist_cookie **);
+  // create a new API key
+  int (*new_api_key)(
+        void *,
+        struct userlist_api_key *,
+        const struct userlist_api_key **);
+  // get an existing API key
+  int (*get_api_key)(
+        void *,
+        const char *token,
+        const struct userlist_api_key **);
+  // get an existing API key by secret part
+  int (*get_api_key_secret)(
+        void *,
+        const char *secret,
+        const struct userlist_api_key **);
+  // get the count of the user API keys
+  int (*get_api_keys_count)(
+        void *,
+        int user_id);
+  // get API keys for a user
+  int (*get_api_keys_for_user)(
+        void *,
+        int user_id,
+        const struct userlist_api_key ***);
+  // remove API key
+  int (*remove_api_key)(
+        void *,
+        int user_id,
+        const char *token);
 };
 
 /* default plugin: compiled into userlist-server */

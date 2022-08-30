@@ -1,0 +1,24 @@
+#! /bin/bash
+# Copyright (c) 2022 Alexander Chernov <cher@ejudge.ru>
+
+# FIXME: set correct values automatically
+EJUDGE_HOME=/opt/ejudge
+JAVA_HOME=/usr
+USER=ejudge
+LOGNAME=ejudge
+PATH=${JAVA_HOME}/bin:/usr/local/bin:/usr/bin:/usr/sbin
+JAVA_ENV="-Xmx256m -XX:MaxMetaspaceSize=64m -XX:MetaspaceSize=64m"
+RARS_JAR="${EJUDGE_HOME}/share/ejudge/rars-emulator/rars_533d3c0.jar"
+RARS_EXEC="${JAVA_HOME}/bin/java ${JAVA_ENV} -jar ${RARS_JAR}"
+RARS_STDERR="${RARS_STDERR:-/dev/null}"
+
+export JAVA_HOME USER LOGNAME
+
+if [ "${RARS_HELP}" != "" ]
+then
+    exec ${RARS_EXEC} h
+fi
+
+export MALLOC_ARENA_MAX=4
+
+exec ${RARS_EXEC} ae1 se2 sm nc me ${RARS_FLAGS} $@ 2> ${RARS_STDERR}

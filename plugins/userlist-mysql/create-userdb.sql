@@ -1,7 +1,7 @@
 CREATE TABLE IF NOT EXISTS %sconfig 
        (config_key VARCHAR(64) NOT NULL PRIMARY KEY COLLATE utf8_bin,
        config_val VARCHAR(64)
-       );
+       ) ENGINE=InnoDB;
 
 CREATE TABLE %slogins
        (user_id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -17,10 +17,10 @@ CREATE TABLE %slogins
        neverclean TINYINT NOT NULL DEFAULT 0,
        simplereg TINYINT NOT NULL DEFAULT 0,
        regtime TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-       logintime TIMESTAMP DEFAULT '0000-00-00 00:00:00',
-       pwdtime TIMESTAMP DEFAULT '0000-00-00 00:00:00',
-       changetime TIMESTAMP DEFAULT '0000-00-00 00:00:00'
-       );
+       logintime DATETIME DEFAULT NULL,
+       pwdtime DATETIME DEFAULT NULL,
+       changetime DATETIME DEFAULT NULL
+       ) ENGINE=InnoDB;
 
 CREATE TABLE %scookies
        (cookie VARCHAR(64) NOT NULL PRIMARY KEY,
@@ -37,7 +37,7 @@ CREATE TABLE %scookies
        expire DATETIME NOT NULL,
        is_ws TINYINT NOT NULL DEFAULT 0,
        FOREIGN KEY (user_id) REFERENCES logins (user_id)
-       );
+       ) ENGINE=InnoDB;
 
 CREATE TABLE %scntsregs
        (user_id INT UNSIGNED NOT NULL,
@@ -51,10 +51,10 @@ CREATE TABLE %scntsregs
        privileged TINYINT NOT NULL DEFAULT 0,
        reg_readonly TINYINT NOT NULL DEFAULT 0,
        createtime TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-       changetime TIMESTAMP NOT NULL DEFAULT '0000-00-00 00:00:00',
+       changetime DATETIME DEFAULT NULL,
        PRIMARY KEY (user_id, contest_id),
        FOREIGN KEY (user_id) REFERENCES logins (user_id)
-       );
+       ) ENGINE=InnoDB;
 
 CREATE TABLE %susers
        (user_id INT UNSIGNED NOT NULL,
@@ -64,10 +64,10 @@ CREATE TABLE %susers
        username VARCHAR(512),
        pwdmethod TINYINT NOT NULL DEFAULT 0,
        password VARCHAR(128),
-       pwdtime TIMESTAMP NOT NULL DEFAULT '0000-00-00 00:00:00',
+       pwdtime DATETIME DEFAULT NULL,
        createtime TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-       changetime TIMESTAMP NOT NULL DEFAULT '0000-00-00 00:00:00',
-       logintime TIMESTAMP NOT NULL DEFAULT '0000-00-00 00:00:00',
+       changetime DATETIME DEFAULT NULL,
+       logintime DATETIME DEFAULT NULL,
        inst VARCHAR(512),
        inst_en VARCHAR (512),
        instshort VARCHAR (512),
@@ -107,7 +107,7 @@ CREATE TABLE %susers
        avatar_suffix VARCHAR(32) DEFAULT NULL,
        PRIMARY KEY (user_id, contest_id),
        FOREIGN KEY (user_id) REFERENCES logins (user_id)
-       );
+       ) ENGINE=InnoDB;
 
 CREATE TABLE %smembers
        (
@@ -116,7 +116,7 @@ CREATE TABLE %smembers
        contest_id INT UNSIGNED NOT NULL,
        role_id TINYINT NOT NULL,
        createtime TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-       changetime TIMESTAMP DEFAULT '0000-00-00 00:00:00',
+       changetime DATETIME DEFAULT NULL,
        firstname VARCHAR(512),
        firstname_en VARCHAR(512),
        middlename VARCHAR(512),
@@ -146,9 +146,9 @@ CREATE TABLE %smembers
        entry_date DATE DEFAULT NULL,
        graduation_date DATE DEFAULT NULL,
        FOREIGN KEY (user_id) REFERENCES logins (user_id)
-       );
+       ) ENGINE=InnoDB;
 
-CREATE TABLE %sgroups
+CREATE TABLE %sejgroups
 (
     group_id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
     group_name VARCHAR(128) NOT NULL UNIQUE KEY,
@@ -157,7 +157,7 @@ CREATE TABLE %sgroups
     create_time DATETIME NOT NULL,
     last_change_time DATETIME DEFAULT NULL,
     FOREIGN KEY (created_by) REFERENCES logins(user_id)
-);
+) ENGINE=InnoDB;
 
 CREATE TABLE %sgroupmembers
 (
@@ -165,9 +165,24 @@ CREATE TABLE %sgroupmembers
     user_id INT UNSIGNED NOT NULL,
     rights VARCHAR(512) DEFAULT NULL,
     PRIMARY KEY (group_id, user_id),
-    FOREIGN KEY g(group_id) REFERENCES groups(group_id),
+    FOREIGN KEY g(group_id) REFERENCES ejgroups(group_id),
     FOREIGN KEY u(user_id) REFERENCES logins(user_id)
-);
+) ENGINE=InnoDB;
+
+CREATE TABLE %sapikeys
+(
+    token VARCHAR(64) NOT NULL PRIMARY KEY,
+    secret VARCHAR(64) NOT NULL UNIQUE KEY,
+    user_id INT UNSIGNED NOT NULL,
+    contest_id INT UNSIGNED NOT NULL,
+    create_time DATETIME NOT NULL,
+    expiry_time DATETIME DEFAULT NULL,
+    payload VARCHAR(1024) DEFAULT NULL,
+    origin VARCHAR(128) DEFAULT NULL,
+    all_contests TINYINT NOT NULL DEFAULT 0,
+    role_id TINYINT NOT NULL DEFAULT 0,
+    FOREIGN KEY apikeys_user_id_fk(user_id) REFERENCES logins(user_id)
+) ENGINE=InnoDB;
 
 ALTER TABLE %scntsregs ADD INDEX cntsregs_user_id_idx (user_id),
                        ADD INDEX cntsregs_contest_id_idx (contest_id);
@@ -179,4 +194,4 @@ ALTER TABLE %smembers  ADD INDEX members_user_id_idx (user_id),
 ALTER TABLE %sgroupmembers ADD INDEX groupmembers_group_id_idx (group_id),
                            ADD INDEX groupmembers_user_id_idx (user_id);
 
-INSERT INTO %sconfig VALUES ('version', '8');
+INSERT INTO %sconfig VALUES ('version', '15');

@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2002-2020 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2002-2021 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -138,6 +138,10 @@ const int contests_tag_to_meta_map[CONTEST_LAST_TAG] =
   [CONTEST_CONTENT_PLUGIN] = CNTS_content_plugin,
   [CONTEST_CONTENT_URL_PREFIX] = CNTS_content_url_prefix,
   [CONTEST_COMMENT] = CNTS_comment,
+  /*
+  [CONTEST_OAUTH_RULES] = CNTS_oauth_rules,
+  [CONTEST_OAUTH_RULE] = CNTS_oauth_rule,
+  */
 };
 const int contests_attr_to_meta_map[CONTEST_LAST_ATTR] =
 {
@@ -169,6 +173,13 @@ const int contests_attr_to_meta_map[CONTEST_LAST_ATTR] =
   [CONTEST_A_ENABLE_USER_TELEGRAM] = CNTS_enable_user_telegram,
   [CONTEST_A_ENABLE_AVATAR] = CNTS_enable_avatar,
   [CONTEST_A_ENABLE_LOCAL_PAGES] = CNTS_enable_local_pages,
+  [CONTEST_A_READ_ONLY_NAME] = CNTS_read_only_name,
+  [CONTEST_A_ENABLE_OAUTH] = CNTS_enable_oauth,
+  /*
+  [CONTEST_A_DOMAIN] = CNTS_domain,
+  [CONTEST_A_STRIP_DOMAIN] = CNTS_strip_domain,
+  */
+  [CONTEST_A_ENABLE_REMINDERS] = CNTS_enable_reminders,
 };
 
 char const * const contests_elem_map[] =
@@ -270,6 +281,8 @@ char const * const contests_elem_map[] =
   "content_plugin",
   "content_url_prefix",
   "comment",
+  "oauth_rules",
+  "oauth_rule",
 
   0
 };
@@ -318,6 +331,12 @@ char const * const contests_attr_map[] =
   "enable_avatar",
   "enable_local_pages",
   "is_password",
+  "read_only_name",
+  "enable_oauth",
+  "domain",
+  "strip_domain",
+  "disable_email_check",
+  "enable_reminders",
 
   0
 };
@@ -855,6 +874,9 @@ static const unsigned char contest_bool_attr_set[CONTEST_LAST_ATTR] =
   [CONTEST_A_ENABLE_USER_TELEGRAM] = 1,
   [CONTEST_A_ENABLE_AVATAR] = 1,
   [CONTEST_A_ENABLE_LOCAL_PAGES] = 1,
+  [CONTEST_A_READ_ONLY_NAME] = 1,
+  [CONTEST_A_ENABLE_OAUTH] = 1,
+  [CONTEST_A_ENABLE_REMINDERS] = 1,
 };
 
 static void
@@ -985,6 +1007,10 @@ parse_contest(
       break;
     case CONTEST_SLAVE_RULES:
       cnts->slave_rules = t;
+      break;
+
+    case CONTEST_OAUTH_RULES:
+      cnts->oauth_rules = t;
       break;
 
     case CONTEST_CAPS:
@@ -1276,6 +1302,13 @@ contests_merge(struct contest_desc *pold, struct contest_desc *pnew)
   }
   pold->slave_rules = p;
   pnew->slave_rules = 0;
+
+  if ((p = pnew->oauth_rules)) {
+    xml_unlink_node(p);
+    xml_link_node_last(&pold->b, p);
+  }
+  pold->oauth_rules = p;
+  pnew->oauth_rules = NULL;
 
   pold->reg_deadline = pnew->reg_deadline;
   pold->sched_time = pnew->sched_time;
@@ -2005,3 +2038,78 @@ contests_get_participant_access_type(const struct contest_desc *cnts)
   return contests_get_access_type(cnts, CONTEST_TEAM_ACCESS);
 }
 
+int
+contests_apply_oauth_rules(
+        const struct contest_desc *cnts,
+        const unsigned char *email,
+        unsigned char **p_login,
+        int *p_disable_email_check)
+{
+  const unsigned char *domain_part = strchr(email, '@');
+  if (!domain_part) return 0;
+  ++domain_part;
+  if (!*domain_part) return 0;
+  int name_len = domain_part - email - 1;
+
+  if (!cnts->oauth_rules) {
+    if (p_login) *p_login = xstrdup(email);
+    if (p_disable_email_check) *p_disable_email_check = -1;
+    return 1;
+  }
+  for (const struct xml_tree *p = cnts->oauth_rules->first_down; p; p = p->right) {
+    if (p->tag == CONTEST_OAUTH_RULE) {
+      const unsigned char *domain = NULL;
+      int allow = -1, deny = -1, strip_domain = -1, disable_email_check = -1;
+      for (struct xml_attr *a = p->first; a; a = a->next) {
+        switch (a->tag) {
+        case CONTEST_A_DOMAIN:
+          domain = a->text;
+          break;
+        case CONTEST_A_ALLOW:
+          xml_parse_bool(NULL, NULL, 0, 0, a->text, &allow);
+          break;
+        case CONTEST_A_DENY:
+          xml_parse_bool(NULL, NULL, 0, 0, a->text, &deny);
+          break;
+        case CONTEST_A_STRIP_DOMAIN:
+          xml_parse_bool(NULL, NULL, 0, 0, a->text, &strip_domain);
+          break;
+        case CONTEST_A_DISABLE_EMAIL_CHECK:
+          xml_parse_bool(NULL, NULL, 0, 0, a->text, &disable_email_check);
+          break;
+        }
+      }
+      if (!domain || !*domain) {
+        // catch-all rule
+        if (allow > 0 || deny == 0 || (allow < 0 && deny < 0)) {
+          if (strip_domain <= 0) {
+            if (p_login) *p_login = xstrdup(email);
+            if (p_disable_email_check) *p_disable_email_check = disable_email_check;
+          } else {
+            if (p_login) *p_login = xmemdup(email, name_len);
+            if (p_disable_email_check) *p_disable_email_check = disable_email_check;
+          }
+          return 1;
+        }
+        return 0;
+      }
+      if (!strcasecmp(domain, domain_part)) {
+        if (allow > 0 || deny == 0 || (allow < 0 && deny < 0)) {
+          if (strip_domain <= 0) {
+            if (p_login) *p_login = xstrdup(email);
+            if (p_disable_email_check) *p_disable_email_check = disable_email_check;
+          } else {
+            if (p_login) *p_login = xmemdup(email, name_len);
+            if (p_disable_email_check) *p_disable_email_check = disable_email_check;
+          }
+          return 1;
+        }
+        return 0;
+      }
+    }
+  }
+
+  if (p_login) *p_login = xstrdup(email);
+  if (p_disable_email_check) *p_disable_email_check = -1;
+  return 1;
+}
