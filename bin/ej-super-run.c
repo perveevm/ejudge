@@ -95,7 +95,7 @@ static int ignore_rejudge = 0;
 static unsigned char **host_names = NULL;
 static unsigned char *mirror_dir = NULL;
 
-#define HEARTBEAT_SAVE_INTERVAL_MS 5000
+#define HEARTBEAT_SAVE_INTERVAL_MS 500
 static long long last_heartbear_save_time = 0;
 
 static unsigned char master_stop_enabled = 0;
