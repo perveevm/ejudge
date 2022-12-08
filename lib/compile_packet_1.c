@@ -67,6 +67,7 @@ compile_request_packet_read(
   FAIL_IF(pout->contest_id < 0 || pout->contest_id > EJ_MAX_CONTEST_ID);
 
   /* from now on the contest id is available */
+  pout->submit_id = cvt_bin_to_host_64(pin->submit_id);
   pout->run_id = cvt_bin_to_host_32(pin->run_id);
   FAIL_IF(pout->run_id < 0 || pout->run_id > EJ_MAX_RUN_ID);
   pout->lang_id = cvt_bin_to_host_32(pin->lang_id);
@@ -105,6 +106,7 @@ compile_request_packet_read(
   */
 
   pout->use_container = cvt_bin_to_host_32(pin->use_container);
+  pout->vcs_mode = cvt_bin_to_host_32(pin->vcs_mode);
 
   pout->multi_header = cvt_bin_to_host_32(pin->multi_header);
   FAIL_IF(pout->multi_header < 0 || pout->multi_header > 1);
@@ -250,6 +252,17 @@ compile_request_packet_read(
     memcpy(pout->container_options, pin_ptr, container_options_len);
     pout->container_options[container_options_len] = 0;
     pin_ptr += pkt_bin_align(container_options_len);
+  }
+
+  pout->vcs_compile_cmd = NULL;
+  int vcs_compile_cmd_len = cvt_bin_to_host_32(pin->vcs_compile_cmd_len);
+  FAIL_IF(vcs_compile_cmd_len < 0 || vcs_compile_cmd_len >= PATH_MAX);
+  FAIL_IF(pin_ptr + vcs_compile_cmd_len > end_ptr);
+  if (vcs_compile_cmd_len > 0) {
+    pout->vcs_compile_cmd = xmalloc(vcs_compile_cmd_len + 1);
+    memcpy(pout->vcs_compile_cmd, pin_ptr, vcs_compile_cmd_len);
+    pout->vcs_compile_cmd[vcs_compile_cmd_len] = 0;
+    pin_ptr += pkt_bin_align(vcs_compile_cmd_len);
   }
 
   pout->env_num = cvt_bin_to_host_32(pin->env_num);

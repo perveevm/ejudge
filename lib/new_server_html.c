@@ -69,6 +69,11 @@
 #include "ejudge/cJSON.h"
 #include "ejudge/filter_tree.h"
 #include "ejudge/filter_eval.h"
+#include "ejudge/storage_plugin.h"
+#include "ejudge/submit_plugin.h"
+#include "ejudge/userprob_plugin.h"
+#include "ejudge/job_packet.h"
+#include "ejudge/sha256utils.h"
 
 #include "ejudge/xalloc.h"
 #include "ejudge/logger.h"
@@ -3491,7 +3496,8 @@ priv_submit_run(
                           prob_id, lang_id, eoln_type,
                           variant, is_hidden, mime_type,
                           prob->uuid,
-                          store_flags);
+                          store_flags,
+                          phr->is_job /* is_vcs */);
   if (run_id < 0) {
     FAIL(NEW_SRV_ERR_RUNLOG_UPDATE_FAILED);
   }
@@ -3530,7 +3536,7 @@ priv_submit_run(
       serve_audit_log(cs, run_id, NULL, phr->user_id, &phr->ip, phr->ssl_flag,
                       "priv-submit", "ok", RUN_COMPILING, NULL);
       if ((r = serve_compile_request(phr->config, cs, run_text, run_size, cnts->id,
-                                     run_id, sender_user_id,
+                                     run_id, 0 /* submit_id */, sender_user_id,
                                      lang->compile_id, variant,
                                      phr->locale_id, 0,
                                      lang->src_sfx,
@@ -3538,7 +3544,10 @@ priv_submit_run(
                                      0, prob->style_checker_cmd,
                                      prob->style_checker_env,
                                      -1, 0, 0, prob, lang, 0, &run_uuid,
-                                     store_flags, 0 /* rejudge_flag */, user)) < 0) {
+                                     NULL /* judge_uuid */,
+                                     store_flags, 0 /* rejudge_flag */,
+                                     phr->is_job,
+                                     user)) < 0) {
         serve_report_check_failed(ejudge_config, cnts, cs, run_id, serve_err_str(r));
       }
     }
@@ -3554,7 +3563,7 @@ priv_submit_run(
                       "priv-submit", "ok", RUN_COMPILING, NULL);
       if (prob->style_checker_cmd && prob->style_checker_cmd[0]) {
         r = serve_compile_request(phr->config, cs, run_text, run_size, cnts->id,
-                                  run_id, sender_user_id, 0 /* lang_id */, variant,
+                                  run_id, 0 /* submit_id */, sender_user_id, 0 /* lang_id */, variant,
                                   0 /* locale_id */, 1 /* output_only*/,
                                   mime_type_get_suffix(mime_type),
                                   NULL /* compiler_env */,
@@ -3567,8 +3576,10 @@ priv_submit_run(
                                   prob, NULL /* lang */,
                                   0 /* no_db_flag */,
                                   &run_uuid,
+                                  NULL /* judge_uuid */,
                                   store_flags,
                                   0 /* rejudge_flag*/,
+                                  phr->is_job,
                                   user);
         if (r < 0) {
           serve_report_check_failed(ejudge_config, cnts, cs, run_id, serve_err_str(r));
@@ -3576,12 +3587,14 @@ priv_submit_run(
       } else {
         if (serve_run_request(phr->config, cs, cnts, log_f, run_text, run_size,
                               cnts->id, run_id,
+                              0 /* submit_id */,
                               sender_user_id, prob_id, 0, variant, 0,
                               -1, /* judge_id */
                               NULL, /* judge_uuid */
                               -1, 0,
                               mime_type, 0, phr->locale_id, 0, 0, 0, &run_uuid,
-                              0 /* rejudge_flag */, 0 /* zip_mode */, store_flags) < 0) {
+                              0 /* rejudge_flag */, 0 /* zip_mode */, store_flags,
+                              NULL, 0) < 0) {
           FAIL(NEW_SRV_ERR_DISK_WRITE_ERROR);
         }
       }
@@ -3600,7 +3613,7 @@ priv_submit_run(
       /* FIXME: check for XML problem */
       if (prob->style_checker_cmd && prob->style_checker_cmd[0]) {
         r = serve_compile_request(phr->config, cs, run_text, run_size, cnts->id,
-                                  run_id, sender_user_id, 0 /* lang_id */, variant,
+                                  run_id, 0 /* submit_id */, sender_user_id, 0 /* lang_id */, variant,
                                   0 /* locale_id */, 1 /* output_only*/,
                                   mime_type_get_suffix(mime_type),
                                   NULL /* compiler_env */,
@@ -3613,8 +3626,10 @@ priv_submit_run(
                                   prob, NULL /* lang */,
                                   0 /* no_db_flag */,
                                   &run_uuid,
+                                  NULL /* judge_uuid */,
                                   store_flags,
                                   0 /* rejudge_flag */,
+                                  phr->is_job,
                                   user);
         if (r < 0) {
           serve_report_check_failed(ejudge_config, cnts, cs, run_id, serve_err_str(r));
@@ -3622,12 +3637,14 @@ priv_submit_run(
       } else {
         if (serve_run_request(phr->config, cs, cnts, log_f, run_text, run_size,
                               cnts->id, run_id,
+                              0 /* submit_id */,
                               sender_user_id, prob_id, 0, variant, 0,
                               -1, /* judge_id */
                               NULL, /* judge_uuid */
                               -1, 0,
                               mime_type, 0, phr->locale_id, 0, 0, 0, &run_uuid,
-                              0 /* rejudge_flag */, 0 /* zip_mode */, store_flags) < 0) {
+                              0 /* rejudge_flag */, 0 /* zip_mode */, store_flags,
+                              NULL, 0) < 0) {
           FAIL(NEW_SRV_ERR_DISK_WRITE_ERROR);
         }
       }
@@ -3980,7 +3997,7 @@ priv_submit_run_comment(
   }
   if (!text) text = "";
   text_len = strlen(text);
-  if (text_len > 128 * 1024) {
+  if (text_len > 56 * 1024) {
     ns_error(log_f, NEW_SRV_ERR_MESSAGE_TOO_LONG, text_len);
     goto cleanup;
   }
@@ -4063,18 +4080,17 @@ priv_submit_run_comment(
       if (prob && user_score < 0) user_score = prob->full_score;
       if (user_score < 0) user_score = 0;
     }
-    // FIXME: is the parameter ordering correct???
     run_change_status_3(cs->runlog_state, /* state */
                         run_id,           /* runid */
                         RUN_OK,           /* newstatus */
-                        full_score,       /* newtest? */
-                        re.test,          /* newpassedmode? */
-                        re.passed_mode,   /* newscore? */
+                        re.test,          /* newtest */
+                        re.passed_mode,   /* newpassedmode */
+                        full_score,       /* newscore */
                         0,                /* is_marked */
-                        re.saved_score,   /* has_user_score? */
-                        user_status,      /* user_status */
-                        re.saved_test,    /* user_tests_passed? */
-                        user_score);      /* user_score */
+                        re.saved_score,   /* has_user_score -> is_saved */
+                        user_status,      /* user_status -> saved_status */
+                        re.saved_test,    /* user_tests_passed -> saved_test */
+                        user_score);      /* user_score -> saved_score */
   }
 
   const unsigned char *audit_cmd = NULL;
@@ -5418,7 +5434,8 @@ priv_new_run(FILE *fout,
                           user_id, prob_id, lang_id, 0, variant,
                           is_hidden, mime_type,
                           prob->uuid,
-                          store_flags);
+                          store_flags,
+                          0 /* is_vcs */);
   if (run_id < 0) FAIL(NEW_SRV_ERR_RUNLOG_UPDATE_FAILED);
   serve_move_files_to_insert_run(cs, run_id);
 
@@ -5997,6 +6014,8 @@ priv_download_source(
       content_type = "text/plain";
     }
   }
+
+  phr->json_reply = 0;
 
   fprintf(fout, "Content-type: %s\n", content_type);
   if (!no_disp) {
@@ -8625,6 +8644,8 @@ priv_list_runs_json(
     }
   }
 
+  run_fields |= RUN_VIEW_RUN_ID;
+
   fprintf(fout, "{\n");
   fprintf(fout, "  \"ok\" : %s", to_json_bool(1));
   fprintf(fout, ",\n  \"server_time\": %lld", (long long) cs->current_time);
@@ -8855,6 +8876,42 @@ cleanup:
 err_inv_param:
   error_page(fout, phr, 0, NEW_SRV_ERR_INV_PARAM);
   goto cleanup;
+}
+
+static void
+ns_submit_run_input(
+        FILE *fout,
+        struct http_request_info *phr,
+        const struct contest_desc *cnts,
+        struct contest_extra *extra,
+        int admin_mode);
+
+static void
+priv_submit_run_input(
+        FILE *fout,
+        struct http_request_info *phr,
+        const struct contest_desc *cnts,
+        struct contest_extra *extra)
+{
+  ns_submit_run_input(fout, phr, cnts, extra, 1);
+}
+
+static void
+ns_get_submit(
+        FILE *fout,
+        struct http_request_info *phr,
+        const struct contest_desc *cnts,
+        struct contest_extra *extra,
+        int admin_mode);
+
+static void
+priv_get_submit(
+        FILE *fout,
+        struct http_request_info *phr,
+        const struct contest_desc *cnts,
+        struct contest_extra *extra)
+{
+  ns_get_submit(fout, phr, cnts, extra, 1);
 }
 
 typedef PageInterface *(*external_action_handler_t)(void);
@@ -9088,6 +9145,8 @@ static action_handler_t actions_table[NEW_SRV_ACTION_LAST] =
   [NEW_SRV_ACTION_RAW_REPORT] = priv_raw_report,
   [NEW_SRV_ACTION_ENABLE_VIRTUAL_START] = priv_generic_operation,
   [NEW_SRV_ACTION_DISABLE_VIRTUAL_START] = priv_generic_operation,
+  [NEW_SRV_ACTION_SUBMIT_RUN_INPUT] = priv_submit_run_input,
+  [NEW_SRV_ACTION_GET_SUBMIT] = priv_get_submit,
 };
 
 static const unsigned char * const external_priv_action_names[NEW_SRV_ACTION_LAST] =
@@ -9435,6 +9494,7 @@ privileged_entry_point(
                                       &phr->locale_id, 0, &phr->role, 0, 0, 0,
                                       NULL /* p_passwd_method */,
                                       NULL /* p_is_ws */,
+                                      NULL /* p_is_job */,
                                       NULL /* p_expire */,
                                       &phr->login, &phr->name)) < 0) {
       switch (-r) {
@@ -9824,6 +9884,7 @@ unprivileged_page_login(FILE *fout, struct http_request_info *phr)
                                phr->locale_id,
                                0, /* pwd_special */
                                0, /* is_ws */
+                               0, /* is_job */
                                login, password,
                                &phr->user_id,
                                &phr->session_id, &phr->client_key,
@@ -10713,7 +10774,8 @@ ns_submit_run(
                           prob_id, lang_id, eoln_type,
                           db_variant, is_hidden, mime_type,
                           prob->uuid,
-                          store_flags);
+                          store_flags,
+                          phr->is_job /* is_vcs */);
   if (run_id < 0) {
     FAIL(NEW_SRV_ERR_RUNLOG_UPDATE_FAILED);
   }
@@ -10774,7 +10836,7 @@ ns_submit_run(
     serve_audit_log(cs, run_id, NULL, user_id, &phr->ip, phr->ssl_flag,
                     "submit", "ok", RUN_COMPILING, NULL);
     r = serve_compile_request(phr->config, cs, run_text, run_size, cnts->id,
-                              run_id, user_id,
+                              run_id, 0 /* submit_id */, user_id,
                               lang->compile_id, variant,
                               phr->locale_id, 0 /* output_only */,
                               lang->src_sfx,
@@ -10784,8 +10846,12 @@ ns_submit_run(
                               prob->style_checker_env,
                               -1 /* accepting_mode */, 0 /* priority_adjustment */,
                               1 /* notify_flag */, prob, lang,
-                              0 /* no_db_flag */, &run_uuid, store_flags,
-                              0 /* rejudge_flag */, user);
+                              0 /* no_db_flag */, &run_uuid,
+                              NULL /* judge_uuid */,
+                              store_flags,
+                              0 /* rejudge_flag */,
+                              phr->is_job,
+                              user);
     if (r < 0) {
       serve_report_check_failed(ejudge_config, cnts, cs, run_id, serve_err_str(r));
       goto cleanup;
@@ -10807,7 +10873,7 @@ ns_submit_run(
       serve_audit_log(cs, run_id, NULL, user_id, &phr->ip, phr->ssl_flag,
                       "submit", "ok", RUN_COMPILING, NULL);
       r = serve_compile_request(phr->config, cs, run_text, run_size, cnts->id,
-                                run_id, user_id, 0 /* lang_id */, variant,
+                                run_id, 0 /* submit_id */, user_id, 0 /* lang_id */, variant,
                                 0 /* locale_id */, 1 /* output_only */,
                                 mime_type_get_suffix(mime_type),
                                 NULL /* compiler_env */,
@@ -10818,8 +10884,12 @@ ns_submit_run(
                                 0 /* priority_adjustment */,
                                 0 /* notify flag */,
                                 prob, NULL /* lang */,
-                                0 /* no_db_flag */, &run_uuid, store_flags,
-                                0 /* rejudge_flag */, user);
+                                0 /* no_db_flag */, &run_uuid,
+                                NULL /* judge_uuid */,
+                                store_flags,
+                                0 /* rejudge_flag */,
+                                phr->is_job,
+                                user);
       if (r < 0) {
         serve_report_check_failed(ejudge_config, cnts, cs, run_id, serve_err_str(r));
         goto cleanup;
@@ -10831,12 +10901,14 @@ ns_submit_run(
                     "submit", "ok", RUN_RUNNING, NULL);
     r = serve_run_request(phr->config, cs, cnts, log_f, run_text, run_size,
                           cnts->id, run_id,
+                          0 /* submit_id */,
                           user_id, prob_id, 0, variant, 0,
                           -1,   /* judge_id */
                           NULL, /* judge_uuid */
                           -1, 1,
                           mime_type, 0, phr->locale_id, 0, 0, 0, &run_uuid,
-                          0 /* rejudge_flag */, 0 /* zip_mode */, store_flags);
+                          0 /* rejudge_flag */, 0 /* zip_mode */, store_flags,
+                          NULL, 0);
     if (r < 0) {
       serve_report_check_failed(ejudge_config, cnts, cs, run_id, serve_err_str(r));
       goto cleanup;
@@ -10867,7 +10939,7 @@ ns_submit_run(
 
   if (prob->style_checker_cmd && prob->style_checker_cmd[0]) {
     r = serve_compile_request(phr->config, cs, run_text, run_size, cnts->id,
-                              run_id, user_id, 0 /* lang_id */, variant,
+                              run_id, 0 /* submit_id */, user_id, 0 /* lang_id */, variant,
                               0 /* locale_id */, 1 /* output_only */,
                               mime_type_get_suffix(mime_type),
                               NULL /* compiler_env */,
@@ -10878,8 +10950,12 @@ ns_submit_run(
                               0 /* priority_adjustment */,
                               0 /* notify flag */,
                               prob, NULL /* lang */,
-                              0 /* no_db_flag */, &run_uuid, store_flags,
-                              0 /* rejudge_flag */, user);
+                              0 /* no_db_flag */, &run_uuid,
+                              NULL /* judge_uuid */,
+                              store_flags,
+                              0 /* rejudge_flag */,
+                              phr->is_job,
+                              user);
     if (r < 0) {
       serve_report_check_failed(ejudge_config, cnts, cs, run_id, serve_err_str(r));
       goto cleanup;
@@ -10889,12 +10965,14 @@ ns_submit_run(
 
   r = serve_run_request(phr->config, cs, cnts, log_f, run_text, run_size,
                         cnts->id, run_id,
+                        0 /* submit_id */,
                         user_id, prob_id, 0, variant, 0,
                         -1,     /* judge_id */
                         NULL,   /* judge_uuid */
                         -1, 1,
                         mime_type, 0, phr->locale_id, 0, 0, 0, &run_uuid,
-                        0 /* rejudge_flag */, 0 /* zip_mode */, store_flags);
+                        0 /* rejudge_flag */, 0 /* zip_mode */, store_flags,
+                        NULL, 0);
   if (r < 0) {
     serve_report_check_failed(ejudge_config, cnts, cs, run_id, serve_err_str(r));
     goto cleanup;
@@ -10977,12 +11055,38 @@ unpriv_submit_run(
 
   // "STANDARD" problems need programming language identifier
   if (prob->type == PROB_TYPE_STANDARD) {
+    if (hr_cgi_param(phr, "lang_id", &s) <= 0 || !s) {
+      FAIL2(NEW_SRV_ERR_INV_LANG_ID);
+    }
+    errno = 0;
+    char *eptr = NULL;
+    long v = strtol(s, &eptr, 10);
+    if (!errno && eptr != (char *)s && !*eptr && (int) v == v) {
+      lang_id = v;
+      if (lang_id <= 0 || lang_id > cs->max_lang || !(lang = cs->langs[lang_id])) {
+        FAIL2(NEW_SRV_ERR_INV_LANG_ID);
+      }
+    } else {
+      for (int i = 1; i <= cs->max_lang; ++i) {
+        lang = cs->langs[i];
+        if (lang /* && lang->short_name */ && !strcmp(lang->short_name, s)) {
+          lang_id = i;
+          break;
+        }
+        lang = NULL;
+      }
+      if (!lang) {
+        FAIL2(NEW_SRV_ERR_INV_LANG_ID);
+      }
+    }
+    /*
     if (hr_cgi_param(phr, "lang_id", &s) <= 0
         || sscanf(s, "%d%n", &lang_id, &n) != 1 || s[n]
         || lang_id <= 0 || lang_id > cs->max_lang
         || !(lang = cs->langs[lang_id])) {
       FAIL2(NEW_SRV_ERR_INV_LANG_ID);
     }
+    */
     if (global->enable_eoln_select > 0) {
       hr_cgi_param_int_opt(phr, "eoln_type", &eoln_type, 0);
       if (eoln_type < 0 || eoln_type > EOLN_CRLF) eoln_type = 0;
@@ -11348,7 +11452,8 @@ unpriv_submit_run(
                           phr->locale_id, phr->user_id,
                           prob_id, lang_id, eoln_type, 0, 0, mime_type,
                           prob->uuid,
-                          store_flags);
+                          store_flags,
+                          phr->is_job /* is_vcs */);
   if (run_id < 0) {
     FAIL2(NEW_SRV_ERR_RUNLOG_UPDATE_FAILED);
   }
@@ -11388,15 +11493,19 @@ unpriv_submit_run(
       serve_audit_log(cs, run_id, NULL, phr->user_id, &phr->ip, phr->ssl_flag,
                       "submit", "ok", RUN_COMPILING, NULL);
       if ((r = serve_compile_request(phr->config, cs, run_text, run_size, cnts->id,
-                                     run_id, phr->user_id,
+                                     run_id, 0 /* submit_id */, phr->user_id,
                                      lang->compile_id, variant,
                                      phr->locale_id, 0,
                                      lang->src_sfx,
                                      lang->compiler_env,
                                      0, prob->style_checker_cmd,
                                      prob->style_checker_env,
-                                     -1, 0, 1, prob, lang, 0, &run_uuid, store_flags,
-                                     0 /* rejudge_flag */, user)) < 0) {
+                                     -1, 0, 1, prob, lang, 0, &run_uuid,
+                                     NULL /* judge_uuid */,
+                                     store_flags,
+                                     0 /* rejudge_flag */,
+                                     phr->is_job,
+                                     user)) < 0) {
         serve_report_check_failed(ejudge_config, cnts, cs, run_id, serve_err_str(r));
       }
     }
@@ -11412,7 +11521,7 @@ unpriv_submit_run(
                       "submit", "ok", RUN_COMPILING, NULL);
       if (prob->style_checker_cmd && prob->style_checker_cmd[0]) {
         r = serve_compile_request(phr->config, cs, run_text, run_size, cnts->id,
-                                  run_id, phr->user_id, 0 /* lang_id */, variant,
+                                  run_id, 0 /* submit_id */, phr->user_id, 0 /* lang_id */, variant,
                                   0 /* locale_id */, 1 /* output_only*/,
                                   mime_type_get_suffix(mime_type),
                                   NULL /* compiler_env */,
@@ -11423,20 +11532,26 @@ unpriv_submit_run(
                                   0 /* priority_adjustment */,
                                   0 /* notify flag */,
                                   prob, NULL /* lang */,
-                                  0 /* no_db_flag */, &run_uuid, store_flags,
-                                  0 /* rejudge_flag */, user);
+                                  0 /* no_db_flag */, &run_uuid,
+                                  NULL /* judge_uuid */,
+                                  store_flags,
+                                  0 /* rejudge_flag */,
+                                  phr->is_job,
+                                  user);
         if (r < 0) {
           serve_report_check_failed(ejudge_config, cnts, cs, run_id, serve_err_str(r));
         }
       } else {
         if (serve_run_request(phr->config, cs, cnts, phr->log_f, run_text, run_size,
                               cnts->id, run_id,
+                              0 /* submit_id */,
                               phr->user_id, prob_id, 0, variant, 0,
                               -1, /* judge_id */
                               NULL, /* judge_uuid */
                               -1, 1,
                               mime_type, 0, phr->locale_id, 0, 0, 0, &run_uuid,
-                              0 /* rejudge_flag */, 0 /* zip_mode */, store_flags) < 0) {
+                              0 /* rejudge_flag */, 0 /* zip_mode */, store_flags,
+                              NULL, 0) < 0) {
           FAIL2(NEW_SRV_ERR_DISK_WRITE_ERROR);
         }
       }
@@ -11476,7 +11591,7 @@ unpriv_submit_run(
                         "submit", "ok", RUN_COMPILING, NULL);
 
         r = serve_compile_request(phr->config, cs, run_text, run_size, cnts->id,
-                                  run_id, phr->user_id, 0 /* lang_id */, variant,
+                                  run_id, 0 /* submit_id */, phr->user_id, 0 /* lang_id */, variant,
                                   0 /* locale_id */, 1 /* output_only*/,
                                   mime_type_get_suffix(mime_type),
                                   NULL /* compiler_env */,
@@ -11487,8 +11602,12 @@ unpriv_submit_run(
                                   0 /* priority_adjustment */,
                                   0 /* notify flag */,
                                   prob, NULL /* lang */,
-                                  0 /* no_db_flag */, &run_uuid, store_flags,
-                                  0 /* rejudge_flag */, user);
+                                  0 /* no_db_flag */, &run_uuid,
+                                  NULL /* judge_uuid */,
+                                  store_flags,
+                                  0 /* rejudge_flag */,
+                                  phr->is_job,
+                                  user);
         if (r < 0) {
           serve_report_check_failed(ejudge_config, cnts, cs, run_id, serve_err_str(r));
         }
@@ -11498,12 +11617,14 @@ unpriv_submit_run(
 
         if (serve_run_request(phr->config, cs, cnts, phr->log_f, run_text, run_size,
                               cnts->id, run_id,
+                              0 /* submit_id */,
                               phr->user_id, prob_id, 0, variant, 0,
                               -1, /* judge_id */
                               NULL, /* judge_uuid */
                               -1, 1,
                               mime_type, 0, phr->locale_id, 0, 0, 0, &run_uuid,
-                              0 /* rejudge_flag */, 0 /* zip_mode */, store_flags) < 0) {
+                              0 /* rejudge_flag */, 0 /* zip_mode */, store_flags,
+                              NULL, 0) < 0) {
           FAIL2(NEW_SRV_ERR_DISK_WRITE_ERROR);
         }
       }
@@ -11551,6 +11672,706 @@ cleanup:;
 fail:
   error_page(fout, phr, 0, -retval);
   goto cleanup;
+}
+
+static void
+emit_json_result(
+        FILE *fout,
+        struct http_request_info *phr,
+        int ok,
+        int err_num,
+        unsigned err_id,
+        const unsigned char *err_msg,
+        cJSON *jr)
+{
+  phr->json_reply = 1;
+  if (!ok) {
+    if (err_num < 0) err_num = -err_num;
+    if (!err_id) {
+      random_init();
+      err_id = random_u32();
+    }
+    if (!err_msg || !*err_msg) {
+      err_msg = NULL;
+      if (err_num > 0) {
+        err_msg = ns_error_title_2(err_num);
+        if (err_msg && !*err_msg) {
+          err_msg = NULL;
+        }
+      }
+    }
+    cJSON_AddFalseToObject(jr, "ok");
+    cJSON *jerr = cJSON_CreateObject();
+    if (err_num > 0) {
+      cJSON_AddNumberToObject(jerr, "num", err_num);
+      cJSON_AddStringToObject(jerr, "symbol", ns_error_symbol(err_num));
+    }
+    if (err_id) {
+      char xbuf[64];
+      sprintf(xbuf, "%08x", err_id);
+      cJSON_AddStringToObject(jerr, "log_id", xbuf);
+    }
+    if (err_msg) {
+      cJSON_AddStringToObject(jerr, "message", err_msg);
+    }
+    cJSON_AddItemToObject(jr, "error", jerr);
+    // FIXME: log event
+  } else {
+    cJSON_AddTrueToObject(jr, "ok");
+  }
+  cJSON_AddNumberToObject(jr, "server_time", (double) phr->current_time);
+  if (phr->request_id > 0) {
+    cJSON_AddNumberToObject(jr, "request_id", (double) phr->request_id);
+  }
+  if (phr->action > 0 && phr->action < NEW_SRV_ACTION_LAST && ns_symbolic_action_table[phr->action]) {
+    cJSON_AddStringToObject(jr, "action", ns_symbolic_action_table[phr->action]);
+  }
+  if (phr->client_state && phr->client_state->ops->get_reply_id) {
+    int reply_id = phr->client_state->ops->get_reply_id(phr->client_state);
+    cJSON_AddNumberToObject(jr, "reply_id", (double) reply_id);
+  }
+  char *jrstr = cJSON_PrintUnformatted(jr);
+  fprintf(fout, "%s\n", jrstr);
+  free(jrstr);
+}
+
+static void
+ns_submit_run_input(
+        FILE *fout,
+        struct http_request_info *phr,
+        const struct contest_desc *cnts,
+        struct contest_extra *extra,
+        int admin_mode)
+{
+  serve_state_t cs = extra->serve_state;
+  const struct section_global_data *global = cs->global;
+  int ok = 0;
+  int err_num = 0;
+  unsigned char *err_msg = 0;
+  unsigned err_id = 0;
+  cJSON *jr = cJSON_CreateObject(); // reply object
+  const unsigned char *s;
+  int prob_id;
+  const struct section_problem_data *prob = NULL;
+  int lang_id;
+  const struct section_language_data *lang = NULL;
+  int eoln_type = 0;
+  const unsigned char *run_text = NULL;
+  ssize_t run_size = 0;
+  size_t tmpsz;
+  int r;
+  const unsigned char *inp_text = NULL;
+  ssize_t inp_size = 0;
+  unsigned char *acc_probs = NULL;
+  struct storage_entry src_se = {};
+  struct storage_entry inp_se = {};
+  struct submit_entry se = {};
+  const struct userlist_user *user = teamdb_get_userlist(cs->teamdb_state, phr->user_id);
+  struct submit_entry *ses = NULL;
+  size_t sez = 0;
+  struct submit_totals st = {};
+  unsigned char *run_fixed_text = NULL;
+  unsigned char *inp_fixed_text = NULL;
+  int sender_user_id = 0;
+  ej_ip_t sender_ip = {};
+  int sender_ssl_flag = 0;
+
+  if (admin_mode) {
+    if (opcaps_check(phr->caps, OPCAP_SUBMIT_RUN) < 0) {
+      err_num = NEW_SRV_ERR_PERMISSION_DENIED;
+      goto done;
+    }
+
+    if (hr_cgi_param(phr, "sender_user_login", &s) > 0) {
+      if (opcaps_check(phr->caps, OPCAP_EDIT_RUN) < 0) {
+        err_num = NEW_SRV_ERR_PERMISSION_DENIED;
+        goto done;
+      }
+      if ((sender_user_id = teamdb_lookup_login(cs->teamdb_state, s)) <= 0) {
+        err_num = NEW_SRV_ERR_INV_USER_ID;
+        goto done;
+      }
+    } else if (hr_cgi_param_int_opt(phr, "sender_user_id", &sender_user_id, -1) >= 0 && sender_user_id > 0) {
+      if (opcaps_check(phr->caps, OPCAP_EDIT_RUN) < 0) {
+        err_num = NEW_SRV_ERR_PERMISSION_DENIED;
+        goto done;
+      }
+      if (teamdb_lookup(cs->teamdb_state, sender_user_id) <= 0) {
+        err_num = NEW_SRV_ERR_INV_USER_ID;
+        goto done;
+      }
+    }
+    if (sender_user_id <= 0) sender_user_id = phr->user_id;
+
+    if (hr_cgi_param(phr, "sender_ip", &s) > 0) {
+      if (!strcmp(s, "::1")) s = "127.0.0.1";
+      if (xml_parse_ipv6(NULL, 0, 0, 0, s, &sender_ip) < 0) {
+        //fprintf(phr->log_f, "cannot parse sender_ip");
+        err_num = NEW_SRV_ERR_INV_PARAM;
+        goto done;
+      }
+      hr_cgi_param_int_opt(phr, "sender_ssl_flag", &sender_ssl_flag, 0);
+    } else {
+      sender_ip = phr->ip;
+      sender_ssl_flag = phr->ssl_flag;
+    }
+  } else {
+    // unprivileged mode
+    sender_user_id = phr->user_id;
+    sender_ip = phr->ip;
+    sender_ssl_flag = phr->ssl_flag;
+  }
+
+  // parse prob_id
+  if (hr_cgi_param(phr, "prob_id", &s) <= 0 || !s) {
+    err_num = NEW_SRV_ERR_INV_PROB_ID;
+    goto done;
+  }
+  for (prob_id = 1; prob_id <= cs->max_prob; ++prob_id) {
+    if ((prob = cs->probs[prob_id]) && !strcmp(s, prob->short_name))
+      break;
+  }
+  if (prob_id > cs->max_prob) {
+    char *eptr = NULL;
+    errno = 0;
+    long v = strtol(s, &eptr, 10);
+    if (errno || *eptr || (unsigned char *) eptr == s || (int) v != v) {
+      err_num = NEW_SRV_ERR_INV_PROB_ID;
+      goto done;
+    }
+    prob_id = v;
+  }
+  if (prob_id <= 0 || prob_id > cs->max_prob || !(prob = cs->probs[prob_id])) {
+    err_num = NEW_SRV_ERR_INV_PROB_ID;
+    goto done;
+  }
+  if (prob->type != PROB_TYPE_STANDARD || prob->enable_user_input <= 0) {
+    err_num = NEW_SRV_ERR_INV_PROB_ID;
+    goto done;
+  }
+
+  // parse lang_id
+  if (hr_cgi_param(phr, "lang_id", &s) <= 0 || !s) {
+    err_num = NEW_SRV_ERR_INV_LANG_ID;
+    goto done;
+  }
+  for (lang_id = 1; lang_id <= cs->max_lang; ++lang_id) {
+    if ((lang = cs->langs[lang_id]) && !strcmp(s, lang->short_name))
+      break;
+  }
+  if (lang_id > cs->max_lang) {
+    char *eptr = NULL;
+    errno = 0;
+    long v = strtol(s, &eptr, 10);
+    if (errno || *eptr || (unsigned char *) eptr == s || (int) v != v) {
+      err_num = NEW_SRV_ERR_INV_LANG_ID;
+      goto done;
+    }
+    lang_id = v;
+  }
+  if (lang_id <= 0 || lang_id > cs->max_lang || !(lang = cs->langs[lang_id])) {
+    err_num = NEW_SRV_ERR_INV_LANG_ID;
+    goto done;
+  }
+
+  if (cs->global->enable_eoln_select > 0) {
+    hr_cgi_param_int_opt(phr, "eoln_type", &eoln_type, 0);
+    if (eoln_type < 0 || eoln_type > EOLN_CRLF) eoln_type = 0;
+  }
+
+  r = hr_cgi_param_bin(phr, "file", &run_text, &tmpsz); run_size = tmpsz;
+  if ((r <= 0 || !run_text || run_size <= 0) && prob->enable_text_form > 0) {
+    r = hr_cgi_param_bin(phr, "text_form", &run_text, &tmpsz); run_size = tmpsz;
+  }
+  if (r <= 0 || !run_text || run_size <= 0) {
+    err_num = NEW_SRV_ERR_FILE_UNSPECIFIED;
+    goto done;
+  }
+  if (strlen(run_text) != run_size) {
+    err_num = NEW_SRV_ERR_BINARY_FILE;
+    goto done;
+  }
+  if (prob->disable_ctrl_chars > 0 && has_control_characters(run_text)) {
+    err_num = NEW_SRV_ERR_INV_CHAR;
+    goto done;
+  }
+  if (global->ignore_bom > 0) {
+    if (run_text && run_size >= 3 && run_text[0] == 0xef && run_text[1] == 0xbb && run_text[2] == 0xbf) {
+      run_text += 3; run_size -= 3;
+    }
+  }
+  run_size = text_normalize_dup(run_text, run_size, TEXT_FIX_CR | TEXT_FIX_TR_SP | TEXT_FIX_FINAL_NL | TEXT_FIX_NP, &run_fixed_text, NULL, NULL);
+  run_text = run_fixed_text;
+  if (!admin_mode && global->max_run_size > 0 && run_size > global->max_run_size) {
+    err_num = NEW_SRV_ERR_RUN_QUOTA_EXCEEDED;
+    goto done;
+  }
+
+  r = hr_cgi_param_bin(phr, "file_input", &inp_text, &tmpsz); inp_size = tmpsz;
+  if ((r <= 0 || !inp_text || inp_size <= 0) && prob->enable_text_form > 0) {
+    r = hr_cgi_param_bin(phr, "text_form_input", &inp_text, &tmpsz); inp_size = tmpsz;
+  }
+  if (r <= 0 || !inp_text || inp_size <= 0) {
+    err_num = NEW_SRV_ERR_FILE_UNSPECIFIED;
+    goto done;
+  }
+  if (strlen(inp_text) != inp_size) {
+    err_num = NEW_SRV_ERR_BINARY_FILE;
+    goto done;
+  }
+  if (prob->disable_ctrl_chars > 0 && has_control_characters(inp_text)) {
+    err_num = NEW_SRV_ERR_INV_CHAR;
+    goto done;
+  }
+  if (global->ignore_bom > 0) {
+    if (inp_text && inp_size >= 3 && inp_text[0] == 0xef && inp_text[1] == 0xbb && inp_text[2] == 0xbf) {
+      inp_text += 3; inp_size -= 3;
+    }
+  }
+  inp_size = text_normalize_dup(inp_text, inp_size, TEXT_FIX_CR | TEXT_FIX_TR_SP | TEXT_FIX_FINAL_NL | TEXT_FIX_NP, &inp_fixed_text, NULL, NULL);
+  inp_text = inp_fixed_text;
+  {
+    int max_input_size = 1024;
+    if (global->max_input_size > 0) max_input_size = global->max_input_size;
+    if (!admin_mode && inp_size > max_input_size) {
+      err_num = NEW_SRV_ERR_RUN_QUOTA_EXCEEDED;
+      goto done;
+    }
+  }
+
+
+  time_t start_time = 0;
+  time_t stop_time = 0;
+  if (global->is_virtual > 0) {
+    start_time = run_get_virtual_start_time(cs->runlog_state, sender_user_id);
+    stop_time = run_get_virtual_stop_time(cs->runlog_state, sender_user_id, cs->current_time);
+  } else {
+    start_time = run_get_start_time(cs->runlog_state);
+    stop_time = run_get_stop_time(cs->runlog_state, sender_user_id, cs->current_time);
+  }
+
+  if (!admin_mode) {
+    // availability checks
+    if (cs->clients_suspended) {
+      err_num = NEW_SRV_ERR_CLIENTS_SUSPENDED;
+      goto done;
+    }
+    if (start_time <= 0) {
+      err_num = NEW_SRV_ERR_CONTEST_NOT_STARTED;
+      goto done;
+    }
+    if (stop_time > 0 && !cs->upsolving_mode) {
+      err_num = NEW_SRV_ERR_CONTEST_ALREADY_FINISHED;
+      goto done;
+    }
+    if (!serve_is_problem_started(cs, sender_user_id, prob)) {
+      err_num = NEW_SRV_ERR_PROB_UNAVAILABLE;
+      goto done;
+    }
+    time_t user_deadline = 0;
+    if (serve_is_problem_deadlined(cs, sender_user_id, phr->login, prob, &user_deadline)) {
+      err_num = NEW_SRV_ERR_PROB_DEADLINE_EXPIRED;
+      goto done;
+    }
+  }
+
+  if (lang->disabled > 0) {
+    err_num = NEW_SRV_ERR_LANG_DISABLED;
+    goto done;
+  }
+  if (prob->enable_container <= 0 && lang->insecure > 0 && global->secure_run > 0 && prob->disable_security <= 0) {
+    err_num = NEW_SRV_ERR_LANG_DISABLED;
+    goto done;
+  }
+  if (prob->enable_language) {
+    char **lang_list = prob->enable_language;
+    int i;
+    for (i = 0; lang_list[i]; ++i)
+      if (!strcmp(lang_list[i], lang->short_name))
+        break;
+    if (!lang_list[i]) {
+      err_num = NEW_SRV_ERR_LANG_NOT_AVAIL_FOR_PROBLEM;
+      goto done;
+    }
+  } else if (prob->disable_language) {
+    char **lang_list = prob->disable_language;
+    int i;
+    for (i = 0; lang_list[i]; ++i)
+      if (!strcmp(lang_list[i], lang->short_name))
+        break;
+    if (lang_list[i]) {
+      err_num = NEW_SRV_ERR_LANG_DISABLED_FOR_PROBLEM;
+      goto done;
+    }
+  }
+
+  int variant = 0;
+  if (prob->variant_num > 0) {
+    if ((variant = find_variant(cs, sender_user_id, prob_id, 0)) <= 0) {
+      err_num = NEW_SRV_ERR_VARIANT_UNASSIGNED;
+      goto done;
+    }
+  }
+
+  if (!cs->storage_state) {
+    cs->storage_state = storage_plugin_get(extra, cnts, ejudge_config, NULL);
+    if (!cs->storage_state) {
+      err_num = NEW_SRV_ERR_PLUGIN_NOT_AVAIL;
+      goto done;
+    }
+  }
+
+  if (!cs->submit_state) {
+    cs->submit_state = submit_plugin_open(ejudge_config, cnts, cs, NULL, 0);
+    if (!cs->submit_state) {
+      err_num = NEW_SRV_ERR_PLUGIN_NOT_AVAIL;
+      goto done;
+    }
+  }
+
+  if (prob->require) {
+    XALLOCAZ(acc_probs, cs->max_prob + 1);
+    run_get_accepted_set(cs->runlog_state, sender_user_id,
+                         cs->accepting_mode, cs->max_prob, acc_probs);
+    if (prob->require_any > 0) {
+      int i;
+      for (i = 0; prob->require[i]; ++i) {
+        int j;
+        for (j = 1; j <= cs->max_prob; ++j)
+          if (cs->probs[j] && !strcmp(cs->probs[j]->short_name, prob->require[i]))
+            break;
+        if (j <= cs->max_prob && cs->probs[j] && acc_probs[j]) break;
+      }
+      if (!prob->require[i]) {
+        err_num = NEW_SRV_ERR_NOT_ALL_REQ_SOLVED;
+        goto done;
+      }
+    } else {
+      int i;
+      for (i = 0; prob->require[i]; ++i) {
+        int j;
+        for (j = 1; j <= cs->max_prob; ++j)
+          if (cs->probs[j] && !strcmp(cs->probs[j]->short_name, prob->require[i]))
+            break;
+        if (j > cs->max_prob || !acc_probs[j]) break;
+      }
+      if (prob->require[i]) {
+        err_num = NEW_SRV_ERR_NOT_ALL_REQ_SOLVED;
+        goto done;
+      }
+    }
+  }
+
+  if (cs->submit_state->vt->fetch_for_user(cs->submit_state, sender_user_id, 1, 0, &sez, &ses) < 0) {
+    err_num = NEW_SRV_ERR_DATABASE_FAILED;
+    goto done;
+  }
+  // rate limit check
+  if (global->time_between_submits != 0) {
+    long long tbs_us = DFLT_G_TIME_BETWEEN_SUBMITS * 1000000LL;
+    if (global->time_between_submits > 0) {
+      tbs_us = global->time_between_submits * 1000000LL;
+    }
+    if (!admin_mode && sez > 0 && ses[0].create_time_us + tbs_us > cs->current_time * 1000000LL) {
+      err_num = NEW_SRV_ERR_RATE_EXCEEDED;
+      goto done;
+    }
+  }
+  free(ses); ses = NULL; sez = 0;
+
+  if (cs->submit_state->vt->fetch_totals(cs->submit_state, sender_user_id, &st) < 0) {
+    err_num = NEW_SRV_ERR_DATABASE_FAILED;
+    goto done;
+  }
+  {
+    int max_submit_num = DFLT_G_MAX_SUBMIT_NUM;
+    if (global->max_submit_num > 0) max_submit_num = global->max_submit_num;
+    if (!admin_mode && st.count >= max_submit_num) {
+      err_num = NEW_SRV_ERR_RUN_QUOTA_EXCEEDED;
+      goto done;
+    }
+  }
+  {
+    long long max_submit_total = DFLT_G_MAX_SUBMIT_TOTAL;
+    if (global->max_submit_total > 0) max_submit_total = global->max_submit_total;
+    long long new_size = st.source_size + st.input_size + run_size + inp_size;
+    if (!admin_mode && new_size > max_submit_total) {
+      err_num = NEW_SRV_ERR_RUN_QUOTA_EXCEEDED;
+      goto done;
+    }
+  }
+
+  if (cs->storage_state->vt->insert(cs->storage_state, 0, 0, run_size, run_text, &src_se) < 0) {
+    err_num = NEW_SRV_ERR_RUNLOG_UPDATE_FAILED;
+    goto done;
+  }
+  if (cs->storage_state->vt->insert(cs->storage_state, 0, 0, inp_size, inp_text, &inp_se) < 0) {
+    err_num = NEW_SRV_ERR_RUNLOG_UPDATE_FAILED;
+    goto done;
+  }
+  if (ns_load_problem_uuid(phr->log_f, global, prob, variant) < 0) {
+    err_num = NEW_SRV_ERR_INV_PROB_ID;
+    goto done;
+  }
+
+  if (prob->uuid && prob->uuid[0]) {
+    ej_uuid_parse(prob->uuid, &se.prob_uuid);
+  }
+  se.source_id = src_se.serial_id;
+  se.input_id = inp_se.serial_id;
+  se.ip = sender_ip;
+  se.user_id = sender_user_id;
+  se.prob_id = prob_id;
+  se.variant = variant;
+  se.lang_id = lang_id;
+  se.status = RUN_AVAILABLE;
+  se.locale_id = phr->locale_id;
+  se.ssl_flag = sender_ssl_flag;
+  se.eoln_type = eoln_type;
+  se.source_size = run_size;
+  se.input_size = inp_size;
+
+  if ((cs->submit_state->vt->insert(cs->submit_state, &se)) < 0) {
+    err_num = NEW_SRV_ERR_RUNLOG_UPDATE_FAILED;
+    goto done;
+  }
+
+  ej_uuid_generate(&se.judge_uuid);
+  r = serve_compile_request(phr->config,
+                            cs,
+                            run_text,
+                            run_size,
+                            cnts->id,
+                            0  /* run_id */,
+                            se.serial_id,
+                            sender_user_id,
+                            lang->compile_id,
+                            variant,
+                            phr->locale_id,
+                            0 /* output_only */,
+                            lang->src_sfx,
+                            lang->compiler_env,
+                            0 /* style_check_only */,
+                            prob->style_checker_cmd,
+                            prob->style_checker_env,
+                            -1 /* accepting_mode */,
+                            0 /* priority_adjustment */,
+                            1 /* notify_flag */,
+                            prob,
+                            lang,
+                            1 /* no_db_flag */,
+                            NULL /* run_uuid */,
+                            &se.judge_uuid,
+                            0 /* store_flags */,
+                            0 /* rejudge_flag */,
+                            0 /* vcs_mode */,
+                            user);
+  if (r < 0) {
+    err_num = NEW_SRV_ERR_RUNLOG_UPDATE_FAILED;
+    goto done;
+  }
+
+
+  if ((cs->submit_state->vt->change_status(cs->submit_state,
+                                           se.serial_id,
+                                           SUBMIT_FIELD_STATUS | SUBMIT_FIELD_JUDGE_UUID,
+                                           RUN_COMPILING,
+                                           0,
+                                           &se.judge_uuid)) < 0) {
+    err_num = NEW_SRV_ERR_RUNLOG_UPDATE_FAILED;
+    goto done;
+  }
+
+  cJSON *jrr = cJSON_CreateObject();
+  cJSON_AddNumberToObject(jrr, "submit_id", se.serial_id);
+  cJSON_AddItemToObject(jr, "result", jrr);
+  ok = 1;
+
+done:;
+  emit_json_result(fout, phr, ok, err_num, err_id, err_msg, jr);
+
+//cleanup:;
+  if (jr) cJSON_Delete(jr);
+  free(err_msg);
+  free(ses);
+  free(run_fixed_text);
+  free(inp_fixed_text);
+}
+
+static void
+unpriv_submit_run_input(
+        FILE *fout,
+        struct http_request_info *phr,
+        const struct contest_desc *cnts,
+        struct contest_extra *extra)
+{
+  ns_submit_run_input(fout, phr, cnts, extra, 0);
+}
+
+static void
+ns_get_submit(
+        FILE *fout,
+        struct http_request_info *phr,
+        const struct contest_desc *cnts,
+        struct contest_extra *extra,
+        int admin_mode)
+{
+  serve_state_t cs = extra->serve_state;
+  int ok = 0;
+  int err_num = 0;
+  unsigned char *err_msg = NULL;
+  unsigned err_id = 0;
+  cJSON *jr = cJSON_CreateObject(); // reply object
+  int64_t submit_id = 0;
+  const unsigned char *s = NULL;
+  struct submit_entry se = {};
+  struct storage_entry prot_se = {};
+  int r;
+  testing_report_xml_t tr = NULL;
+
+  if (hr_cgi_param(phr, "submit_id", &s) <= 0 || !s) {
+    err_num = NEW_SRV_ERR_INV_SUBMIT_ID;
+    goto done;
+  }
+  {
+    char *eptr = NULL;
+    errno = 0;
+    long long v = strtoll(s, &eptr, 10);
+    if (errno || *eptr || (unsigned char *) eptr == s || v <= 0) {
+      err_num = NEW_SRV_ERR_INV_SUBMIT_ID;
+      goto done;
+    }
+    submit_id = v;
+  }
+
+  if (!cs->storage_state) {
+    cs->storage_state = storage_plugin_get(extra, cnts, ejudge_config, NULL);
+    if (!cs->storage_state) {
+      err_num = NEW_SRV_ERR_PLUGIN_NOT_AVAIL;
+      goto done;
+    }
+  }
+
+  if (!cs->submit_state) {
+    cs->submit_state = submit_plugin_open(ejudge_config, cnts, cs, NULL, 0);
+    if (!cs->submit_state) {
+      err_num = NEW_SRV_ERR_PLUGIN_NOT_AVAIL;
+      goto done;
+    }
+  }
+
+  r = cs->submit_state->vt->fetch(cs->submit_state, submit_id, &se);
+  if (r < 0) {
+    err_num = NEW_SRV_ERR_INV_SUBMIT_ID;
+    goto done;
+  }
+  if (se.contest_id != cnts->id) {
+    err("submit %lld contest_id mismatch", (long long) submit_id);
+    err_num = NEW_SRV_ERR_INV_SUBMIT_ID;
+    goto done;
+  }
+  if (!admin_mode && se.user_id != phr->user_id) {
+    err("submit %lld user_id mismatch", (long long) submit_id);
+    err_num = NEW_SRV_ERR_INV_SUBMIT_ID;
+    goto done;
+  }
+  if (se.protocol_id > 0) {
+    r = cs->storage_state->vt->get_by_serial_id(cs->storage_state, se.protocol_id, &prot_se);
+    if (r < 0) {
+      err_num = NEW_SRV_ERR_INV_SUBMIT_ID;
+      goto done;
+    }
+    if (prot_se.mime_type == MIME_TYPE_BSON) {
+      tr = testing_report_parse_bson_data(prot_se.content, prot_se.size);
+    } else if (!prot_se.mime_type) {
+      size_t len = strlen(prot_se.content);
+      if (len != prot_se.size) {
+        err("invalid length of testing XML report");
+        err_num = NEW_SRV_ERR_INV_SUBMIT_ID;
+        goto done;
+      }
+      tr = testing_report_parse_xml(prot_se.content);
+    } else {
+      err("invalid mime type of testing protocol");
+      err_num = NEW_SRV_ERR_INV_SUBMIT_ID;
+      goto done;
+    }
+    if (!tr) {
+      err("failed to parse testing report");
+      err_num = NEW_SRV_ERR_INV_SUBMIT_ID;
+      goto done;
+    }
+  }
+
+  cJSON *jrr = cJSON_CreateObject();
+  cJSON_AddNumberToObject(jrr, "submit_id", se.serial_id);
+  cJSON_AddNumberToObject(jrr, "user_id", se.user_id);
+  cJSON_AddNumberToObject(jrr, "prob_id", se.prob_id);
+  cJSON_AddNumberToObject(jrr, "lang_id", se.lang_id);
+  cJSON_AddNumberToObject(jrr, "status", se.status);
+  cJSON_AddStringToObject(jrr, "status_str",
+                          run_status_str(se.status, NULL, 0, 0, 0));
+  if (tr) {
+    if (tr->compiler_output && *tr->compiler_output) {
+      cJSON_AddStringToObject(jrr, "compiler_output", tr->compiler_output);
+    }
+    if (tr->run_tests > 0) {
+      if (tr->tests && tr->tests[0]) {
+        struct testing_report_test *ttr = tr->tests[0];
+        if (ttr) {
+          cJSON_AddNumberToObject(jrr, "time", ttr->time);
+          if (ttr->real_time > 0) {
+            cJSON_AddNumberToObject(jrr, "real_time", ttr->real_time);
+          }
+          if (ttr->exit_code >= 0) {
+            cJSON_AddNumberToObject(jrr, "exit_code", ttr->exit_code);
+          }
+          if (ttr->term_signal > 0) {
+            cJSON_AddNumberToObject(jrr, "term_signal", ttr->term_signal);
+          }
+          if (ttr->max_memory_used > 0) {
+            cJSON_AddNumberToObject(jrr, "max_memory_used", ttr->max_memory_used);
+          }
+          if (ttr->max_rss > 0) {
+            cJSON_AddNumberToObject(jrr, "max_rss", ttr->max_rss);
+          }
+          if (ttr->input.size > 0) {
+            cJSON_AddStringToObject(jrr, "input", ttr->input.data);
+          }
+          if (ttr->output.size > 0) {
+            cJSON_AddStringToObject(jrr, "output", ttr->output.data);
+          }
+          if (ttr->error.size > 0) {
+            cJSON_AddStringToObject(jrr, "error", ttr->error.data);
+          }
+          if (ttr->test_checker.size > 0) {
+            cJSON_AddStringToObject(jrr, "test_checker", ttr->test_checker.data);
+          }
+        }
+      }
+    }
+  }
+
+  cJSON_AddItemToObject(jr, "result", jrr);
+  ok = 1;
+
+done:;
+  emit_json_result(fout, phr, ok, err_num, err_id, err_msg, jr);
+
+  if (jr) cJSON_Delete(jr);
+  free(err_msg);
+  testing_report_free(tr);
+  free(prot_se.content);
+}
+
+static void
+unpriv_get_submit(
+        FILE *fout,
+        struct http_request_info *phr,
+        const struct contest_desc *cnts,
+        struct contest_extra *extra)
+{
+  ns_get_submit(fout, phr, cnts, extra, 0);
 }
 
 static void
@@ -12428,7 +13249,7 @@ ns_unparse_statement(
         int variant,
         problem_xml_t px,
         const unsigned char *bb,
-        int is_submittable)
+        int is_submittable /* unused */)
 {
   struct problem_stmt *pp = 0;
   struct xml_tree *p, *q;
@@ -12584,14 +13405,6 @@ ns_unparse_statement(
   if (pp->notes) {
     fprintf(fout, "<h3>%s</h3>", _("Notes"));
     problem_xml_unparse_node(fout, pp->notes, vars, vals);
-  }
-
-  if (is_submittable) {
-    if (prob->type == PROB_TYPE_SELECT_ONE) {
-      fprintf(fout, "<h3>%s</h3>", _("Choose an answer"));
-    } else {
-      fprintf(fout, "<h3>%s</h3>", _("Submit a solution"));
-    }
   }
 
   html_armor_free(&ab);
@@ -12922,7 +13735,8 @@ unpriv_xml_update_answer(
                             phr->locale_id, phr->user_id,
                             prob_id, 0, 0, 0, 0, 0,
                             prob->uuid,
-                            store_flags);
+                            store_flags,
+                            0 /* is_vcs */);
     if (run_id < 0) FAIL(NEW_SRV_ERR_RUNLOG_UPDATE_FAILED);
     serve_move_files_to_insert_run(cs, run_id);
     new_flag = 1;
@@ -14194,6 +15008,364 @@ cleanup:
   free(rep_txt);
 }
 
+static cJSON *
+userprob_to_json(const struct userprob_entry *ue)
+{
+  cJSON *jrr = cJSON_CreateObject();
+  cJSON_AddNumberToObject(jrr, "serial_id", ue->serial_id);
+  cJSON_AddNumberToObject(jrr, "create_time_ms", ue->create_time_us / 1000);
+  cJSON_AddNumberToObject(jrr, "last_change_time_ms", ue->last_change_time_us / 1000);
+  cJSON_AddNumberToObject(jrr, "contest_id", ue->contest_id);
+  cJSON_AddNumberToObject(jrr, "user_id", ue->user_id);
+  cJSON_AddNumberToObject(jrr, "prob_id", ue->prob_id);
+  if (ue->lang_name && *ue->lang_name) {
+    cJSON_AddStringToObject(jrr, "lang_name", ue->lang_name);
+  }
+  if (ue->hook_id && *ue->hook_id) {
+    cJSON_AddStringToObject(jrr, "hook_id", ue->hook_id);
+  }
+  if (ue->gitlab_token && *ue->gitlab_token) {
+    cJSON_AddStringToObject(jrr, "gitlab_token", ue->gitlab_token);
+  }
+  if (ue->vcs_type && *ue->vcs_type) {
+    cJSON_AddStringToObject(jrr, "vcs_type", ue->vcs_type);
+  }
+  if (ue->vcs_url && *ue->vcs_url) {
+    cJSON_AddStringToObject(jrr, "vcs_url", ue->vcs_url);
+  }
+  if (ue->vcs_subdir && *ue->vcs_subdir) {
+    cJSON_AddStringToObject(jrr, "vcs_subdir", ue->vcs_subdir);
+  }
+  if (ue->vcs_branch_spec && *ue->vcs_branch_spec) {
+    cJSON_AddStringToObject(jrr, "vcs_branch_spec", ue->vcs_branch_spec);
+  }
+  if (ue->ssh_private_key && *ue->ssh_private_key) {
+    cJSON_AddStringToObject(jrr, "ssh_private_key", ue->ssh_private_key);
+  }
+  return jrr;
+}
+
+static void
+unpriv_get_userprob(
+        FILE *fout,
+        struct http_request_info *phr,
+        const struct contest_desc *cnts,
+        struct contest_extra *extra)
+{
+  serve_state_t cs = extra->serve_state;
+  int ok = 0;
+  int err_num = 0;
+  unsigned char *err_msg = NULL;
+  cJSON *jr = cJSON_CreateObject(); // reply object
+  unsigned err_id = 0;
+  const unsigned char *s = NULL;
+  int prob_id;
+  const struct section_problem_data *prob = NULL;
+  struct userprob_plugin_data *up_plugin = NULL;
+  struct userprob_entry *ue = NULL;
+
+  if (hr_cgi_param(phr, "prob_id", &s) <= 0 || !s) {
+    err_num = NEW_SRV_ERR_INV_PROB_ID;
+    goto done;
+  }
+  {
+    char *eptr = NULL;
+    errno = 0;
+    long v = strtol(s, &eptr, 10);
+    if (errno || *eptr || (unsigned char *) eptr == s || (int) v != v) {
+      err_num = NEW_SRV_ERR_INV_PROB_ID;
+      goto done;
+    }
+    prob_id = v;
+  }
+  if (prob_id <= 0 || prob_id > cs->max_prob || !(prob = cs->probs[prob_id])) {
+    err_num = NEW_SRV_ERR_INV_PROB_ID;
+    goto done;
+  }
+  if (prob->enable_vcs <= 0) {
+    err_num = NEW_SRV_ERR_INV_PROB_ID;
+    goto done;
+  }
+  up_plugin = userprob_plugin_get(phr->config, NULL, 0);
+  if (!up_plugin) {
+    err_num = NEW_SRV_ERR_PLUGIN_NOT_AVAIL;
+    goto done;
+  }
+  ue = up_plugin->vt->fetch_by_cup(up_plugin, phr->contest_id, phr->user_id, prob_id);
+
+  if (ue) {
+    cJSON *jrr = userprob_to_json(ue);
+    cJSON_AddItemToObject(jr, "result", jrr);
+  }
+
+  ok = 1;
+
+done:;
+  emit_json_result(fout, phr, ok, err_num, err_id, err_msg, jr);
+
+  userprob_entry_free(ue);
+  if (jr) cJSON_Delete(jr);
+  free(err_msg);
+}
+
+static void
+unpriv_create_userprob(
+        FILE *fout,
+        struct http_request_info *phr,
+        const struct contest_desc *cnts,
+        struct contest_extra *extra)
+{
+  serve_state_t cs = extra->serve_state;
+  int ok = 0;
+  int err_num = 0;
+  unsigned char *err_msg = NULL;
+  cJSON *jr = cJSON_CreateObject(); // reply object
+  unsigned err_id = 0;
+  const unsigned char *s = NULL;
+  int prob_id;
+  const struct section_problem_data *prob = NULL;
+  struct userprob_plugin_data *up_plugin = NULL;
+  struct userprob_entry *ue = NULL;
+
+  if (hr_cgi_param(phr, "prob_id", &s) <= 0 || !s) {
+    err_num = NEW_SRV_ERR_INV_PROB_ID;
+    goto done;
+  }
+  {
+    char *eptr = NULL;
+    errno = 0;
+    long v = strtol(s, &eptr, 10);
+    if (errno || *eptr || (unsigned char *) eptr == s || (int) v != v) {
+      err_num = NEW_SRV_ERR_INV_PROB_ID;
+      goto done;
+    }
+    prob_id = v;
+  }
+  if (prob_id <= 0 || prob_id > cs->max_prob || !(prob = cs->probs[prob_id])) {
+    err_num = NEW_SRV_ERR_INV_PROB_ID;
+    goto done;
+  }
+  if (prob->enable_vcs <= 0) {
+    err_num = NEW_SRV_ERR_INV_PROB_ID;
+    goto done;
+  }
+  up_plugin = userprob_plugin_get(phr->config, NULL, 0);
+  if (!up_plugin) {
+    err_num = NEW_SRV_ERR_PLUGIN_NOT_AVAIL;
+    goto done;
+  }
+  ue = up_plugin->vt->create(up_plugin, phr->contest_id, phr->user_id, prob_id);
+  if (!ue) {
+    err_num = NEW_SRV_ERR_OPERATION_FAILED;
+    goto done;
+  }
+
+  cJSON *jrr = userprob_to_json(ue);
+  cJSON_AddItemToObject(jr, "result", jrr);
+  ok = 1;
+
+done:;
+  emit_json_result(fout, phr, ok, err_num, err_id, err_msg, jr);
+
+  userprob_entry_free(ue);
+  if (jr) cJSON_Delete(jr);
+  free(err_msg);
+}
+
+static void
+unpriv_save_userprob(
+        FILE *fout,
+        struct http_request_info *phr,
+        const struct contest_desc *cnts,
+        struct contest_extra *extra)
+{
+  serve_state_t cs = extra->serve_state;
+  int ok = 0;
+  int err_num = 0;
+  unsigned char *err_msg = NULL;
+  cJSON *jr = cJSON_CreateObject(); // reply object
+  unsigned err_id = 0;
+  const unsigned char *s = NULL;
+  int64_t serial_id = 0;
+  struct userprob_plugin_data *up_plugin = NULL;
+  struct userprob_entry *ue = NULL;
+  const struct section_problem_data *prob = NULL;
+  int r;
+
+  if (hr_cgi_param(phr, "serial_id", &s) <= 0 || !s) {
+    err_num = NEW_SRV_ERR_INV_USERPROB_ID;
+    goto done;
+  }
+  {
+    char *eptr = NULL;
+    errno = 0;
+    long long v = strtoll(s, &eptr, 10);
+    if (errno || *eptr || (unsigned char *) eptr == s || v <= 0) {
+      err_num = NEW_SRV_ERR_INV_USERPROB_ID;
+      goto done;
+    }
+    serial_id = v;
+  }
+
+  up_plugin = userprob_plugin_get(phr->config, NULL, 0);
+  if (!up_plugin) {
+    err_num = NEW_SRV_ERR_PLUGIN_NOT_AVAIL;
+    goto done;
+  }
+  ue = up_plugin->vt->fetch_by_serial_id(up_plugin, serial_id);
+  if (!ue) {
+    err_num = NEW_SRV_ERR_INV_USERPROB_ID;
+    goto done;
+  }
+  if (ue->user_id != phr->user_id || ue->contest_id != cnts->id) {
+    err_num = NEW_SRV_ERR_INV_USERPROB_ID;
+    goto done;
+  }
+  if (ue->prob_id <= 0 || ue->prob_id > cs->max_prob || !(prob = cs->probs[ue->prob_id])) {
+    err_num = NEW_SRV_ERR_INV_USERPROB_ID;
+    goto done;
+  }
+  if (prob->enable_vcs <= 0) {
+    err_num = NEW_SRV_ERR_INV_USERPROB_ID;
+    goto done;
+  }
+
+  XCALLOC(ue, 1);
+  if (hr_cgi_param(phr, "vcs_type", &s) > 0) {
+    if (strcmp(s, "github") != 0) {
+      s = "gitlab";
+    }
+  } else {
+    s = "gitlab";
+  }
+  ue->vcs_type = xstrdup(s);
+  if ((r = hr_cgi_param(phr, "lang_name", &s)) < 0) {
+    err_num = NEW_SRV_ERR_INV_PARAM;
+    goto done;
+  }
+  if (r > 0 && s) {
+    if (!*(ue->lang_name = text_input_process_string(s, 0, 0))) {
+      free(ue->lang_name); ue->lang_name = NULL;
+    }
+  }
+  if ((r = hr_cgi_param(phr, "vcs_url", &s)) < 0) {
+    err_num = NEW_SRV_ERR_INV_PARAM;
+    goto done;
+  }
+  if (r > 0 && s) {
+    if (!*(ue->vcs_url = text_input_process_string(s, 0, 0))) {
+      free(ue->vcs_url); ue->vcs_url = NULL;
+    }
+  }
+  if ((r = hr_cgi_param(phr, "vcs_subdir", &s)) < 0) {
+    err_num = NEW_SRV_ERR_INV_PARAM;
+    goto done;
+  }
+  if (r > 0 && s) {
+    if (!*(ue->vcs_subdir = text_input_process_string(s, 0, 0))) {
+      free(ue->vcs_subdir); ue->vcs_subdir = NULL;
+    }
+  }
+  if ((r = hr_cgi_param(phr, "vcs_branch_spec", &s)) < 0) {
+    err_num = NEW_SRV_ERR_INV_PARAM;
+    goto done;
+  }
+  if (r > 0 && s) {
+    if (!*(ue->vcs_branch_spec = text_input_process_string(s, 0, 0))) {
+      free(ue->vcs_branch_spec); ue->vcs_branch_spec = NULL;
+    }
+  }
+  if ((r = hr_cgi_param(phr, "ssh_private_key", &s)) < 0) {
+    err_num = NEW_SRV_ERR_INV_PARAM;
+    goto done;
+  }
+  if (r > 0 && s) {
+    if (!*(ue->ssh_private_key = text_area_process_string(s, 0, 0))) {
+      free(ue->ssh_private_key); ue->ssh_private_key = NULL;
+    }
+  }
+
+  up_plugin->vt->save(up_plugin, serial_id, ue);
+
+  ok = 1;
+
+done:;
+  emit_json_result(fout, phr, ok, err_num, err_id, err_msg, jr);
+
+  userprob_entry_free(ue);
+  if (jr) cJSON_Delete(jr);
+  free(err_msg);
+}
+
+static void
+unpriv_remove_userprob(
+        FILE *fout,
+        struct http_request_info *phr,
+        const struct contest_desc *cnts,
+        struct contest_extra *extra)
+{
+  serve_state_t cs = extra->serve_state;
+  int ok = 0;
+  int err_num = 0;
+  unsigned char *err_msg = NULL;
+  cJSON *jr = cJSON_CreateObject(); // reply object
+  unsigned err_id = 0;
+  const unsigned char *s = NULL;
+  int64_t serial_id = 0;
+  struct userprob_plugin_data *up_plugin = NULL;
+  struct userprob_entry *ue = NULL;
+  const struct section_problem_data *prob = NULL;
+
+  if (hr_cgi_param(phr, "serial_id", &s) <= 0 || !s) {
+    err_num = NEW_SRV_ERR_INV_USERPROB_ID;
+    goto done;
+  }
+  {
+    char *eptr = NULL;
+    errno = 0;
+    long long v = strtoll(s, &eptr, 10);
+    if (errno || *eptr || (unsigned char *) eptr == s || v <= 0) {
+      err_num = NEW_SRV_ERR_INV_USERPROB_ID;
+      goto done;
+    }
+    serial_id = v;
+  }
+
+  up_plugin = userprob_plugin_get(phr->config, NULL, 0);
+  if (!up_plugin) {
+    err_num = NEW_SRV_ERR_PLUGIN_NOT_AVAIL;
+    goto done;
+  }
+  ue = up_plugin->vt->fetch_by_serial_id(up_plugin, serial_id);
+  if (!ue) {
+    err_num = NEW_SRV_ERR_INV_USERPROB_ID;
+    goto done;
+  }
+  if (ue->user_id != phr->user_id || ue->contest_id != cnts->id) {
+    err_num = NEW_SRV_ERR_INV_USERPROB_ID;
+    goto done;
+  }
+  if (ue->prob_id <= 0 || ue->prob_id > cs->max_prob || !(prob = cs->probs[ue->prob_id])) {
+    err_num = NEW_SRV_ERR_INV_USERPROB_ID;
+    goto done;
+  }
+  if (prob->enable_vcs <= 0) {
+    err_num = NEW_SRV_ERR_INV_USERPROB_ID;
+    goto done;
+  }
+
+  up_plugin->vt->remove(up_plugin, serial_id);
+
+  ok = 1;
+
+done:;
+  emit_json_result(fout, phr, ok, err_num, err_id, err_msg, jr);
+
+  userprob_entry_free(ue);
+  if (jr) cJSON_Delete(jr);
+  free(err_msg);
+}
+
 static action_handler_t user_actions_table[NEW_SRV_ACTION_LAST] =
 {
   [NEW_SRV_ACTION_CHANGE_LANGUAGE] = unpriv_change_language,
@@ -14225,6 +15397,12 @@ static action_handler_t user_actions_table[NEW_SRV_ACTION_LAST] =
   [NEW_SRV_ACTION_RUN_STATUS_JSON] = unpriv_run_status_json,
   [NEW_SRV_ACTION_RUN_MESSAGES_JSON] = unpriv_run_messages_json,
   [NEW_SRV_ACTION_RUN_TEST_JSON] = unpriv_run_test_json,
+  [NEW_SRV_ACTION_SUBMIT_RUN_INPUT] = unpriv_submit_run_input,
+  [NEW_SRV_ACTION_GET_SUBMIT] = unpriv_get_submit,
+  [NEW_SRV_ACTION_GET_USERPROB] = unpriv_get_userprob,
+  [NEW_SRV_ACTION_CREATE_USERPROB] = unpriv_create_userprob,
+  [NEW_SRV_ACTION_SAVE_USERPROB] = unpriv_save_userprob,
+  [NEW_SRV_ACTION_REMOVE_USERPROB] = unpriv_remove_userprob,
 };
 
 static const unsigned char * const external_unpriv_action_names[NEW_SRV_ACTION_LAST] =
@@ -14438,6 +15616,7 @@ do_unpriv_login_json(FILE *fout, struct http_request_info *phr, struct UnprivLog
                               phr->locale_id,
                               0, /* pwd_special */
                               is_ws,
+                              0, /* is_job */
                               login, password,
                               &phr->user_id,
                               &phr->session_id, &phr->client_key,
@@ -14673,6 +15852,7 @@ ns_ws_check_session(
     &s_reg_flags,
     &s_passwd_method,
     &s_is_ws,
+    NULL, /* p_is_job */
     &s_expire,
     &s_login,
     &s_name);
@@ -14793,6 +15973,241 @@ unpriv_session_info_json(FILE *fout, struct http_request_info *phr)
 }
 
 static void
+unpriv_gitlab_webhook(
+        FILE *fout,
+        struct http_request_info *phr)
+{
+  cJSON *jr = cJSON_CreateObject();
+  unsigned char *jrstr = NULL;
+  const unsigned char *s;
+  unsigned char hook_id[64];
+  struct userprob_plugin_data *up_data = NULL;
+  struct userprob_entry *ue = NULL;
+  const unsigned char *gitlab_token = NULL;
+  const unsigned char *gitlab_event = NULL;
+  const unsigned char *gitlab_event_uuid = NULL;
+  const unsigned char *gitlab_json = NULL;
+  struct serve_state *cs = NULL;
+  const struct section_problem_data *prob = NULL;
+  const unsigned char *jobs_args[16];
+  unsigned char serial_id_buf[32];
+  const unsigned char *post_pull_cmd = "";
+  struct teamdb_db_callbacks callbacks = {};
+  struct userlist_cookie in_c = {};
+  struct userlist_cookie out_c = {};
+  unsigned char user_session[64];
+  int r;
+
+  s = hr_getenv(phr, "REQUEST_METHOD");
+  if (!s) {
+    err("unpriv_gitlab_webhook: REQUEST_METHOD undefined");
+    goto done;
+  }
+  if (strcmp(s, "POST")) {
+    err("unpriv_gitlab_webhook: POST method expected");
+    goto done;
+  }
+
+  s = hr_getenv(phr, "CONTENT_TYPE");
+  if (!s) {
+    err("unpriv_gitlab_webhook: CONTENT_TYPE undefined");
+    goto done;
+  }
+  if (strcmp(s, "application/json")) {
+    err("unpriv_gitlab_webhook: json request expected");
+    goto done;
+  }
+
+  if (hr_cgi_param(phr, "JSON", &s) <= 0 && !s) {
+    err("unpriv_gitlab_webhook: JSON expected");
+    goto done;
+  }
+  gitlab_json = s;
+
+  if (!phr->session_id || !phr->client_key) {
+    err("unpriv_gitlab_webhook: hook_id is invalid");
+    goto done;
+  }
+  snprintf(hook_id, sizeof(hook_id), "%016llx-%016llx", phr->session_id, phr->client_key);
+
+  up_data = userprob_plugin_get(phr->config, NULL, 0);
+  if (!up_data) {
+    err("unpriv_gitlab_webhook: userprob plugin not available");
+    goto done;
+  }
+  ue = up_data->vt->fetch_by_hook_id(up_data, hook_id);
+  if (!ue) {
+    err("unpriv_gitlab_webhook: no such hook configured");
+    goto done;
+  }
+
+  if (ue->vcs_type && !strcmp(ue->vcs_type, "github")) {
+    gitlab_event = hr_getenv(phr, "HTTP_X_GITHUB_EVENT");
+    if (!gitlab_event || !*gitlab_event) {
+      err("unpriv_gitlab_webhook: GITHUB_EVENT is not provided");
+      goto done;
+    }
+    gitlab_event_uuid = hr_getenv(phr, "HTTP_X_GITHUB_DELIVERY");
+    if (!gitlab_event_uuid || !*gitlab_event_uuid) {
+      err("unpriv_gitlab_webhook: GITHUB_DELIVERY is not provided");
+      goto done;
+    }
+    // FIXME: check secret
+    if (!ue->gitlab_token || !*ue->gitlab_token) {
+      err("unpriv_gitlab_webhook: empty gitlab token in DB");
+      goto done;
+    }
+    s = hr_getenv(phr, "HTTP_X_HUB_SIGNATURE_256");
+    if (!s) {
+      err("unpriv_gitlab_webhook: missing github 'X-Hub-Signature-256'");
+      goto done;
+    }
+    s = strstr(s, "sha256=");
+    if (!s) {
+      err("unpriv_gitlab_webhook: invalid github 'X-Hub-Signature-256'");
+      goto done;
+    }
+    s += 7;
+    uint8_t hmac_str[HMAC_SHA256_DIGEST_SIZE * 2 + 1];
+    hmac_sha256_str(hmac_str, gitlab_json, strlen(gitlab_json),
+                ue->gitlab_token, strlen(ue->gitlab_token));
+    if (strcmp(hmac_str, s) != 0) {
+      err("unpriv_gitlab_webhook: HMAC mismatch: received: %s, computed: %s", s, hmac_str);
+      goto done;
+    }
+  } else {
+    gitlab_token = hr_getenv(phr, "HTTP_X_GITLAB_TOKEN");
+    if (!gitlab_token || !*gitlab_token) {
+      err("unpriv_gitlab_webhook: GITLAB_TOKEN is not provided");
+      goto done;
+    }
+    gitlab_event = hr_getenv(phr, "HTTP_X_GITLAB_EVENT");
+    if (!gitlab_event || !*gitlab_event) {
+      err("unpriv_gitlab_webhook: GITLAB_EVENT is not provided");
+      goto done;
+    }
+    gitlab_event_uuid = hr_getenv(phr, "HTTP_X_GITLAB_EVENT_UUID");
+    if (!gitlab_event_uuid || !*gitlab_event_uuid) {
+      err("unpriv_gitlab_webhook: GITLAB_EVENT_UUID is not provided");
+      goto done;
+    }
+
+    if (!ue->gitlab_token || !*ue->gitlab_token) {
+      err("unpriv_gitlab_webhook: empty gitlab token in DB");
+      goto done;
+    }
+    if (strcmp(gitlab_token, ue->gitlab_token) != 0) {
+      err("unpriv_gitlab_webhook: gitlab token mismatch");
+      goto done;
+    }
+  }
+
+  if (ue->contest_id <= 0) {
+    err("unpriv_gitlab_webhook: invalid contest_id");
+    goto done;
+  }
+  if (contests_get(ue->contest_id, &phr->cnts) < 0 || !phr->cnts) {
+    err("unpriv_gitlab_webhook: invalid contest_id");
+    goto done;
+  }
+  if (phr->cnts->closed) {
+    err("unpriv_gitlab_webhook: contest is closed");
+    goto done;
+  }
+  phr->contest_id = ue->contest_id;
+  phr->extra = ns_get_contest_extra(phr->cnts, phr->config);
+
+  if (ns_open_ul_connection(phr->fw_state) < 0) {
+    err("unpriv_gitlab_webhook: failed to open userlist connection");
+    goto done;
+  }
+
+  callbacks.user_data = (void*) phr->fw_state;
+  callbacks.list_all_users = ns_list_all_users_callback;
+
+  if (serve_state_load_contest(phr->extra, phr->config, phr->contest_id,
+                               ul_conn, &callbacks, 0, 0) < 0) {
+    err("unpriv_gitlab_webhook: failed to load contest");
+    goto done;
+  }
+  cs = phr->extra->serve_state;
+  if (!cs) {
+    err("unpriv_gitlab_webhook: invalid contest");
+    goto done;
+  }
+  cs->current_time = time(0);
+  ns_check_contest_events(phr->extra, cs, phr->cnts);
+
+  if (teamdb_lookup(cs->teamdb_state, ue->user_id) <= 0) {
+    err("unpriv_gitlab_webhook: invalid user_id");
+    goto done;
+  }
+
+  if (ue->prob_id <= 0 || ue->prob_id > cs->max_prob) {
+    err("unpriv_gitlab_webhook: invalid prob_id");
+    goto done;
+  }
+  if (!(prob = cs->probs[ue->prob_id])) {
+    err("unpriv_gitlab_webhook: invalid prob_id");
+    goto done;
+  }
+  // FIXME: check limitations for submit
+  if (prob->enable_vcs <= 0) {
+    err("unpriv_gitlab_webhook: problem does not allow gitlab");
+    goto done;
+  }
+  if (prob->post_pull_cmd) {
+    post_pull_cmd = prob->post_pull_cmd;
+  }
+
+  in_c.ip = phr->ip;
+  in_c.ssl = phr->ssl_flag;
+  in_c.user_id = ue->user_id;
+  in_c.contest_id = phr->contest_id;
+  in_c.locale_id = 0;
+  in_c.priv_level = 0;
+  in_c.role = USER_ROLE_CONTESTANT;
+  in_c.recovery = 0;
+  in_c.team_login = 1;
+  in_c.is_job = 1;
+
+  random_init();
+  in_c.cookie = random_u64();
+  in_c.client_key = random_u64();
+  r = userlist_clnt_create_cookie(ul_conn, ULS_CREATE_COOKIE, &in_c, &out_c);
+  if (r < 0) {
+    err("unpriv_gitlab_webhook: cannot create session");
+    goto done;
+  }
+  snprintf(user_session, sizeof(user_session), "%016llx-%016llx",
+           out_c.cookie, out_c.client_key);
+
+  jobs_args[0] = "gitlab_webhook";
+  jobs_args[1] = gitlab_event;
+  jobs_args[2] = gitlab_event_uuid;
+  snprintf(serial_id_buf, sizeof(serial_id_buf), "%lld", (long long) ue->serial_id);
+  jobs_args[3] = serial_id_buf;
+  jobs_args[4] = prob->problem_dir;
+  jobs_args[5] = post_pull_cmd;
+  jobs_args[6] = user_session;
+  jobs_args[7] = phr->self_url;
+  jobs_args[8] = gitlab_json;
+  jobs_args[9] = NULL;
+
+  send_job_packet(phr->config, (unsigned char**) jobs_args);
+
+done:;
+  phr->json_reply = 1;
+  cJSON_AddTrueToObject(jr, "ok");
+  jrstr = cJSON_PrintUnformatted(jr);
+  fprintf(fout, "%s\n", jrstr);
+
+  userprob_entry_free(ue);
+  free(jrstr);
+  cJSON_Delete(jr);
+}
+
+static void
 unprivileged_entry_point(
         FILE *fout,
         struct http_request_info *phr)
@@ -14808,6 +16223,11 @@ unprivileged_entry_point(
   serve_state_t cs = 0;
   const unsigned char *s = 0;
   int cookie_locale_id = -1;
+
+  if (phr->action == NEW_SRV_ACTION_VCS_WEBHOOK) {
+    unpriv_gitlab_webhook(fout, phr);
+    return;
+  }
 
   if (phr->action == NEW_SRV_ACTION_FORGOT_PASSWORD_1) {
     contests_get(phr->contest_id, &cnts);
@@ -14953,6 +16373,7 @@ unprivileged_entry_point(
                                       &cookie_locale_id, 0, &phr->role, 0, 0, 0,
                                       &phr->passwd_method,
                                       NULL /* p_is_ws */,
+                                      &phr->is_job,
                                       NULL /* p_expire */,
                                       &phr->login, &phr->name)) < 0) {
       if (phr->locale_id < 0 && cookie_locale_id >= 0) phr->locale_id = cookie_locale_id;
@@ -15784,6 +17205,7 @@ batch_login(
                                   locale_id,
                                   0x73629ae8, /* pwd_special */
                                   0, /* is_ws */
+                                  0, /* is_job */
                                   login_str, "xxx",
                                   &phr->user_id,
                                   &phr->session_id, &phr->client_key,
@@ -15830,6 +17252,7 @@ batch_login(
                               locale_id,
                               0x73629ae8, /* pwd_special */
                               0, /* is_ws */
+                              0, /* is_job */
                               login_str, "xxx",
                               &phr->user_id,
                               &phr->session_id, &phr->client_key,

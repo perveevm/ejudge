@@ -118,7 +118,8 @@ run_add_record(
         int            is_hidden,
         int            mime_type,
         const unsigned char *prob_uuid,
-        int            store_flags);
+        int            store_flags,
+        int            is_vcs);
 int run_start_contest(runlog_state_t, time_t);
 time_t run_get_start_time(runlog_state_t);
 int
@@ -250,9 +251,10 @@ enum
     RE_PASSED_MODE   = 0x10000000,
     RE_EOLN_TYPE     = 0x20000000,
     RE_STORE_FLAGS   = 0x40000000,
-    RE_PROB_UUID     = 0x80000000, // not a part of run_entry structure
-    RE_JUDGE_UUID   = 0x100000000ULL,
-    RE_ALL          = 0x1FFFFFFFFULL,
+    RE_PROB_UUID     = 0x80000000,
+    RE_JUDGE_UUID    = 0x100000000ULL,
+    RE_IS_VCS        = 0x200000000ULL,
+    RE_ALL           = 0x3FFFFFFFFULL,
   };
 
 struct run_entry
@@ -274,7 +276,8 @@ struct run_entry
   unsigned int   is_marked:1;
   unsigned int   is_saved:1;
   unsigned int   is_checked:1;
-  unsigned int   _pad2:22;
+  unsigned int   is_vcs:1;
+  unsigned int   _pad2:21;
   rint32_t       score;         /* 4 */
   unsigned char  status;        /* 1 */
   signed char    passed_mode;   /* 1 */
@@ -497,6 +500,19 @@ run_set_run_is_checked(
 
 void
 run_rebuild_user_run_index(runlog_state_t state, int user_id);
+
+void
+run_get_user_run_header_id_range(
+        runlog_state_t state,
+        int *p_low_user_id,
+        int *p_high_user_id);
+
+struct user_run_header_info;
+
+struct user_run_header_info *
+run_try_user_run_header(
+        runlog_state_t state,
+        int user_id);
 
 static inline _Bool __attribute__((always_inline)) run_is_normal_status(unsigned char status)
 {

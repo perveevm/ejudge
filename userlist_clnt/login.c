@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2002-2018 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2002-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -29,6 +29,7 @@ userlist_clnt_login(
         int locale_id,
         int pwd_special,
         int is_ws,
+        int is_job,
         unsigned char const *login,
         unsigned char const *passwd,
         int *p_user_id,
@@ -76,6 +77,7 @@ userlist_clnt_login(
   out->locale_id = locale_id;
   out->pwd_special = pwd_special;
   out->is_ws = is_ws;
+  out->is_job = is_job;
   out->login_length = login_len;
   out->password_length = passwd_len;
   strcpy(login_ptr, login);

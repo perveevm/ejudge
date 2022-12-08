@@ -2,7 +2,7 @@
 #ifndef __RUN_H__
 #define __RUN_H__
 
-/* Copyright (C) 2010-2018 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2010-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -35,6 +35,7 @@ struct testinfo
   long           times;         /* execution time */
   long           real_time;     /* execution real time */
   unsigned long  max_memory_used;
+  long long      max_rss;
   char          *input;         /* the input */
   long           input_size;
   int            has_input_digest;
@@ -65,6 +66,9 @@ struct testinfo
   int user_score;
   int user_tests_passed;
   int user_nominal_score;
+  /* test checker on user input */
+  char *test_checker;
+  long  test_checker_size;
 };
 
 struct testinfo_vector
@@ -106,6 +110,7 @@ struct full_archive;
 struct serve_state;
 struct section_tester_data;
 struct ejudge_cfg;
+struct AgentClient;
 
 void
 run_tests(
@@ -114,6 +119,7 @@ run_tests(
         const struct section_tester_data *tst,
         const struct super_run_in_packet *srp,
         struct run_reply_packet *reply_pkt,
+        struct AgentClient *agent,
         int accept_testing,
         int accept_partial,
         int cur_variant,
@@ -127,6 +133,9 @@ run_tests(
         int utf8_mode,
         struct run_listener *listener,
         const unsigned char *hostname,
-        const struct remap_spec *remaps);
+        const struct remap_spec *remaps,
+        int user_input_mode,
+        const unsigned char *inp_data,
+        size_t inp_size);
 
 #endif /* __RUN_H__ */

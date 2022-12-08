@@ -93,6 +93,7 @@ enum
   TR_T_PROGRAM_STATS_STR,
   TR_T_INTERACTOR_STATS_STR,
   TR_T_CHECKER_STATS_STR,
+  TR_T_TEST_CHECKER,
 
   TR_T_LAST_TAG,
 };
@@ -158,6 +159,10 @@ enum
   TR_A_USER_NOMINAL_SCORE,
   TR_A_CHECKER_TOKEN,
   TR_A_JUDGE_UUID,
+  TR_A_MAX_RSS_AVAILABLE,
+  TR_A_SEPARATE_USER_SCORE,
+  TR_A_MAX_RSS,
+  TR_A_SUBMIT_ID,
 
   TR_A_LAST_ATTR,
 };
@@ -190,6 +195,7 @@ static const char * const elem_map[] =
   [TR_T_PROGRAM_STATS_STR] = "program-stats-str",
   [TR_T_INTERACTOR_STATS_STR] = "interactor-stats-str",
   [TR_T_CHECKER_STATS_STR] = "checker-stats-str",
+  [TR_T_TEST_CHECKER] = "test-checker",
 
   [TR_T_LAST_TAG] = 0,
 };
@@ -255,6 +261,10 @@ static const char * const attr_map[] =
   [TR_A_USER_NOMINAL_SCORE] = "user-nominal-score",
   [TR_A_CHECKER_TOKEN] = "checker-token",
   [TR_A_JUDGE_UUID] = "judge-uuid",
+  [TR_A_MAX_RSS_AVAILABLE] = "max-rss-available",
+  [TR_A_SEPARATE_USER_SCORE] = "separate-user-score",
+  [TR_A_MAX_RSS] = "max-rss",
+  [TR_A_SUBMIT_ID] = "submit-id",
 
   [TR_A_LAST_ATTR] = 0,
 };
@@ -447,6 +457,11 @@ parse_test(struct xml_tree *t, testing_report_xml_t r)
       if (xml_attr_ulong(a, &ulx) < 0) goto failure;
       p->max_memory_used = ulx;
       break;
+    case TR_A_MAX_RSS:
+      ulx = 0;
+      if (xml_attr_ulong(a, &ulx) < 0) goto failure;
+      p->max_rss = ulx;
+      break;
     case TR_A_EXIT_CODE:
       if (xml_attr_int(a, &x) < 0) goto failure;
       if (x < 0) x = 255;
@@ -620,6 +635,9 @@ parse_test(struct xml_tree *t, testing_report_xml_t r)
       break;
     case TR_T_CHECKER:
       if (parse_file(t2, &q->checker) < 0) goto failure;
+      break;
+    case TR_T_TEST_CHECKER:
+      if (parse_file(t2, &q->test_checker) < 0) goto failure;
       break;
 
     default:
@@ -876,7 +894,12 @@ parse_testing_report(struct xml_tree *t, testing_report_xml_t r)
       }
       r->run_id = x;
       break;
-
+    case TR_A_SUBMIT_ID: {
+      long long v;
+      if (xml_attr_long_long(a, &v) < 0) return -1;
+      r->submit_id = v;
+      break;
+    }
     case TR_A_JUDGE_ID:
       if (xml_attr_int(a, &x) < 0) return -1;
       if (x < 0 || x > EJ_MAX_JUDGE_ID) {
@@ -932,6 +955,16 @@ parse_testing_report(struct xml_tree *t, testing_report_xml_t r)
     case TR_A_MAX_MEMORY_USED_AVAILABLE:
       if (xml_attr_bool(a, &x) < 0) return -1;
       r->max_memory_used_available = x;
+      break;
+
+    case TR_A_MAX_RSS_AVAILABLE:
+      if (xml_attr_bool(a, &x) < 0) return -1;
+      r->max_rss_available = x;
+      break;
+
+    case TR_A_SEPARATE_USER_SCORE:
+      if (xml_attr_bool(a, &x) < 0) return -1;
+      r->separate_user_score = x;
       break;
 
     case TR_A_COMPILE_ERROR:
@@ -1109,7 +1142,7 @@ parse_testing_report(struct xml_tree *t, testing_report_xml_t r)
     }
   }
 
-  if (r->run_id < 0) {
+  if (r->run_id < 0 && r->submit_id <= 0) {
     xml_err_attr_undefined(t, TR_A_RUN_ID);
     return -1;
   }
@@ -1334,6 +1367,7 @@ testing_report_test_free(struct testing_report_test *p)
   xfree(p->correct.data); p->correct.data = 0;
   xfree(p->error.data); p->error.data = 0;
   xfree(p->checker.data); p->checker.data = 0;
+  xfree(p->test_checker.data); p->test_checker.data = 0;
 
   xfree(p);
   return 0;
@@ -1408,6 +1442,8 @@ testing_report_test_alloc(int num, int status)
   trt->error.orig_size = -1;
   trt->checker.size = -1;
   trt->checker.orig_size = -1;
+  trt->test_checker.size = -1;
+  trt->test_checker.orig_size = -1;
   return trt;
 }
 
@@ -1553,6 +1589,10 @@ testing_report_unparse_xml(
           attr_map[TR_A_STATUS], buf1,
           attr_map[TR_A_SCORING], scoring,
           attr_map[TR_A_RUN_TESTS], r->run_tests);
+  if (r->submit_id > 0) {
+    fprintf(out, " %s=\"%lld\"", attr_map[TR_A_SUBMIT_ID],
+            (long long) r->submit_id);
+  }
 
   if (ej_uuid_is_nonempty(r->judge_uuid)) {
     fprintf(out, " %s=\"%s\"", attr_map[TR_A_JUDGE_UUID],
@@ -1566,7 +1606,9 @@ testing_report_unparse_xml(
   unparse_bool_attr(out, TR_A_REAL_TIME_AVAILABLE, r->real_time_available);
   unparse_bool_attr(out, TR_A_MAX_MEMORY_USED_AVAILABLE,
                     r->max_memory_used_available);
+  unparse_bool_attr(out, TR_A_MAX_RSS_AVAILABLE, r->max_rss_available);
   unparse_bool_attr(out, TR_A_CORRECT_AVAILABLE, r->correct_available);
+  unparse_bool_attr(out, TR_A_SEPARATE_USER_SCORE, r->separate_user_score);
   unparse_bool_attr(out, TR_A_INFO_AVAILABLE, r->info_available);
   unparse_bool_attr(out, TR_A_COMPILE_ERROR, r->compile_error);
   if (r->variant > 0) {
@@ -1677,6 +1719,9 @@ testing_report_unparse_xml(
         fprintf(out, " %s=\"%lu\"", attr_map[TR_A_MAX_MEMORY_USED],
                 t->max_memory_used);
       }
+      if (r->max_rss_available > 0 && t->max_rss > 0) {
+        fprintf(out, " %s=\"%lld\"", attr_map[TR_A_MAX_RSS], t->max_rss);
+      }
       if (r->scoring_system == SCORE_OLYMPIAD && r->accepting_mode <= 0) {
         fprintf(out, " %s=\"%d\" %s=\"%d\"",
                 attr_map[TR_A_NOMINAL_SCORE], t->nominal_score,
@@ -1727,6 +1772,7 @@ testing_report_unparse_xml(
       unparse_file_content(out, &ab, TR_T_CORRECT, &t->correct);
       unparse_file_content(out, &ab, TR_T_STDERR, &t->error);
       unparse_file_content(out, &ab, TR_T_CHECKER, &t->checker);
+      unparse_file_content(out, &ab, TR_T_TEST_CHECKER, &t->test_checker);
       fprintf(out, "    </%s>\n", elem_map[TR_T_TEST]);
     }
     fprintf(out, "  </%s>\n", elem_map[TR_T_TESTS]);

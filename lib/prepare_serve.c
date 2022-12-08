@@ -1,6 +1,6 @@
 /* -*- c -*- */
 
-/* Copyright (C) 2005-2017 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2005-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -25,18 +25,19 @@
 #include "ejudge/runlog.h"
 #include "ejudge/variant_map.h"
 #include "ejudge/random.h"
+#include "ejudge/variant_plugin.h"
 
 #include "ejudge/xalloc.h"
 
-int
-find_variant(
+static __attribute__((unused)) int
+to_remove_find_variant(
         const serve_state_t state,
         int user_id,
         int prob_id,
         int *p_virtual_variant)
 {
   int i, new_vint, ui;
-  struct variant_map *pmap = state->global->variant_map;
+  struct variant_map *pmap = NULL; //state->global->variant_map;
   struct variant_map_item *vi;
   const struct section_problem_data *prob = NULL;
 
@@ -114,14 +115,14 @@ find_variant(
   return 0;
 }
 
-int
-find_user_variant(
+static __attribute__((unused)) int
+to_remove_find_user_variant(
         const serve_state_t state,
         int user_id,
         int *p_virtual_variant)
 {
   int i, new_vint, ui;
-  struct variant_map *pmap = state->global->variant_map;
+  struct variant_map *pmap = NULL; //state->global->variant_map;
   struct variant_map_item *vi;
 
   if (!pmap) return 0;
@@ -247,4 +248,36 @@ prepare_serve_defaults(
     xstrdup3(&state->global->name, (*p_cnts)->name);
   }
   return 0;
+}
+
+int
+find_variant(
+        const serve_state_t state,
+        int user_id,
+        int prob_id,
+        int *p_virtual_variant)
+{
+  if (!state->variant_state) return 0;
+
+  return state->variant_state->vt->find_variant(
+    state->variant_state,
+    state,
+    user_id,
+    prob_id,
+    p_virtual_variant);
+}
+
+int
+find_user_variant(
+        const serve_state_t state,
+        int user_id,
+        int *p_virtual_variant)
+{
+  if (!state->variant_state) return 0;
+
+  return state->variant_state->vt->find_user_variant(
+    state->variant_state,
+    state,
+    user_id,
+    p_virtual_variant);
 }

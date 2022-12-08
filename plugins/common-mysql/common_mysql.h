@@ -20,6 +20,8 @@
 #include "ejudge/ejudge_plugin.h"
 #include "ejudge/common_plugin.h"
 
+#include <pthread.h>
+
 struct common_mysql_iface;
 struct common_mysql_state;
 struct common_mysql_binary;
@@ -60,6 +62,8 @@ struct common_mysql_state
   unsigned long *lengths;
   int row_count;
   int field_count;
+
+  pthread_mutex_t m;
 };
 
 #endif /* EJUDGE_SKIP_MYSQL */
@@ -194,6 +198,14 @@ struct common_mysql_iface
         FILE *f,
         const unsigned char *pfx,
         const struct common_mysql_binary *bin);
+
+  int (*simple_query_bin)(
+        struct common_mysql_state *state,
+        const unsigned char *cmd,
+        int cmdlen);
+
+  void (*lock)(struct common_mysql_state *state);
+  void (*unlock)(struct common_mysql_state *state);
 };
 
 #define db_error_fail(s) do { s->i->error(s); goto fail; } while (0)

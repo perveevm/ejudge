@@ -173,6 +173,8 @@ COMMON_CFILES=\
  lib/filehash.c\
  lib/filter_eval.c\
  lib/filter_tree.c\
+ lib/fs_mirror.c\
+ lib/hmac_sha256.c\
  lib/html.c\
  lib/html_checkbox.c\
  lib/html_date_select.c\
@@ -244,7 +246,9 @@ COMMON_CFILES=\
  lib/standings.c\
  lib/statusdb.c\
  lib/status_plugin_file.c\
+ lib/storage_plugin.c\
  lib/stringset.c\
+ lib/submit_plugin.c\
  lib/super_html.c\
  lib/super_html_2.c\
  lib/super_html_3.c\
@@ -292,7 +296,10 @@ COMMON_CFILES=\
  lib/userlist_check.c\
  lib/userlist_proto.c\
  lib/userlist_xml.c\
+ lib/userprob_plugin.c\
  lib/variant_map.c\
+ lib/variant_plugin.c\
+ lib/variant_plugin_file.c\
  lib/varsubst.c\
  lib/vcs.c\
  lib/watched_file.c\
@@ -580,6 +587,7 @@ HFILES=\
  ./include/ejudge/fileutl.h\
  ./include/ejudge/filter_eval.h\
  ./include/ejudge/filter_tree.h\
+ ./include/ejudge/fs_mirror.h\
  ./include/ejudge/full_archive.h\
  ./include/ejudge/html.h\
  ./include/ejudge/html_parse.h\
@@ -631,7 +639,9 @@ HFILES=\
  ./include/ejudge/sock_op.h\
  ./include/ejudge/startstop.h\
  ./include/ejudge/statusdb.h\
+ ./include/ejudge/storage_plugin.h\
  ./include/ejudge/stringset.h\
+ ./include/ejudge/submit_plugin.h\
  ./include/ejudge/super_clnt.h\
  ./include/ejudge/super_html.h\
  ./include/ejudge/super_proto.h\
@@ -665,7 +675,9 @@ HFILES=\
  ./include/ejudge/userlist.h\
  ./include/ejudge/userlist_bin.h\
  ./include/ejudge/userlist_clnt.h\
+ ./include/ejudge/userprob_plugin.h\
  ./include/ejudge/variant_map.h\
+ ./include/ejudge/variant_plugin.h\
  ./include/ejudge/varsubst.h\
  ./include/ejudge/vcs.h\
  ./include/ejudge/version.h\

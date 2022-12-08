@@ -6,7 +6,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: ejudge 3\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2022-06-19 01:04+0300\n"
+"POT-Creation-Date: 2022-10-25 17:35+0300\n"
 "PO-Revision-Date: 2022-01-12 13:17+0300\n"
 "Last-Translator: Alexander Chernov <cher@ejudge.ru>\n"
 "Language-Team: Russian <ru@li.org>\n"
@@ -541,6 +541,9 @@ msgstr "Назначить случайный шифр"
 
 msgid "Assigned cyphers"
 msgstr "Назначенные шифры"
+
+msgid "Attach a file or copy text below"
+msgstr "Приложите файл или скопируйте текст в окно ниже"
 
 msgid "Attempt to submit a binary file"
 msgstr "Попытка послать бинарный файл"
@@ -1136,6 +1139,9 @@ msgstr "Удалить все"
 
 msgid "Delete row"
 msgstr "Удалить строку"
+
+msgid "Delete this integration?"
+msgstr "Удалить интеграцию?"
 
 msgid "Delete!"
 msgstr "Удалить!"
@@ -1931,6 +1937,9 @@ msgstr "Информация недоступна."
 msgid "Input"
 msgstr "Входные данные"
 
+msgid "Input data"
+msgstr "Входные данные"
+
 msgid "Input file name"
 msgstr "Имя входного файла"
 
@@ -1975,6 +1984,9 @@ msgstr "Недостаточная продолжительность турни
 
 msgid "Internal error"
 msgstr "Внутренняя ошибка"
+
+msgid "Invalid ID"
+msgstr "Недопустимый ID"
 
 #, c-format
 msgid "Invalid RunId %s in row %d\n"
@@ -2095,6 +2107,9 @@ msgstr "Недопустимый статус `%s' (%d) в строке %d\n"
 #, c-format
 msgid "Invalid status `%s' in row %d\n"
 msgstr "Недопустимый статус `%s' в строке %d\n"
+
+msgid "Invalid submit ID"
+msgstr "Недопустимый ID посылки"
 
 msgid "Invalid test"
 msgstr "Неверный тест"
@@ -2371,6 +2386,9 @@ msgstr "Отмечена?"
 msgid "Master"
 msgstr "Master"
 
+msgid "Max RSS used"
+msgstr "Макс. RSS"
+
 msgid "Max memory used"
 msgstr "Макс. использованная память"
 
@@ -2544,9 +2562,6 @@ msgstr "Новый статус: %s\n"
 msgid "New user account is created"
 msgstr "Новая учётная запись создана"
 
-msgid "Next problem"
-msgstr "Следующая задача"
-
 msgid "Next soft deadline"
 msgstr "След. мягкий срок"
 
@@ -2599,6 +2614,9 @@ msgstr "Нет записи для %s/%s\n"
 
 msgid "No guests are allowed in this contest"
 msgstr "Категория \"гости\" не поддерживается для этого турнира"
+
+msgid "No integration is defined. Create a new one?"
+msgstr "Интеграция не настроена. Настроить?"
 
 msgid "No plugin is available for problem"
 msgstr "Для задачи нет модуля сдачи решений"
@@ -2907,9 +2925,6 @@ msgstr ""
 "Нажмите на кнопку \"Завершить экзамен\" чтобы завершить экзамен. После этого "
 "Ваши ответы будут проверены."
 
-msgid "Previous problem"
-msgstr "Предыдущая задача"
-
 msgid "Previous submissions of this problem"
 msgstr "Предыдущие решения этой задачи"
 
@@ -3102,6 +3117,9 @@ msgstr "Затравка ГПСЧ"
 
 msgid "Random variants"
 msgstr "Случайные варианты"
+
+msgid "Rate exceeded"
+msgstr "Превышено ограничение по частоте посылок"
 
 msgid "Re"
 msgstr "Re"
@@ -3420,8 +3438,14 @@ msgstr "Эта посылка не может быть изменена"
 msgid "Run log update failed"
 msgstr "Обновление журнала посылок не удалось"
 
+msgid "Run on server"
+msgstr "Запустить на сервере"
+
 msgid "Run penalty"
 msgstr "Штраф за посылку"
+
+msgid "Run program on server"
+msgstr "Запустите программу на сервере"
 
 msgid "Run selection"
 msgstr "Выбор посылок"
@@ -3659,6 +3683,9 @@ msgstr "Установить статус регистрации в REJECTED, т
 msgid "Settings"
 msgstr "Настройки"
 
+msgid "Setup Gitlab Integration"
+msgstr "Настроить интеграцию Gitlab"
+
 msgid "Shift parameter"
 msgstr "Параметр shift"
 
@@ -3855,6 +3882,9 @@ msgstr "Отправить апелляцию"
 
 msgid "Submit clar"
 msgstr "Отправить вопрос"
+
+msgid "Submit for judgement"
+msgstr "Отправить на проверку"
 
 msgid "Submit image"
 msgstr "Отправить изображение"

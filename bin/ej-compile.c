@@ -143,6 +143,9 @@ invoke_style_checker(
     for (int i = 0; i < tinf->style_checker_env.u; ++i)
       task_PutEnv(tsk, tinf->style_checker_env.v[i]);
   }
+  if (req->vcs_mode) {
+    task_PutEnv(tsk, "EJUDGE_VCS_MODE=1");
+  }
   if (lang && lang->compile_real_time_limit > 0) {
     task_SetMaxRealTime(tsk, lang->compile_real_time_limit);
   }
@@ -207,9 +210,22 @@ invoke_compiler(
   tpTask tsk = 0;
 
   tsk = task_New();
-  task_AddArg(tsk, lang->cmd);
-  task_AddArg(tsk, input_file);
-  task_AddArg(tsk, output_file);
+  if (req->vcs_mode) {
+    unsigned char helper_path[PATH_MAX];
+    snprintf(helper_path, sizeof(helper_path),
+             "%s/ej-vcs-compile", EJUDGE_SERVER_BIN_PATH);
+    task_AddArg(tsk, helper_path);
+    task_AddArg(tsk, input_file);
+    task_AddArg(tsk, output_file);
+    task_AddArg(tsk, lang->short_name);
+    if (req->vcs_compile_cmd && req->vcs_compile_cmd[0]) {
+      task_AddArg(tsk, req->vcs_compile_cmd);
+    }
+  } else {
+    task_AddArg(tsk, lang->cmd);
+    task_AddArg(tsk, input_file);
+    task_AddArg(tsk, output_file);
+  }
   task_SetPathAsArg0(tsk);
   task_EnableProcessGroup(tsk);
   if (VALID_SIZE(req->max_vm_size)) {
@@ -251,6 +267,9 @@ invoke_compiler(
   if (tinf && tinf->compiler_env.u > 0) {
     for (int i = 0; i < tinf->compiler_env.u; ++i)
       task_PutEnv(tsk, tinf->compiler_env.v[i]);
+  }
+  if (req->vcs_mode) {
+    task_PutEnv(tsk, "EJUDGE_VCS_MODE=1");
   }
   task_SetWorkingDir(tsk, working_dir);
   task_SetRedir(tsk, 0, TSR_FILE, "/dev/null", TSK_READ);
@@ -458,7 +477,7 @@ handle_packet(
       if (r != RUN_OK) goto cleanup;
     }
 
-    if (req->style_checker && req->style_checker[0]) {
+    if (req->vcs_mode <= 0 && req->style_checker && req->style_checker[0]) {
       int r = invoke_style_checker(log_f, cs, lang, req, src_work_name, working_dir, log_work_path, NULL);
       rpl->status = r;
       if (r == RUN_OK && req->style_check_only > 0) *p_override_exe = 1;
@@ -810,7 +829,7 @@ handle_packet(
       }
     }
 
-    if (status == RUN_OK && !style_already_checked && req->style_checker && req->style_checker[0]) {
+    if (status == RUN_OK && !style_already_checked && req->vcs_mode <= 0 && req->style_checker && req->style_checker[0]) {
       fprintf(log_f, "=== style checking ===\n");
       fflush(log_f);
 
@@ -991,6 +1010,7 @@ new_loop(int parallel_mode)
     rpl.judge_uuid = req->judge_uuid;
     rpl.contest_id = req->contest_id;
     rpl.run_id = req->run_id;
+    rpl.submit_id = req->submit_id;
     rpl.ts1 = req->ts1;
     rpl.ts1_us = req->ts1_us;
     rpl.use_uuid = req->use_uuid;
@@ -1534,6 +1554,10 @@ main(int argc, char *argv[])
     return 1;
   }
   if (parallelism > 1) parallel_mode = 1;
+  for (int hi = 0; host_names[hi]; ++hi) {
+    free(host_names[hi]);
+  }
+  free(host_names); host_names = NULL;
 
   int *pids = NULL;
   int pid_count;

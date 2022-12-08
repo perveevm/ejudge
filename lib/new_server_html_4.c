@@ -134,6 +134,7 @@ cmd_login(
                             phr->locale_id,
                             0, /* pwd_special */
                             0, /* is_ws */
+                            0, /* is_job */
                             login, password,
                             &phr->user_id,
                             &phr->session_id,
@@ -1106,7 +1107,8 @@ cmd_submit_run(
                           prob->id, lang_id, eoln_type,
                           variant, hidden_flag, mime_type,
                           prob->uuid,
-                          store_flags);
+                          store_flags,
+                          0 /* is_vcs */);
   if (run_id < 0)
     FAIL(NEW_SRV_ERR_RUNLOG_UPDATE_FAILED);
   serve_move_files_to_insert_run(cs, run_id);
@@ -1143,15 +1145,19 @@ cmd_submit_run(
       serve_audit_log(cs, run_id, NULL, phr->user_id, &phr->ip, phr->ssl_flag,
                         "submit", "ok", RUN_COMPILING, NULL);
       if ((r = serve_compile_request(phr->config, cs, run_text, run_size, cnts->id,
-                                     run_id, phr->user_id,
+                                     run_id, 0 /* submit_id */, phr->user_id,
                                      lang->compile_id, variant,
                                      phr->locale_id, 0,
                                      lang->src_sfx,
                                      lang->compiler_env,
                                      0, prob->style_checker_cmd,
                                      prob->style_checker_env,
-                                     -1, 0, 0, prob, lang, 0, &run_uuid, store_flags,
-                                     0 /* rejudge_flag */, user)) < 0) {
+                                     -1, 0, 0, prob, lang, 0, &run_uuid,
+                                     NULL /* judge_uuid */,
+                                     store_flags,
+                                     0 /* rejudge_flag */,
+                                     phr->is_job,
+                                     user)) < 0) {
         serve_report_check_failed(ejudge_config, cnts, cs, run_id, serve_err_str(r));
       }
     }
@@ -1167,7 +1173,7 @@ cmd_submit_run(
                         "submit", "ok", RUN_COMPILING, NULL);
       if (prob->style_checker_cmd && prob->style_checker_cmd[0]) {
         if ((r = serve_compile_request(phr->config, cs, run_text, run_size, cnts->id,
-                                       run_id, phr->user_id, 0 /* lang_id */, variant,
+                                       run_id, 0 /* submit_id */, phr->user_id, 0 /* lang_id */, variant,
                                        0 /* locale_id */, 1 /* output_only*/,
                                        mime_type_get_suffix(mime_type),
                                        NULL /* compiler_env */,
@@ -1178,19 +1184,25 @@ cmd_submit_run(
                                        0 /* priority_adjustment */,
                                        0 /* notify flag */,
                                        prob, NULL /* lang */,
-                                       0 /* no_db_flag */, &run_uuid, store_flags,
-                                       0 /* rejudge_flag */, user)) < 0) {
+                                       0 /* no_db_flag */, &run_uuid,
+                                       NULL /* judge_uuid */,
+                                       store_flags,
+                                       0 /* rejudge_flag */,
+                                       phr->is_job,
+                                       user)) < 0) {
           serve_report_check_failed(ejudge_config, cnts, cs, run_id, serve_err_str(r));
         }
       } else {
         if (serve_run_request(phr->config, cs, cnts, stderr, run_text, run_size,
                               cnts->id, run_id,
+                              0 /* submit_id */,
                               phr->user_id, prob->id, 0, variant, 0,
                               -1, /* judge_id */
                               NULL, /* judge_uuid */
                               -1, 0,
                               mime_type, 0, phr->locale_id, 0, 0, 0, &run_uuid,
-                              0 /* rejudge_flag */, 0 /* zip_mode */, store_flags) < 0)
+                              0 /* rejudge_flag */, 0 /* zip_mode */, store_flags,
+                              NULL, 0) < 0)
           FAIL(NEW_SRV_ERR_DISK_WRITE_ERROR);
       }
     }
@@ -1223,7 +1235,7 @@ cmd_submit_run(
         serve_audit_log(cs, run_id, NULL, phr->user_id, &phr->ip, phr->ssl_flag,
                         "submit", "ok", RUN_COMPILING, NULL);
         if ((r = serve_compile_request(phr->config, cs, run_text, run_size, cnts->id,
-                                       run_id, phr->user_id, 0 /* lang_id */, variant,
+                                       run_id, 0 /* submit_id */, phr->user_id, 0 /* lang_id */, variant,
                                        0 /* locale_id */, 1 /* output_only*/,
                                        mime_type_get_suffix(mime_type),
                                        NULL /* compiler_env */,
@@ -1234,8 +1246,12 @@ cmd_submit_run(
                                        0 /* priority_adjustment */,
                                        0 /* notify flag */,
                                        prob, NULL /* lang */,
-                                       0 /* no_db_flag */, &run_uuid, store_flags,
-                                       0 /* rejudge_flag */, user)) < 0) {
+                                       0 /* no_db_flag */, &run_uuid,
+                                       NULL /* judge_uuid */,
+                                       store_flags,
+                                       0 /* rejudge_flag */,
+                                       phr->is_job,
+                                       user)) < 0) {
           serve_report_check_failed(ejudge_config, cnts, cs, run_id, serve_err_str(r));
         }
       } else {
@@ -1243,12 +1259,14 @@ cmd_submit_run(
                         "submit", "ok", RUN_RUNNING, NULL);
         if (serve_run_request(phr->config, cs, cnts, stderr, run_text, run_size,
                               cnts->id, run_id,
+                              0 /* submit_id */,
                               phr->user_id, prob->id, 0, variant, 0,
                               -1, /* judge_id */
                               NULL, /* judge_uuid */
                               -1, 0,
                               mime_type, 0, phr->locale_id, 0, 0, 0, &run_uuid,
-                              0 /* rejudge_flag */, 0 /* zip_mode */, store_flags) < 0)
+                              0 /* rejudge_flag */, 0 /* zip_mode */, store_flags,
+                              NULL, 0) < 0)
           FAIL(NEW_SRV_ERR_DISK_WRITE_ERROR);
       }
     }
@@ -2108,6 +2126,7 @@ new_server_cmd_handler(FILE *fout, struct http_request_info *phr)
                                     &phr->locale_id, 0, &phr->role, 0, 0, 0,
                                     NULL /* p_passwd_method */,
                                     NULL /* p_is_ws */,
+                                    NULL /* p_is_job */,
                                     NULL /* p_expire */,
                                     &phr->login, &phr->name)) < 0) {
     switch (-r) {

@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2006-2021 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2006-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -142,7 +142,16 @@ command_start(
         int master_mode,
         int super_run_parallelism,
         int compile_parallelism,
-        int skip_mask)
+        int skip_mask,
+        const char *agent,
+        const char *instance_id,
+        const char *queue,
+        int verbose_mode,
+        const char *mirror,
+        int enable_heartbeat,
+        int disable_heartbeat,
+        const char *timeout_str,
+        const char *shutdown_script)
 {
   tTask *tsk = 0;
   path_t path;
@@ -153,6 +162,7 @@ command_start(
   int super_run_started = 0;
   int job_server_started = 0;
   int new_server_started = 0;
+  char tool_instance_id[128];
 
   if (config->contests_home_dir) workdir = config->contests_home_dir;
 #if defined EJUDGE_CONTESTS_HOME_DIR
@@ -190,7 +200,7 @@ command_start(
   }
 
   // start ej-super-server
-  if (!(skip_mask & EJ_SUPER_SERVER_MASK)) {
+  if (!slave_mode && !(skip_mask & EJ_SUPER_SERVER_MASK)) {
     snprintf(path, sizeof(path), "%s/ej-super-server", EJUDGE_SERVER_BIN_PATH);
     tsk = task_New();
     task_AddArg(tsk, path);
@@ -233,6 +243,23 @@ command_start(
     snprintf(path, sizeof(path), "%s/ej-compile-control", EJUDGE_SERVER_BIN_PATH);
     tsk = task_New();
     task_AddArg(tsk, path);
+    if (agent && *agent) {
+      task_AddArg(tsk, "--agent");
+      task_AddArg(tsk, agent);
+    }
+    if (instance_id && *instance_id) {
+      snprintf(tool_instance_id, sizeof(tool_instance_id),
+               "%s-compile", instance_id);
+      task_AddArg(tsk, "--instance-id");
+      task_AddArg(tsk, tool_instance_id);
+    }
+    if (queue && *queue) {
+      task_AddArg(tsk, "--queue");
+      task_AddArg(tsk, queue);
+    }
+    if (verbose_mode) {
+      task_AddArg(tsk, "-v");
+    }
     task_AddArg(tsk, "start");
     task_SetPathAsArg0(tsk);
     task_Start(tsk);
@@ -244,6 +271,10 @@ command_start(
 
   // start ej-super-run
   if (!master_mode && !(skip_mask & EJ_SUPER_RUN_MASK)) {
+    if (mirror && *mirror) {
+      os_MakeDirPath(mirror, 0700);
+    }
+
     for (int i = 0; i < super_run_parallelism; ++i) {
       snprintf(path, sizeof(path), "%s/ej-super-run", EJUDGE_SERVER_BIN_PATH);
       tsk = task_New();
@@ -260,6 +291,41 @@ command_start(
       if (workdir) {
         task_AddArg(tsk, "-C");
         task_AddArg(tsk, workdir);
+      }
+      if (agent && *agent) {
+        task_AddArg(tsk, "--agent");
+        task_AddArg(tsk, agent);
+      }
+      if (instance_id && *instance_id) {
+        snprintf(tool_instance_id, sizeof(tool_instance_id),
+                 "%s-run", instance_id);
+        task_AddArg(tsk, "--instance-id");
+        task_AddArg(tsk, tool_instance_id);
+      }
+      if (queue && *queue) {
+        task_AddArg(tsk, "-p");
+        task_AddArg(tsk, queue);
+      }
+      if (verbose_mode) {
+        task_AddArg(tsk, "-v");
+      }
+      if (mirror && *mirror) {
+        task_AddArg(tsk, "-m");
+        task_AddArg(tsk, mirror);
+      }
+      if (enable_heartbeat > 0) {
+        task_AddArg(tsk, "-hb");
+      }
+      if (disable_heartbeat > 0) {
+        task_AddArg(tsk, "-nhb");
+      }
+      if (timeout_str && *timeout_str) {
+        task_AddArg(tsk, "-ht");
+        task_AddArg(tsk, timeout_str);
+      }
+      if (shutdown_script && *shutdown_script) {
+        task_AddArg(tsk, "-hc");
+        task_AddArg(tsk, shutdown_script);
       }
       if (i > 0) {
         char buf[64];
@@ -376,7 +442,9 @@ command_stop(
   if (!master_mode) {
     invoke_stopper("ej-super-run", ejudge_xml_path);
   }
-  invoke_stopper("ej-super-server", ejudge_xml_path);
+  if (!slave_mode) {
+    invoke_stopper("ej-super-server", ejudge_xml_path);
+  }
   if (!slave_mode) {
     invoke_stopper("ej-users", ejudge_xml_path);
     invoke_stopper("ej-jobs", ejudge_xml_path);
@@ -401,6 +469,15 @@ main(int argc, char *argv[])
   int compile_parallelism = 1;
   int skip_mask = 0;
   unsigned char **host_names = NULL;
+  const char *agent = NULL;
+  const char *instance_id = NULL;
+  const char *queue = NULL;
+  int verbose_mode = 0;
+  const char *mirror = NULL;
+  int enable_heartbeat = 0;
+  int disable_heartbeat = 0;
+  const char *timeout_str = NULL;
+  const char *shutdown_script = NULL;
 
   logger_set_level(-1, LOG_WARNING);
   program_name = os_GetBasename(argv[0]);
@@ -426,6 +503,33 @@ main(int argc, char *argv[])
       if (i + 1 >= argc) startup_error("argument expected for `-g'");
       group = argv[i + 1];
       i += 2;
+    } else if (!strcmp(argv[i], "--agent")) {
+      if (i + 1 >= argc) startup_error("argument expected for `--agent'");
+      agent = argv[i + 1];
+      i += 2;
+    } else if (!strcmp(argv[i], "--instance-id")) {
+      if (i + 1 >= argc) startup_error("argument expected for `--instance-id'");
+      instance_id = argv[i + 1];
+      i += 2;
+    } else if (!strcmp(argv[i], "--queue")) {
+      if (i + 1 >= argc) startup_error("argument expected for `--queue'");
+      queue = argv[i + 1];
+      i += 2;
+    } else if (!strcmp(argv[i], "--mirror")) {
+      if (i + 1 >= argc) startup_error("argument expected for `--mirror'");
+      mirror = argv[i + 1];
+      i += 2;
+    } else if (!strcmp(argv[i], "-ht")) {
+      if (i + 1 >= argc) startup_error("argument expected for `-ht'");
+      timeout_str = argv[i + 1];
+      i += 2;
+    } else if (!strcmp(argv[i], "-hc")) {
+      if (i + 1 >= argc) startup_error("argument expected for `-hc'");
+      shutdown_script = argv[i + 1];
+      i += 2;
+    } else if (!strcmp(argv[i], "-v")) {
+      verbose_mode = 1;
+      i++;
     } else if (!strcmp(argv[i], "-f")) {
       force_mode = 1;
       i++;
@@ -455,6 +559,12 @@ main(int argc, char *argv[])
       i++;
     } else if (!strcmp(argv[i], "-nc")) {
       skip_mask |= EJ_CONTESTS_MASK;
+      i++;
+    } else if (!strcmp(argv[i], "-hb")) {
+      enable_heartbeat = 1;
+      i++;
+    } else if (!strcmp(argv[i], "-nhb")) {
+      disable_heartbeat = 1;
       i++;
     } else if (!strcmp(argv[i], "--")) {
       i++;
@@ -497,7 +607,10 @@ main(int argc, char *argv[])
   if (!strcmp(command, "start")) {
     if (command_start(config, user, group, ejudge_xml_path, force_mode,
                       slave_mode, all_run_serve, master_mode, parallelism,
-                      compile_parallelism, skip_mask) < 0)
+                      compile_parallelism, skip_mask,
+                      agent, instance_id, queue, verbose_mode,
+                      mirror, enable_heartbeat, disable_heartbeat,
+                      timeout_str, shutdown_script) < 0)
       r = 1;
   } else if (!strcmp(command, "stop")) {
     if (command_stop(config, ejudge_xml_path, slave_mode, master_mode) < 0)

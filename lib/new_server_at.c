@@ -326,4 +326,11 @@ const unsigned char * const ns_symbolic_action_table[NEW_SRV_ACTION_LAST] =
   [NEW_SRV_ACTION_USER_RUN_HEADER_CLEAR_STOP_TIME] = "user-run-header-clear-stop-time",
   [NEW_SRV_ACTION_DISABLE_VIRTUAL_START] = "disable-virtual-start",
   [NEW_SRV_ACTION_ENABLE_VIRTUAL_START] = "enable-virtual-start",
+  [NEW_SRV_ACTION_VCS_WEBHOOK] = "vcs-webhook",
+  [NEW_SRV_ACTION_SUBMIT_RUN_INPUT] = "submit-run-input",
+  [NEW_SRV_ACTION_GET_SUBMIT] = "get-submit",
+  [NEW_SRV_ACTION_GET_USERPROB] = "get-userprob",
+  [NEW_SRV_ACTION_CREATE_USERPROB] = "create-userprob",
+  [NEW_SRV_ACTION_SAVE_USERPROB] = "save-userprob",
+  [NEW_SRV_ACTION_REMOVE_USERPROB] = "remove-userprob",
 };

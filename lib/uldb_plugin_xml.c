@@ -251,6 +251,7 @@ new_cookie_2_func(
         int,
         int,
         int,
+        int,
         const struct userlist_cookie **);
 static int
 get_client_key_func(
@@ -995,6 +996,7 @@ new_cookie_2_func(
         int recovery,
         int team_login,
         int is_ws,
+        int is_job,
         const struct userlist_cookie **p_cookie)
 {
   struct uldb_xml_state *state = (struct uldb_xml_state*) data;
@@ -1044,6 +1046,7 @@ new_cookie_2_func(
   c->recovery = recovery;
   c->team_login = team_login;
   c->is_ws = is_ws;
+  c->is_job = is_job;
   xml_link_node_last(cs, &c->b);
   userlist_cookie_hash_add(ul, c);
 

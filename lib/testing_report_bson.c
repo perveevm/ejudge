@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2019-2020 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2019-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -22,6 +22,7 @@
 #include "ejudge/xalloc.h"
 #include "ejudge/errlog.h"
 #include "ejudge/osdeps.h"
+#include "ejudge/ej_uuid.h"
 
 #include <stdio.h>
 #include <sys/mman.h>
@@ -63,10 +64,21 @@ parse_file(bson_iter_t *bi, struct testing_report_file_content *fc)
             if (ej_bson_parse_boolean_new(bi, key, &fc->is_bzip2) < 0)
                 return -1;
             break;
+        case Tag_size: {
+            long long sz = -1;
+            if (ej_bson_parse_int64_new(bi, key, &sz) < 0 || sz < 0)
+                return -1;
+            fc->size = sz;
+            break;
+        }
         case Tag_data:
-            {
-                if (bson_iter_type(bi) != BSON_TYPE_BINARY)
+            if (bson_iter_type(bi) == BSON_TYPE_UTF8) {
+                unsigned char *value = NULL;
+                if (ej_bson_parse_string_new(bi, key, &value) < 0)
                     return -1;
+                free(fc->data);
+                fc->data = value;
+            } else if (bson_iter_type(bi) == BSON_TYPE_BINARY) {
                 bson_subtype_t bt = 0;
                 uint32_t bz = 0;
                 const uint8_t *bd = NULL;
@@ -79,6 +91,8 @@ parse_file(bson_iter_t *bi, struct testing_report_file_content *fc)
                 memcpy(fc->data, bd, bz);
                 fc->data[bz] = 0;
                 fc->size = bz;
+            } else {
+                return -1;
             }
             break;
         }
@@ -139,6 +153,14 @@ parse_test(int index, bson_iter_t *bi, testing_report_xml_t r)
                 if (ej_bson_parse_int64_new(bi, key, &v) < 0)
                     goto cleanup;
                 p->max_memory_used = v;
+            }
+            break;
+        case Tag_max_rss:
+            {
+                long long v;
+                if (ej_bson_parse_int64_new(bi, key, &v) < 0)
+                    goto cleanup;
+                p->max_rss = v;
             }
             break;
         case Tag_exit_code:
@@ -256,6 +278,9 @@ parse_test(int index, bson_iter_t *bi, testing_report_xml_t r)
             goto common_file_content;
         case Tag_checker:
             trfc = &p->checker;
+            goto common_file_content;
+        case Tag_test_checker:
+            trfc = &p->test_checker;
             goto common_file_content;
         common_file_content:
             if (bson_iter_type(bi) != BSON_TYPE_DOCUMENT)
@@ -452,6 +477,13 @@ parse_testing_report_bson(bson_iter_t *bi, testing_report_xml_t r)
             if (ej_bson_parse_int_new(bi, key, &r->run_id, 1, 0, 0, 0) < 0)
                 return -1;
             break;
+        case Tag_submit_id: {
+            long long v;
+            if (ej_bson_parse_int64_new(bi, key, &v) < 0)
+                return -1;
+            r->submit_id = v;
+            break;
+        }
         case Tag_judge_id:
             if (ej_bson_parse_int_new(bi, key, &r->judge_id, 1, 0, 0, 0) < 0)
                 return -1;
@@ -486,6 +518,14 @@ parse_testing_report_bson(bson_iter_t *bi, testing_report_xml_t r)
             break;
         case Tag_max_memory_used_available:
             if (ej_bson_parse_boolean_new(bi, key, &r->max_memory_used_available) < 0)
+                return -1;
+            break;
+        case Tag_max_rss_available:
+            if (ej_bson_parse_boolean_new(bi, key, &r->max_rss_available) < 0)
+                return -1;
+            break;
+        case Tag_separate_user_score:
+            if (ej_bson_parse_boolean_new(bi, key, &r->separate_user_score) < 0)
                 return -1;
             break;
         case Tag_compile_error:
@@ -599,6 +639,10 @@ parse_testing_report_bson(bson_iter_t *bi, testing_report_xml_t r)
             break;
         case Tag_uuid:
             if (ej_bson_parse_uuid_new(bi, key, &r->uuid) < 0)
+                return -1;
+            break;
+        case Tag_judge_uuid:
+            if (ej_bson_parse_uuid_new(bi, key, &r->judge_uuid) < 0)
                 return -1;
             break;
         case Tag_tests:
@@ -781,7 +825,11 @@ unparse_file_content(
                 bson_append_bool(&b_fc, tag_table[Tag_bzip2], -1, 1);
             }
             if (fc->data) {
-                bson_append_binary(&b_fc, tag_table[Tag_data], -1, BSON_SUBTYPE_USER, fc->data, fc->size);
+                if (fc->is_base64 > 0) {
+                    bson_append_utf8(&b_fc, tag_table[Tag_data], -1, fc->data, -1);
+                } else {
+                    bson_append_binary(&b_fc, tag_table[Tag_data], -1, BSON_SUBTYPE_USER, fc->data, fc->size);
+                }
             }
         }
         bson_append_document_end(b, &b_fc);
@@ -799,6 +847,9 @@ do_unparse(
     bson_append_int32(b, tag_table[Tag_status], -1, r->status);
     bson_append_int32(b, tag_table[Tag_scoring], -1, r->scoring_system);
     bson_append_int32(b, tag_table[Tag_run_tests], -1, r->run_tests);
+    if (r->submit_id > 0) {
+        bson_append_int64(b, tag_table[Tag_submit_id], -1, r->submit_id);
+    }
 
     if (r->contest_id > 0) {
         bson_append_int32(b, tag_table[Tag_contest_id], -1, r->contest_id);
@@ -811,6 +862,12 @@ do_unparse(
     }
     if (r->max_memory_used_available > 0) {
         bson_append_bool(b, tag_table[Tag_max_memory_used_available], -1, 1);
+    }
+    if (r->max_rss_available > 0) {
+        bson_append_bool(b, tag_table[Tag_max_rss_available], -1, 1);
+    }
+    if (r->separate_user_score > 0) {
+        bson_append_bool(b, tag_table[Tag_separate_user_score], -1, 1);
     }
     if (r->correct_available > 0) {
         bson_append_bool(b, tag_table[Tag_correct_available], -1, 1);
@@ -887,6 +944,9 @@ do_unparse(
     if (r->uuid.v[0] || r->uuid.v[1] || r->uuid.v[2] || r->uuid.v[3]) {
         ej_bson_append_uuid_new(b, tag_table[Tag_uuid], &r->uuid);
     }
+    if (ej_uuid_is_nonempty(r->judge_uuid)) {
+        ej_bson_append_uuid_new(b, tag_table[Tag_judge_uuid], &r->judge_uuid);
+    }
     if (r->comment && r->comment[0]) {
         bson_append_utf8(b, tag_table[Tag_comment], -1, r->comment, -1);
     }
@@ -945,6 +1005,9 @@ do_unparse(
             }
             if (r->max_memory_used_available > 0 && t->max_memory_used > 0) {
                 bson_append_int64(b_testp, tag_table[Tag_max_memory_used], -1, t->max_memory_used);
+            }
+            if (r->max_rss_available > 0 && t->max_rss > 0) {
+                bson_append_int64(b_testp, tag_table[Tag_max_rss], -1, t->max_rss);
             }
             if (r->scoring_system == SCORE_OLYMPIAD && r->accepting_mode <= 0) {
                 bson_append_int32(b_testp, tag_table[Tag_nominal_score], -1, t->nominal_score);
@@ -1015,6 +1078,7 @@ do_unparse(
             unparse_file_content(b_testp, tag_table[Tag_correct], &t->correct);
             unparse_file_content(b_testp, tag_table[Tag_stderr], &t->error);
             unparse_file_content(b_testp, tag_table[Tag_checker], &t->checker);
+            unparse_file_content(b_testp, tag_table[Tag_test_checker], &t->test_checker);
             bson_append_document_end(b_testsp, b_testp);
         }
         bson_append_array_end(b, b_testsp);

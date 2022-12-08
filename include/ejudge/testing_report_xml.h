@@ -19,6 +19,7 @@
 #include "ejudge/ej_types.h"
 
 #include <stdio.h>
+#include <stdint.h>
 
 // outputs preserved in the testing report
 enum
@@ -28,6 +29,7 @@ enum
   TESTING_REPORT_CORRECT,
   TESTING_REPORT_ERROR,
   TESTING_REPORT_CHECKER,
+  TESTING_REPORT_TEST_CHECKER,
 
   TESTING_REPORT_ARGS,
 
@@ -63,6 +65,7 @@ struct testing_report_test
   int has_info_digest;
   int visibility;
   unsigned long max_memory_used;
+  long long max_rss;
   int has_user;
   int user_status;
   int user_score;
@@ -95,6 +98,8 @@ struct testing_report_test
   struct testing_report_file_content error;
   /* checker output */
   struct testing_report_file_content checker;
+  /* test checker output */
+  struct testing_report_file_content test_checker;
 };
 
 struct testing_report_row
@@ -118,6 +123,7 @@ struct testing_report_cell
 
 typedef struct testing_report_xml
 {
+  int64_t submit_id;
   int contest_id;
   int run_id;
   int judge_id;
@@ -128,6 +134,7 @@ typedef struct testing_report_xml
   int info_available;
   int real_time_available;
   int max_memory_used_available;
+  int max_rss_available;
   int run_tests;
   int variant;
   int accepting_mode;
@@ -140,6 +147,7 @@ typedef struct testing_report_xml
   int marked_flag;
   int tests_mode;
   /* user-visible scores */
+  int separate_user_score;
   int user_status;
   int user_tests_passed;
   int user_score;

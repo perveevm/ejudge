@@ -83,3 +83,9 @@ user_nominal_score
 checker_token
 data
 bzip2
+max_rss_available
+separate_user_score
+max_rss
+submit_id
+judge_uuid
+test_checker

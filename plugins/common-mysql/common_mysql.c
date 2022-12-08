@@ -171,6 +171,17 @@ write_escaped_bin_func(
         FILE *f,
         const unsigned char *pfx,
         const struct common_mysql_binary *bin);
+static int
+simple_query_bin_func(
+        struct common_mysql_state *state,
+        const unsigned char *cmd,
+        int cmdlen);
+static void
+lock_func(
+        struct common_mysql_state *state);
+static void
+unlock_func(
+        struct common_mysql_state *state);
 
 /* plugin entry point */
 struct common_mysql_iface plugin_common_mysql =
@@ -219,6 +230,10 @@ struct common_mysql_iface plugin_common_mysql =
   unparse_spec_2_func,
   unparse_spec_3_func,
   write_escaped_bin_func,
+
+  simple_query_bin_func,
+  lock_func,
+  unlock_func,
 };
 
 static struct common_plugin_data *
@@ -228,6 +243,7 @@ init_func(void)
   XCALLOC(state, 1);
   state->i = &plugin_common_mysql;
   state->show_queries = 1;
+  pthread_mutex_init(&state->m, NULL);
   return (struct common_plugin_data*) state;
 }
 
@@ -500,6 +516,7 @@ simple_query_func(
   if (state->show_queries) {
     fprintf(stderr, "mysql: %s\n", cmd);
   }
+  free_res_func(state);
   return do_query(state, cmd, cmdlen);
 }
 
@@ -533,6 +550,7 @@ query_func(
   if (state->show_queries) {
     fprintf(stderr, "mysql: %s\n", cmd);
   }
+  free_res_func(state);
   if (do_query(state, cmd, cmdlen)) db_error_fail(state);
   if((state->field_count = mysql_field_count(state->conn)) != colnum)
     db_error_field_count_fail(state, colnum);
@@ -578,6 +596,7 @@ query_one_row_func(
   if (state->show_queries) {
     fprintf(stderr, "mysql: %s\n", cmd);
   }
+  free_res_func(state);
   if (do_query(state, cmd, cmdlen))
     db_error_fail(state);
   if((state->field_count = mysql_field_count(state->conn)) != colnum)
@@ -604,16 +623,16 @@ query_one_row_func(
 static int
 next_row_func(struct common_mysql_state *state)
 {
-  int i;
-
   if (!(state->row = mysql_fetch_row(state->res)))
     db_error_no_data_fail(state);
   state->lengths = mysql_fetch_lengths(state->res);
 
+  /*
   // extra check...
-  for (i = 0; i < state->field_count; i++)
+  for (int i = 0; i < state->field_count; i++)
     if (state->row[i] && strlen(state->row[i]) != state->lengths[i])
       db_error_inv_value_fail(state, "in my_row");
+  */
   return 0;
 
  fail:
@@ -725,10 +744,13 @@ parse_spec_func(
       break;
 
     case 'l': {
-      errno = 0;
-      eptr = NULL;
-      long long llv = strtoll(row[i], &eptr, 10);
-      if (errno || *eptr) goto invalid_format;
+      long long llv = 0;
+      if (row[i]) {
+        errno = 0;
+        eptr = NULL;
+        llv = strtoll(row[i], &eptr, 10);
+        if (errno || *eptr) goto invalid_format;
+      }
       long long *p_llv = XPDEREF(long long, data, specs[i].offset);
       *p_llv = llv;
       break;
@@ -1568,4 +1590,33 @@ write_escaped_bin_func(
   mysql_real_escape_string(state->conn, str2, bin->data, bin->size);
   fprintf(f, "%s'%s'", pfx, str2);
   free(str2);
+}
+
+static int
+simple_query_bin_func(
+        struct common_mysql_state *state,
+        const unsigned char *cmd,
+        int cmdlen)
+{
+  /*
+  if (state->show_queries) {
+    fprintf(stderr, "mysql: %s\n", cmd);
+  }
+  */
+  free_res_func(state);
+  return do_query(state, cmd, cmdlen);
+}
+
+static void
+lock_func(
+        struct common_mysql_state *state)
+{
+  pthread_mutex_lock(&state->m);
+}
+
+static void
+unlock_func(
+        struct common_mysql_state *state)
+{
+  pthread_mutex_unlock(&state->m);
 }

@@ -571,6 +571,7 @@ process_submit(
 
   r = serve_compile_request(ejudge_config, state, text, size, global->contest_id,
                             sb.run_id /* run_id */,
+                            0 /* submit_id */,
                             1 /* user_id */,
                             lang->compile_id,
                             0 /* variant */,
@@ -587,8 +588,10 @@ process_submit(
                             prob, lang,
                             1 /* no_db_flag */,
                             NULL /* uuid */,
+                            NULL /* judge_uuid */,
                             0 /* store_flags */,
                             0 /* rejudge_flag */,
+                            0 /* vcs_mode */,
                             NULL /* user */);
   if (r < 0) {
     // FIXME: handle error
@@ -675,6 +678,7 @@ process_compile_packet(
   r = serve_run_request(ejudge_config, extra->state, NULL, stderr, report_txt, report_len,
                         global->contest_id,
                         pkt->run_id,
+                        0 /* submit_id */,
                         1 /* user_id */,
                         t3sb.prob_id,
                         t3sb.lang_id,
@@ -693,7 +697,9 @@ process_compile_packet(
                         NULL /* uuid */,
                         0 /* rejudge_flag */,
                         0 /* zip_mode */,
-                        0 /* store_flags */);
+                        0 /* store_flags */,
+                        NULL /* inp_text */,
+                        0 /* inp_size*/);
   if (r < 0) abort();
 
   return 0;

@@ -39,6 +39,7 @@
 #include "ejudge/ej_uuid.h"
 #include "ejudge/base64.h"
 #include "ejudge/ej_libzip.h"
+#include "ejudge/agent_client.h"
 
 #include "ejudge/xalloc.h"
 #include "ejudge/osdeps.h"
@@ -60,6 +61,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <utime.h>
+#include <sys/mman.h>
 #ifndef __MINGW32__
 #include <sys/vfs.h>
 #endif
@@ -70,6 +72,13 @@
 #define SIZE_G (1024 * 1024 * 1024)
 #define SIZE_M (1024 * 1024)
 #define SIZE_K (1024)
+
+static void
+mirror_file(
+        struct AgentClient *agent,
+        unsigned char *buf,
+        int size,
+        const unsigned char *mirror_dir);
 
 static unsigned char*
 ej_size64_t_to_size(unsigned char *buf, size_t buf_size, ej_size64_t num)
@@ -202,6 +211,7 @@ generate_xml_report(
         int report_real_time_limit_ms,
         int has_real_time,
         int has_max_memory_used,
+        int has_max_rss,
         int marked_flag,
         int user_run_tests,
         const unsigned char *additional_comment,
@@ -222,6 +232,7 @@ generate_xml_report(
   }
 
   testing_report_xml_t tr = testing_report_alloc(srgp->contest_id, srgp->run_id, srgp->judge_id, &judge_uuid);
+  tr->submit_id = srgp->submit_id;
   tr->status = reply_pkt->status;
   tr->scoring_system = srgp->scoring_system_val;
   tr->archive_available = (srgp->enable_full_archive > 0);
@@ -229,6 +240,7 @@ generate_xml_report(
   tr->info_available = info_available_flag;
   tr->real_time_available = has_real_time;
   tr->max_memory_used_available = has_max_memory_used;
+  tr->max_rss_available = has_max_rss;
   tr->run_tests = total_tests - 1;
   tr->variant = variant;
   if (srgp->scoring_system_val == SCORE_OLYMPIAD) {
@@ -270,6 +282,7 @@ generate_xml_report(
   }
   tr->tests_mode = 0;
   if (srgp->separate_user_score > 0) {
+    tr->separate_user_score = 1;
     if (reply_pkt->user_status >= 0) {
       tr->user_status = reply_pkt->user_status;
     }
@@ -325,6 +338,8 @@ generate_xml_report(
         } else {
           trt->exit_code = ti->code;
         }
+      } else {
+        trt->exit_code = ti->code;
       }
       trt->time = ti->times;
       if (ti->real_time >= 0 && has_real_time) {
@@ -332,6 +347,9 @@ generate_xml_report(
       }
       if (ti->max_memory_used > 0) {
         trt->max_memory_used = ti->max_memory_used;
+      }
+      if (ti->max_rss > 0) {
+        trt->max_rss = ti->max_rss;
       }
       if (ti->program_stats_str) {
         trt->program_stats_str = xstrdup(ti->program_stats_str);
@@ -415,6 +433,7 @@ generate_xml_report(
         make_file_content(&trt->correct, srgp, ti->correct, ti->correct_size, utf8_mode);
         make_file_content(&trt->error, srgp, ti->error, ti->error_size, utf8_mode);
         make_file_content(&trt->checker, srgp, ti->chk_out, ti->chk_out_size, utf8_mode);
+        make_file_content(&trt->test_checker, srgp, ti->test_checker, ti->test_checker_size, utf8_mode);
       }
     }
   }
@@ -977,6 +996,8 @@ static int
 invoke_valuer(
         const struct section_global_data *global,
         const struct super_run_in_packet *srp,
+        struct AgentClient *agent,
+        const unsigned char *mirror_dir,
         int total_tests,
         const struct testinfo *tests,
         int cur_variant,
@@ -1039,6 +1060,7 @@ invoke_valuer(
   f = 0;
 
   snprintf(valuer_cmd, sizeof(valuer_cmd), "%s", srpp->valuer_cmd);
+  mirror_file(agent, valuer_cmd, sizeof(valuer_cmd), mirror_dir);
 
   info("starting valuer: %s %s %s", valuer_cmd, score_cmt, score_jcmt);
 
@@ -1091,6 +1113,22 @@ invoke_valuer(
   if (srpp->enable_checker_token > 0) {
     task_SetEnv(tsk, "EJUDGE_CHECKER_TOKEN", "1");
   }
+  if (srpp->enable_extended_info > 0) {
+    unsigned char buf[64];
+    snprintf(buf, sizeof(buf), "%d", srgp->user_id);
+    task_SetEnv(tsk, "EJUDGE_USER_ID", buf);
+    snprintf(buf, sizeof(buf), "%d", srgp->contest_id);
+    task_SetEnv(tsk, "EJUDGE_CONTEST_ID", buf);
+    snprintf(buf, sizeof(buf), "%d", srgp->run_id);
+    task_SetEnv(tsk, "EJUDGE_RUN_ID", buf);
+    task_SetEnv(tsk, "EJUDGE_USER_LOGIN", srgp->user_login);
+    task_SetEnv(tsk, "EJUDGE_USER_NAME", srgp->user_name);
+    if (srpp->test_count > 0) {
+      snprintf(buf, sizeof(buf), "%d", srpp->test_count);
+      task_SetEnv(tsk, "EJUDGE_TEST_COUNT", buf);
+    }
+  }
+
   task_EnableAllSignals(tsk);
 
   task_PrintArgs(tsk);
@@ -1147,6 +1185,8 @@ static tpTask
 start_interactive_valuer(
         const struct section_global_data *global,
         const struct super_run_in_packet *srp,
+        struct AgentClient *agent,
+        const unsigned char *mirror_dir,
         const unsigned char *valuer_err_file,
         const unsigned char *valuer_cmt_file,
         const unsigned char *valuer_jcmt_file,
@@ -1159,6 +1199,7 @@ start_interactive_valuer(
   tpTask tsk = NULL;
 
   snprintf(valuer_cmd, sizeof(valuer_cmd), "%s", srpp->valuer_cmd);
+  mirror_file(agent, valuer_cmd, sizeof(valuer_cmd), mirror_dir);
 
   info("starting interactive valuer: %s %s %s",
        valuer_cmd, valuer_cmt_file, valuer_jcmt_file);
@@ -1168,7 +1209,18 @@ start_interactive_valuer(
   task_AddArg(tsk, valuer_cmt_file);
   task_AddArg(tsk, valuer_jcmt_file);
   if (srpp->problem_dir && srpp->problem_dir[0]) {
-    task_AddArg(tsk, srpp->problem_dir);
+    if (agent && mirror_dir) {
+      // need to mirror 'valuer'cfg'
+      unsigned char valuer_cfg_path[PATH_MAX];
+      snprintf(valuer_cfg_path, sizeof(valuer_cfg_path),
+               "%s/valuer.cfg", srpp->problem_dir);
+      mirror_file(agent, valuer_cfg_path, sizeof(valuer_cfg_path), mirror_dir);
+      char *p = strrchr(valuer_cfg_path, '/');
+      if (p) *p = 0;
+      task_AddArg(tsk, valuer_cfg_path);
+    } else {
+      task_AddArg(tsk, srpp->problem_dir);
+    }
   }
   task_SetRedir(tsk, 0, TSR_DUP, stdin_fd);
   task_SetRedir(tsk, 1, TSR_DUP, stdout_fd);
@@ -1273,6 +1325,133 @@ get_num_prefix(int num)
   return '6';
 }
 
+static void
+agent_mirror_file(
+        struct AgentClient *agent,
+        unsigned char *buf,
+        int size,
+        const unsigned char *mirror_dir)
+{
+  char *pkt_ptr = NULL;
+  size_t pkt_len = 0;
+  int fd = -1;
+  char *out_ptr = MAP_FAILED;
+
+  if (!strncmp(buf, EJUDGE_PREFIX_DIR, sizeof(EJUDGE_PREFIX_DIR) - 1)) {
+    // do not mirror these files
+    return;
+  }
+
+  const unsigned char *sep = "";
+  int md_len = strlen(mirror_dir);
+  if (md_len > 0 && mirror_dir[md_len - 1] != '/' && buf[0] != '/') {
+    sep = "/";
+  }
+  unsigned char mirror_path[PATH_MAX];
+  snprintf(mirror_path, sizeof(mirror_path), "%s%s%s", mirror_dir, sep, buf);
+
+  long long fsize = -1;
+  time_t mtime = 0;
+  int mode = -1;
+
+  struct stat stb;
+  if (stat(mirror_path, &stb) >= 0) {
+    if (!S_ISREG(stb.st_mode)) {
+      err("mirror file '%s' is not regular", mirror_path);
+      return;
+    }
+
+    fsize = stb.st_size;
+    mtime = stb.st_mtime;
+    mode = stb.st_mode & 07777;
+  }
+
+  time_t new_mtime = 0;
+  int new_mode = -1;
+  int new_uid = -1;
+  int new_gid = -1;
+  int r = agent->ops->mirror_file(agent, buf, mtime, fsize, mode,
+                                  &pkt_ptr, &pkt_len, &new_mtime,
+                                  &new_mode, &new_uid, &new_gid);
+  if (r < 0) {
+    err("mirror_file failed on '%s'", buf);
+    return;
+  }
+  if (!r) {
+    info("using mirrored file '%s'", mirror_path);
+    snprintf(buf, size, "%s", mirror_path);
+    return;
+  }
+
+  unsigned char dirname[PATH_MAX];
+  os_rDirName(mirror_path, dirname, sizeof(dirname));
+  if (stat(dirname, &stb) < 0) {
+    if (os_MakeDirPath(dirname, 0700) < 0) {
+      err("cannot create mirror directory '%s'", dirname);
+      goto done;
+    }
+  }
+  if (stat(dirname, &stb) < 0) {
+    err("mirror directory '%s' does not exist", dirname);
+    goto done;
+  }
+  if (!S_ISDIR(stb.st_mode)) {
+    err("mirror directory '%s' is not a directory", dirname);
+    goto done;
+  }
+  fd = open(mirror_path, O_RDWR | O_CLOEXEC | O_CREAT | O_TRUNC | O_NOCTTY | O_NONBLOCK | O_NOFOLLOW, 0600);
+  if (fd < 0) {
+    err("failed to create mirrored file '%s': %s", mirror_path, os_ErrorMsg());
+    goto done;
+  }
+  if (fstat(fd, &stb) < 0) {
+    err("fstat failed: %s", os_ErrorMsg());
+    goto done;
+  }
+  if (!S_ISREG(stb.st_mode)) {
+    err("mirrored file '%s' is not regular", mirror_path);
+    goto done;
+  }
+  if (pkt_len > 0) {
+    if (ftruncate(fd, pkt_len) < 0) {
+      err("ftruncate failed on mirrored '%s': %s", mirror_path, os_ErrorMsg());
+      goto done;
+    }
+    out_ptr = mmap(NULL, pkt_len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (out_ptr == MAP_FAILED) {
+      err("mmap failed on mirrored '%s': %s", mirror_path, os_ErrorMsg());
+      goto done;
+    }
+    memcpy(out_ptr, pkt_ptr, pkt_len);
+    munmap(out_ptr, pkt_len); out_ptr = MAP_FAILED;
+  }
+
+  if (new_mtime > 0) {
+    struct timespec ub[2] = {};
+    ub[0].tv_sec = new_mtime;
+    ub[1].tv_sec = new_mtime;
+    if (futimens(fd, ub) < 0) {
+      err("failed to change times of '%s': %s", mirror_path, os_ErrorMsg());
+      // ignore this error
+    }
+  }
+
+  if (new_mode >= 0) {
+    if (fchmod(fd, new_mode & 07777) < 0) {
+      err("failed to change perms of '%s': %s", mirror_path, os_ErrorMsg());
+      // ignore this error
+    }
+  }
+
+  info("using mirrored file '%s'", mirror_path);
+  snprintf(buf, size, "%s", mirror_path);
+
+done:;
+  if (out_ptr != MAP_FAILED) munmap(out_ptr, pkt_len);
+  if (fd >= 0) close(fd);
+  free(pkt_ptr);
+}
+
 static int
 copy_mirrored_file(unsigned char *buf, int size, const unsigned char *mirror_path, const struct stat *psrcstat)
 {
@@ -1317,9 +1496,18 @@ copy_mirrored_file(unsigned char *buf, int size, const unsigned char *mirror_pat
 }
 
 static void
-mirror_file(unsigned char *buf, int size, const unsigned char *mirror_dir)
+mirror_file(
+        struct AgentClient *agent,
+        unsigned char *buf,
+        int size,
+        const unsigned char *mirror_dir)
 {
   if (!mirror_dir || !*mirror_dir) return;
+
+  if (agent) {
+    agent_mirror_file(agent, buf, size, mirror_dir);
+    return;
+  }
 
   // handle only existing regular files
   struct stat src_stbuf;
@@ -1787,6 +1975,75 @@ cleanup:
 }
 
 static int
+invoke_test_checker_cmd(
+        const struct super_run_in_packet *srp,
+        const unsigned char *work_dir,
+        const unsigned char *input_file,
+        const unsigned char *log_path)
+{
+  const struct super_run_in_problem_packet *srpp = srp->problem;
+  tpTask tsk = NULL;
+
+  tsk = task_New();
+  task_AddArg(tsk, srpp->test_checker_cmd);
+  task_AddArg(tsk, input_file);
+  task_SetPathAsArg0(tsk);
+  task_EnableAllSignals(tsk);
+  if (work_dir) task_SetWorkingDir(tsk, work_dir);
+  task_SetRedir(tsk, 0, TSR_FILE, input_file, TSK_READ, 0);
+  task_SetRedir(tsk, 1, TSR_FILE, log_path, TSK_APPEND, TSK_FULL_RW);
+  task_SetRedir(tsk, 2, TSR_FILE, log_path, TSK_APPEND, TSK_FULL_RW);
+  if (srpp->test_checker_env) {
+    for (int i = 0; srpp->test_checker_env[i]; ++i)
+      task_PutEnv(tsk, srpp->test_checker_env[i]);
+  }
+  if (srpp->checker_real_time_limit_ms > 0) {
+    task_SetMaxRealTimeMillis(tsk, srpp->checker_real_time_limit_ms);
+  }
+  if (srpp->checker_time_limit_ms > 0) {
+    task_SetMaxTimeMillis(tsk, srpp->checker_time_limit_ms);
+  }
+  if (srpp->checker_max_stack_size > 0) {
+    task_SetStackSize(tsk, srpp->checker_max_stack_size);
+  }
+  if (srpp->checker_max_vm_size > 0) {
+    task_SetVMSize(tsk, srpp->checker_max_vm_size);
+  }
+  if (srpp->checker_max_rss_size > 0) {
+    task_SetRSSSize(tsk, srpp->checker_max_rss_size);
+  }
+
+  if (task_Start(tsk) < 0) {
+    append_msg_to_log(log_path, "failed to start test checker %s", srpp->test_checker_cmd);
+    task_Delete(tsk);
+    return RUN_CHECK_FAILED;
+  }
+
+  task_Wait(tsk);
+  if (task_IsTimeout(tsk)) {
+    append_msg_to_log(log_path, "test checker %s time-out", srpp->test_checker_cmd);
+    task_Delete(tsk);
+    return RUN_CHECK_FAILED;
+  }
+
+  if (task_Status(tsk) == TSK_SIGNALED) {
+    append_msg_to_log(log_path, "test checker %s is terminated by signal %d", srpp->test_checker_cmd, task_TermSignal(tsk));
+    task_Delete(tsk);
+    return RUN_CHECK_FAILED;
+  }
+  int r = task_ExitCode(tsk);
+  if (r == 1 || r == 2 || r == RUN_WRONG_ANSWER_ERR || r == RUN_PRESENTATION_ERR) {
+    r = RUN_PRESENTATION_ERR;
+  } else if (r != 0) {
+    append_msg_to_log(log_path, "test checker %s exit code %d is invalid", srpp->test_checker_cmd, r);
+    task_Delete(tsk);
+    return RUN_CHECK_FAILED;
+  }
+  task_Delete(tsk);
+  return r;
+}
+
+static int
 invoke_init_cmd(
         const struct super_run_in_problem_packet *srpp,
         const unsigned char *subcommand,
@@ -1991,6 +2248,10 @@ invoke_interactor(
     task_SetEnv(tsk_int, "EJUDGE_TEST_NUM", buf);
     task_SetEnv(tsk_int, "EJUDGE_USER_LOGIN", srgp->user_login);
     task_SetEnv(tsk_int, "EJUDGE_USER_NAME", srgp->user_name);
+    if (srpp->test_count > 0) {
+      snprintf(buf, sizeof(buf), "%d", srpp->test_count);
+      task_SetEnv(tsk_int, "EJUDGE_TEST_COUNT", buf);
+    }
   }
   if (control_fd >= 0) {
     unsigned char buf[64];
@@ -2197,6 +2458,10 @@ invoke_checker(
     task_SetEnv(tsk, "EJUDGE_TEST_NUM", buf);
     task_SetEnv(tsk, "EJUDGE_USER_LOGIN", srgp->user_login);
     task_SetEnv(tsk, "EJUDGE_USER_NAME", srgp->user_name);
+    if (srpp->test_count > 0) {
+      snprintf(buf, sizeof(buf), "%d", srpp->test_count);
+      task_SetEnv(tsk, "EJUDGE_TEST_COUNT", buf);
+    }
   }
   task_EnableAllSignals(tsk);
 
@@ -2434,6 +2699,7 @@ run_one_test(
         serve_state_t state,
         const struct super_run_in_packet *srp,
         const struct section_tester_data *tst,
+        struct AgentClient *agent,
         int cur_test,
         struct testinfo_vector *tests,
         full_archive_t far,
@@ -2449,10 +2715,14 @@ run_one_test(
         long long expected_free_space,
         int *p_has_real_time,
         int *p_has_max_memory_used,
+        int *p_has_max_rss,
         long *p_report_time_limit_ms,
         long *p_report_real_time_limit_ms,
         const unsigned char *mirror_dir,
-        const struct remap_spec *remaps)
+        const struct remap_spec *remaps,
+        int user_input_mode,
+        const unsigned char *inp_data,
+        size_t inp_size)
 {
   const struct section_global_data *global = state->global;
 
@@ -2474,6 +2744,7 @@ run_one_test(
   unsigned char check_out_path[PATH_MAX];
   unsigned char score_out_path[PATH_MAX];
   const unsigned char *output_path_to_check = NULL;
+  unsigned char test_checker_out_path[PATH_MAX];
 
   unsigned char check_dir[PATH_MAX];
   unsigned char exe_path[PATH_MAX];
@@ -2521,6 +2792,7 @@ run_one_test(
   struct termios term_attrs;
 #endif
 
+  test_checker_out_path[0] = 0;
   memset(&tstinfo, 0, sizeof(tstinfo));
 
 #ifdef HAVE_TERMIOS_H
@@ -2530,6 +2802,10 @@ run_one_test(
   if (srgp->scoring_system_val == SCORE_OLYMPIAD
       && srgp->accepting_mode > 0
       && cur_test > srpp->tests_to_accept) {
+    return -1;
+  }
+
+  if (srpp->test_count > 0 && cur_test > srpp->test_count) {
     return -1;
   }
 
@@ -2562,7 +2838,8 @@ run_one_test(
     snprintf(tgzdir_src, sizeof(tgzdir_src), "%s/%s", srpp->tgz_dir, tgzdir_base);
   }
 
-  if (os_CheckAccess(test_src, REUSE_R_OK) < 0) {
+  // avoid check access operation if the test count is known
+  if (srpp->test_count <= 0 && os_CheckAccess(test_src, REUSE_R_OK) < 0) {
     return -1;
   }
 
@@ -2838,12 +3115,45 @@ run_one_test(
   if (tst && tst->is_dos > 0) is_dos = tst->is_dos;
   if (is_dos > 0 && srpp->binary_input <= 0) copy_flag = CONVERT;
 
-  /* copy the test */
-  mirror_file(test_src, sizeof(test_src), mirror_dir);
-  if (generic_copy_file(0, NULL, test_src, "", copy_flag, check_dir, srpp->input_file, "") < 0) {
-    append_msg_to_log(check_out_path, "failed to copy test file %s -> %s/%s",
-                      test_src, check_dir, srpp->input_file);
-    goto check_failed;
+  if (user_input_mode) {
+    /* write the provided data as input */
+    if (generic_write_file(inp_data, inp_size, 0, check_dir, srpp->input_file, "") < 0) {
+      append_msg_to_log(check_out_path, "failed to write test file to %s/%s",
+                        check_dir, srpp->input_file);
+      goto check_failed;
+    }
+
+    snprintf(input_path, sizeof(input_path), "%s/%s",
+             check_dir, srpp->input_file);
+
+    if (srpp->test_checker_cmd && *srpp->test_checker_cmd) {
+      snprintf(test_checker_out_path, sizeof(test_checker_out_path),
+               "%s/testcheckout_%d.txt",
+               global->run_work_dir, cur_test);
+
+      int r = invoke_test_checker_cmd(srp, check_dir, input_path, test_checker_out_path);
+      if (r == RUN_CHECK_FAILED) {
+        status = RUN_CHECK_FAILED;
+        goto check_failed;
+      }
+      file_size = generic_file_size(0, test_checker_out_path, 0);
+      if (file_size >= 0) {
+        cur_info->test_checker_size = file_size;
+        generic_read_file(&cur_info->test_checker, 0, 0, 0, 0, test_checker_out_path, "");
+      }
+      if (r != 0) {
+        status = r;
+        goto cleanup;
+      }
+    }
+  } else {
+    /* copy the test */
+    mirror_file(agent, test_src, sizeof(test_src), mirror_dir);
+    if (generic_copy_file(0, NULL, test_src, "", copy_flag, check_dir, srpp->input_file, "") < 0) {
+      append_msg_to_log(check_out_path, "failed to copy test file %s -> %s/%s",
+                        test_src, check_dir, srpp->input_file);
+      goto check_failed;
+    }
   }
 
   if (tst && tst->error_file && tst->error_file[0]) {
@@ -3336,20 +3646,29 @@ run_one_test(
   cur_info->max_memory_used = task_GetMemoryUsed(tsk);
   if (cur_info->max_memory_used > 0) *p_has_max_memory_used = 1;
   cur_info->program_stats_str = get_process_stats_str(tsk);
+  cur_info->max_rss = task_GetMaxRSS(tsk);
+  if (cur_info->max_rss > 0) *p_has_max_rss = 1;
 
   // input file
-  file_size = -1;
-  if (srgp->enable_full_archive > 0) {
-    filehash_get(test_src, cur_info->input_digest);
-    cur_info->has_input_digest = 1;
+  if (user_input_mode) {
+    cur_info->input_size = inp_size;
+    cur_info->input = xmalloc(inp_size + 1);
+    memcpy(cur_info->input, inp_data, inp_size);
+    cur_info->input[inp_size] = 0;
   } else {
-    if (srpp->binary_input <= 0) {
-      file_size = generic_file_size(0, test_src, 0);
-    }
-    if (file_size >= 0) {
-      cur_info->input_size = file_size;
-      if (srgp->max_file_length > 0 && file_size <= srgp->max_file_length) {
-        generic_read_file(&cur_info->input, 0, 0, 0, 0, test_src, "");
+    file_size = -1;
+    if (srgp->enable_full_archive > 0) {
+      filehash_get(test_src, cur_info->input_digest);
+      cur_info->has_input_digest = 1;
+    } else {
+      if (srpp->binary_input <= 0) {
+        file_size = generic_file_size(0, test_src, 0);
+      }
+      if (file_size >= 0) {
+        cur_info->input_size = file_size;
+        if (srgp->max_file_length > 0 && file_size <= srgp->max_file_length) {
+          generic_read_file(&cur_info->input, 0, 0, 0, 0, test_src, "");
+        }
       }
     }
   }
@@ -3540,6 +3859,10 @@ run_one_test(
   }
 
 run_checker:;
+  if (user_input_mode) {
+    status = RUN_OK;
+    goto cleanup;
+  }
 
   if (disable_stderr > 0 && cur_info->error_size > 0) {
     append_msg_to_log(check_out_path, "non-empty output to stderr");
@@ -3554,7 +3877,7 @@ run_checker:;
   file_size = -1;
   if (srpp->use_corr > 0) {
     if (corr_src[0]) {
-      mirror_file(corr_src, sizeof(corr_src), mirror_dir);
+      mirror_file(agent, corr_src, sizeof(corr_src), mirror_dir);
     }
     if (srgp->enable_full_archive > 0) {
       filehash_get(corr_src, cur_info->correct_digest);
@@ -3669,6 +3992,7 @@ free_testinfo_vector(struct testinfo_vector *tv)
     xfree(ti->interactor_stats_str);
     xfree(ti->checker_stats_str);
     xfree(ti->checker_token);
+    xfree(ti->test_checker);
   }
   memset(tv->data, 0, sizeof(tv->data[0]) * tv->size);
   xfree(tv->data);
@@ -4091,6 +4415,7 @@ run_tests(
         const struct section_tester_data *tst,
         const struct super_run_in_packet *srp,
         struct run_reply_packet *reply_pkt,
+        struct AgentClient *agent,
         int accept_testing,
         int accept_partial,
         int cur_variant,
@@ -4104,7 +4429,10 @@ run_tests(
         int utf8_mode,
         struct run_listener *listener,
         const unsigned char *hostname,
-        const struct remap_spec *remaps)
+        const struct remap_spec *remaps,
+        int user_input_mode,
+        const unsigned char *inp_data,
+        size_t inp_size)
 {
   const struct section_global_data *global = state->global;
   const struct super_run_in_global_packet *srgp = srp->global;
@@ -4117,6 +4445,7 @@ run_tests(
   int cur_test = 0;
   int has_real_time = 0;
   int has_max_memory_used = 0;
+  int has_max_rss = 0;
   int status = RUN_CHECK_FAILED;
   int failed_test;
   int total_score = 0;
@@ -4237,7 +4566,7 @@ run_tests(
   } else {
     snprintf(check_cmd, sizeof(check_cmd), "%s", srpp->check_cmd);
   }
-  mirror_file(check_cmd, sizeof(check_cmd), mirror_dir);
+  mirror_file(agent, check_cmd, sizeof(check_cmd), mirror_dir);
 
   if ((!srpp->standard_checker || !srpp->standard_checker[0])
       && (!srpp->check_cmd || !srpp->check_cmd[0])) {
@@ -4249,7 +4578,7 @@ run_tests(
     snprintf(b_interactor_cmd, sizeof(b_interactor_cmd), "%s",
              srpp->interactor_cmd);
     interactor_cmd = b_interactor_cmd;
-    mirror_file(b_interactor_cmd, sizeof(b_interactor_cmd), mirror_dir);
+    mirror_file(agent, b_interactor_cmd, sizeof(b_interactor_cmd), mirror_dir);
   }
 
   if (srpp->type_val) {
@@ -4326,7 +4655,8 @@ run_tests(
   expected_free_space = get_expected_free_space(check_dir);
 
 #ifndef __WIN32__
-  if (srpp->interactive_valuer > 0 && srpp->valuer_cmd && srpp->valuer_cmd[0]
+  if (!user_input_mode &&
+      srpp->interactive_valuer > 0 && srpp->valuer_cmd && srpp->valuer_cmd[0]
       && srgp->accepting_mode <= 0) {
     if (pipe(evfds) < 0
         || fcntl(evfds[0], F_SETFD, FD_CLOEXEC) < 0
@@ -4339,7 +4669,7 @@ run_tests(
     }
     snprintf(valuer_cmt_file, sizeof(valuer_cmt_file), "%s/score_cmt", global->run_work_dir);
     snprintf(valuer_jcmt_file, sizeof(valuer_jcmt_file), "%s/score_jcmt", global->run_work_dir);
-    valuer_tsk = start_interactive_valuer(global, srp,
+    valuer_tsk = start_interactive_valuer(global, srp, agent, mirror_dir,
                                           messages_path,
                                           valuer_cmt_file,
                                           valuer_jcmt_file,
@@ -4372,15 +4702,21 @@ run_tests(
     }
 
     while (1) {
-      status = run_one_test(config, state, srp, tst, cur_test, &tests,
+      status = run_one_test(config, state, srp, tst,
+                            agent,
+                            cur_test, &tests,
                             far, exe_name, report_path, check_cmd,
                             interactor_cmd, start_env,
                             open_tests_count, open_tests_val,
                             test_score_count, test_score_val,
                             expected_free_space,
                             &has_real_time, &has_max_memory_used,
+                            &has_max_rss,
                             &report_time_limit_ms, &report_real_time_limit_ms,
-                            mirror_dir, remaps);
+                            mirror_dir, remaps,
+                            user_input_mode,
+                            inp_data,
+                            inp_size);
       if (status != RUN_TIME_LIMIT_ERR && status != RUN_WALL_TIME_LIMIT_ERR)
         break;
       if (++tl_retry >= tl_retry_count) break;
@@ -4393,6 +4729,9 @@ run_tests(
       break;
     }
     if (status == RUN_OK) ++tests_passed;
+    if (user_input_mode) {
+      break;
+    }
     if (status > 0) {
       if (srgp->scoring_system_val == SCORE_ACM) break;
       if (srgp->scoring_system_val == SCORE_MOSCOW) break;
@@ -4527,6 +4866,14 @@ run_tests(
     goto check_failed;
   }
 
+  if (user_input_mode) {
+    has_user_score = 0;
+    user_status = status;
+    user_score = 0;
+    user_tests_passed = 0;
+    goto done;
+  }
+
   if (srgp->scoring_system_val == SCORE_OLYMPIAD && accept_testing) {
     status = RUN_ACCEPTED;
     failed_test = 0;
@@ -4628,10 +4975,11 @@ run_tests(
     }
   }
 
-  if (srpp->valuer_cmd && srpp->valuer_cmd[0] && srgp->accepting_mode <= 0) {
+  if (!user_input_mode && srpp->valuer_cmd && srpp->valuer_cmd[0] && srgp->accepting_mode <= 0) {
     if (srpp->interactive_valuer <= 0
         && reply_pkt->status != RUN_CHECK_FAILED) {
-      if (invoke_valuer(global, srp, tests.size, tests.data,
+      if (invoke_valuer(global, srp, agent, mirror_dir,
+                        tests.size, tests.data,
                         cur_variant, srpp->full_score,
                         &total_score, &marked_flag,
                         &user_status, &user_score, &user_tests_passed,
@@ -4763,7 +5111,9 @@ done:;
                       cur_variant, total_score, srpp->full_score, srpp->full_user_score,
                       srpp->use_corr, srpp->use_info,
                       report_time_limit_ms, report_real_time_limit_ms,
-                      has_real_time, has_max_memory_used, marked_flag,
+                      has_real_time, has_max_memory_used,
+                      has_max_rss,
+                      marked_flag,
                       user_run_tests,
                       additional_comment, valuer_comment,
                       valuer_judge_comment, valuer_errors,

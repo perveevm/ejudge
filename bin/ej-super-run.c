@@ -83,6 +83,7 @@ static unsigned char *super_run_name = NULL;
 static unsigned char *queue_name = NULL;
 static unsigned char *status_file_name = NULL;
 static unsigned char *agent_name = NULL;
+static unsigned char *agent_instance_id = NULL;
 static struct AgentClient *agent;
 static int verbose_mode;
 
@@ -192,6 +193,7 @@ struct super_run_listener
   const unsigned char *lang_short_name;
   long long queue_ts;
   long long testing_start_ts;
+  int test_count;
 };
 
 static void
@@ -217,6 +219,7 @@ super_run_before_tests(struct run_listener *gself, int test_no)
   rs.run_id = self->run_id;
   rs.pkt_name_idx = super_run_status_add_str(&rs, self->packet_name);
   rs.test_num = test_no;
+  rs.test_count = self->test_count;
   if (self->user) rs.user_idx = super_run_status_add_str(&rs, self->user);
   if (self->prob_short_name) rs.prob_idx = super_run_status_add_str(&rs, self->prob_short_name);
   if (self->lang_short_name) rs.lang_idx = super_run_status_add_str(&rs, self->lang_short_name);
@@ -268,6 +271,8 @@ handle_packet(
   unsigned char *short_name = NULL;
   const struct section_tester_data *tst = NULL;
   struct super_run_listener run_listener;
+  char *inp_data = NULL;
+  size_t inp_size = 0;
 
   memset(&reply_pkt, 0, sizeof(reply_pkt));
   memset(&run_listener, 0, sizeof(run_listener));
@@ -381,9 +386,27 @@ handle_packet(
       goto cleanup;
     }
 
+    if (srgp->submit_id > 0) {
+      if (!srpp->user_input_file || !*srpp->user_input_file) {
+        err("user_input_file is undefined");
+        goto cleanup;
+      }
+      if (agent) {
+        r = agent->ops->get_data(agent, srpp->user_input_file, NULL,
+                                 &inp_data, &inp_size);
+      } else {
+        r = generic_read_file(&inp_data, 0, &inp_size, REMOVE, super_run_exe_path, srpp->user_input_file, NULL);
+      }
+      if (r < 0 || !inp_size || !inp_data) {
+        err("user_input_file is nonexistant or empty");
+        goto cleanup;
+      }
+    }
+
     reply_pkt.judge_id = srgp->judge_id;
     reply_pkt.contest_id = srgp->contest_id;
     reply_pkt.run_id = srgp->run_id;
+    reply_pkt.submit_id = srgp->submit_id;
     reply_pkt.notify_flag = srgp->notify_flag;
     reply_pkt.user_status = -1;
     reply_pkt.user_tests_passed = -1;
@@ -416,9 +439,11 @@ handle_packet(
     } else {
       run_listener.user = srgp->user_login;
     }
+    run_listener.test_count = srpp->test_count;
 
     //if (cr_serialize_lock(state) < 0) return -1;
     run_tests(ejudge_config, state, tst, srp, &reply_pkt,
+              agent,
               srgp->accepting_mode,
               srpp->accept_partial, srgp->variant,
               exe_name, run_base,
@@ -426,7 +451,10 @@ handle_packet(
               srgp->user_spelling,
               srpp->spelling, mirror_dir, utf8_mode,
               &run_listener.b, super_run_name,
-              remap_specs);
+              remap_specs,
+              srgp->submit_id > 0,
+              inp_data,
+              inp_size);
     //if (cr_serialize_unlock(state) < 0) return -1;
   }
 
@@ -552,6 +580,7 @@ cleanup:
   xfree(srp_b); srp_b = NULL; srp_z = 0;
   srp = super_run_in_packet_free(srp);
   xfree(reply_pkt_buf); reply_pkt_buf = NULL;
+  free(inp_data);
   clear_directory(global->run_work_dir);
   return retval;
 }
@@ -609,8 +638,11 @@ do_loop(
 
   if (agent_name && *agent_name) {
     if (!strncmp(agent_name, "ssh:", 4)) {
+      if (!agent_instance_id && super_run_id) {
+        agent_instance_id = xstrdup(super_run_id);
+      }
       agent = agent_client_ssh_create();
-      if (agent->ops->init(agent, instance_id,
+      if (agent->ops->init(agent, agent_instance_id,
                            agent_name + 4, run_server_id,
                            PREPARE_RUN, verbose_mode) < 0) {
         err("failed to initalize agent");
@@ -723,7 +755,7 @@ do_loop(
     r = handle_packet(state, pkt_name);
     if (!r) {
       if (agent) {
-        agent->ops->add_ignored(agent, pkt_name);
+        //agent->ops->add_ignored(agent, pkt_name);
       } else {
         scan_dir_add_ignored(super_run_spool_path, pkt_name);
       }
@@ -1440,8 +1472,8 @@ main(int argc, char *argv[])
       cur_arg += 2;
     } else if (!strcmp(argv[cur_arg], "--instance-id")) {
       if (cur_arg + 1 >= argc) fatal("argument expected for --instance-id");
-      xfree(instance_id);
-      instance_id = xstrdup(argv[cur_arg + 1]);
+      xfree(agent_instance_id);
+      agent_instance_id = xstrdup(argv[cur_arg + 1]);
       argv_restart[argc_restart++] = argv[cur_arg];
       argv_restart[argc_restart++] = argv[cur_arg + 1];
       cur_arg += 2;

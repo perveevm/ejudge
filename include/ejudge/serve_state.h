@@ -40,6 +40,7 @@ struct userlist_clnt;
 struct ejudge_cfg;
 struct xuser_cnts_state;
 struct statusdb_state;
+struct variant_cnts_plugin_data;
 
 /* error codes */
 enum
@@ -214,6 +215,15 @@ struct serve_state
 
   /* runlog internal state */
   struct runlog_state *runlog_state;
+
+  /* variant internal state */
+  struct variant_cnts_plugin_data *variant_state;
+
+  /* storage plugin state: storage plugin is a singleton, so not released */
+  struct storage_plugin_data *storage_state;
+
+  /* submit plugin state */
+  struct submit_cnts_plugin_data *submit_state;
 
   /* for master_html to store the filter expressions */
   int users_a;
@@ -481,6 +491,7 @@ serve_compile_request(
         int len,
         int contest_id,
         int run_id,
+        int64_t submit_id,
         int user_id,
         int lang_id,
         int variant,
@@ -498,8 +509,10 @@ serve_compile_request(
         const struct section_language_data *lang,
         int no_db_flag,
         const ej_uuid_t *puuid,
+        const ej_uuid_t *p_judge_uuid,
         int store_flags,
         int rejudge_flag,
+        int vcs_mode,
         const struct userlist_user *user)
 #if defined __GNUC__
   __attribute__((warn_unused_result))
@@ -517,6 +530,7 @@ serve_run_request(
         size_t run_size,
         int contest_id,
         int run_id,
+        int64_t submit_id,
         int user_id,
         int prob_id,
         int lang_id,
@@ -535,7 +549,9 @@ serve_run_request(
         ej_uuid_t *puuid,
         int rejudge_flag,
         int zip_mode,
-        int store_flags);
+        int store_flags,
+        const unsigned char *inp_text,
+        size_t inp_size);
 
 int serve_is_valid_status(serve_state_t state, int status, int mode);
 

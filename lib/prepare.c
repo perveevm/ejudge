@@ -1,6 +1,6 @@
 /* -*- c -*- */
 
-/* Copyright (C) 2000-2021 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2000-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -169,6 +169,7 @@ static const struct config_parse_info section_global_params[] =
   GLOBAL_PARAM(rundb_plugin, "S"),
   GLOBAL_PARAM(xuser_plugin, "S"),
   GLOBAL_PARAM(status_plugin, "S"),
+  GLOBAL_PARAM(variant_plugin, "S"),
 
   GLOBAL_PARAM(var_dir, "S"),
 
@@ -323,6 +324,7 @@ static const struct config_parse_info section_global_params[] =
   GLOBAL_PARAM(disable_banner_page, "d"),
   GLOBAL_PARAM(printout_uses_login, "d"),
   GLOBAL_PARAM(team_page_quota, "d"),
+  GLOBAL_PARAM(print_just_copy, "d"),
 
   GLOBAL_PARAM(priority_adjustment, "d"),
   GLOBAL_PARAM(user_priority_adjustments, "x"),
@@ -350,6 +352,11 @@ static const struct config_parse_info section_global_params[] =
   GLOBAL_PARAM(compile_max_vm_size, "E"),
   GLOBAL_PARAM(compile_max_stack_size, "E"),
   GLOBAL_PARAM(compile_max_file_size, "E"),
+
+  GLOBAL_PARAM(time_between_submits, "d"),
+  GLOBAL_PARAM(max_input_size, "d"),
+  GLOBAL_PARAM(max_submit_num, "d"),
+  GLOBAL_PARAM(max_submit_total, "d"),
 
   { 0, 0, 0, 0 }
 };
@@ -455,6 +462,8 @@ static const struct config_parse_info section_problem_params[] =
   PROBLEM_PARAM(enable_text_form, "L"),
   PROBLEM_PARAM(stand_ignore_score, "L"),
   PROBLEM_PARAM(stand_last_column, "L"),
+  PROBLEM_PARAM(enable_user_input, "L"),
+  PROBLEM_PARAM(enable_vcs, "L"),
   PROBLEM_PARAM(score_multiplier, "d"),
   PROBLEM_PARAM(prev_runs_to_show, "d"),
   PROBLEM_PARAM(max_user_run_count, "d"),
@@ -532,6 +541,8 @@ static const struct config_parse_info section_problem_params[] =
   PROBLEM_PARAM(start_cmd, "S"),
   PROBLEM_PARAM(solution_src, "S"),
   PROBLEM_PARAM(solution_cmd, "S"),
+  PROBLEM_PARAM(post_pull_cmd, "S"),
+  PROBLEM_PARAM(vcs_compile_cmd, "S"),
   PROBLEM_PARAM(test_pat, "S"),
   PROBLEM_PARAM(corr_pat, "S"),
   PROBLEM_PARAM(info_pat, "S"),
@@ -856,6 +867,7 @@ global_init_func(struct generic_section_config *gp)
   p->disable_failed_test_view = -1;
   p->enable_printing = -1;
   p->disable_banner_page = -1;
+  p->print_just_copy = -1;
   p->printout_uses_login = -1;
   p->prune_empty_users = -1;
   p->enable_full_archive = -1;
@@ -919,6 +931,8 @@ global_init_func(struct generic_section_config *gp)
   p->compile_max_file_size = ~(ej_size64_t) 0;
 
   p->enable_tokens = -1;
+
+  p->time_between_submits = -1;
 }
 
 static void free_user_adjustment_info(struct user_adjustment_info*);
@@ -1055,7 +1069,7 @@ prepare_global_free_func(struct generic_section_config *gp)
   sarray_free(p->stand_row_attr);
   sarray_free(p->stand_page_row_attr);
   sarray_free(p->stand_page_col_attr);
-  variant_map_free(p->variant_map);
+  //variant_map_free(p->variant_map);
   free_user_adjustment_info(p->user_adjustment_info);
   free_user_adjustment_map(p->user_adjustment_map);
   xfree(p->unhandled_vars);
@@ -1206,6 +1220,7 @@ prepare_global_free_func(struct generic_section_config *gp)
   xfree(p->rundb_plugin);
   xfree(p->xuser_plugin);
   xfree(p->status_plugin);
+  xfree(p->variant_plugin);
 
   memset(p, 0xab, sizeof(*p));
   xfree(p);
@@ -1341,6 +1356,8 @@ prepare_problem_init_func(struct generic_section_config *gp)
   p->enable_text_form = -1;
   p->stand_ignore_score = -1;
   p->stand_last_column = -1;
+  p->enable_user_input = -1;
+  p->enable_vcs = -1;
   p->priority_adjustment = -1000;
   p->max_vm_size = -1LL;
   p->max_stack_size = -1LL;
@@ -1386,6 +1403,8 @@ prepare_problem_free_func(struct generic_section_config *gp)
   xfree(p->start_cmd);
   xfree(p->solution_src);
   xfree(p->solution_cmd);
+  xfree(p->post_pull_cmd);
+  xfree(p->vcs_compile_cmd);
   xfree(p->super_run_dir);
   xfree(p->test_score_list);
   xfree(p->tokens);
@@ -2928,6 +2947,10 @@ set_defaults(
       && ejudge_config->default_status_plugin && ejudge_config->default_status_plugin[0]) {
     xstrdup3(&g->status_plugin, ejudge_config->default_status_plugin);
   }
+  if ((!g->variant_plugin || !g->variant_plugin[0]) && ejudge_config
+      && ejudge_config->default_variant_plugin && ejudge_config->default_variant_plugin[0]) {
+    xstrdup3(&g->variant_plugin, ejudge_config->default_variant_plugin);
+  }
 
   if (!g->conf_dir || !g->conf_dir[0]) {
     path_concat(&g->conf_dir, g->root_dir, "conf");
@@ -3712,6 +3735,8 @@ set_defaults(
     prepare_set_prob_value(CNTSPROB_enable_extended_info, prob, aprob, g);
     prepare_set_prob_value(CNTSPROB_stop_on_first_fail, prob, aprob, g);
     prepare_set_prob_value(CNTSPROB_enable_control_socket, prob, aprob, g);
+    prepare_set_prob_value(CNTSPROB_enable_user_input, prob, aprob, g);
+    prepare_set_prob_value(CNTSPROB_enable_vcs, prob, aprob, g);
     prepare_set_prob_value(CNTSPROB_hide_variant, prob, aprob, g);
     prepare_set_prob_value(CNTSPROB_autoassign_variants, prob, aprob, g);
     prepare_set_prob_value(CNTSPROB_enable_text_form, prob, aprob, g);
@@ -3765,6 +3790,8 @@ set_defaults(
     prepare_set_prob_value(CNTSPROB_start_cmd, prob, aprob, g);
     prepare_set_prob_value(CNTSPROB_solution_src, prob, aprob, g);
     prepare_set_prob_value(CNTSPROB_solution_cmd, prob, aprob, g);
+    prepare_set_prob_value(CNTSPROB_post_pull_cmd, prob, aprob, g);
+    prepare_set_prob_value(CNTSPROB_vcs_compile_cmd, prob, aprob, g);
     prepare_set_prob_value(CNTSPROB_super_run_dir, prob, aprob, g);
 
     prepare_set_prob_value(CNTSPROB_max_vm_size, prob, aprob, g);
@@ -4175,8 +4202,10 @@ set_defaults(
         err("There are variant problems, but no variant file name");
         return -1;
       }
+      /*
       g->variant_map = variant_map_parse(stderr, state, g->variant_map_file);
       if (!g->variant_map) return -1;
+      */
     }
   }
 
@@ -5728,6 +5757,7 @@ prepare_new_global_section(int contest_id, const unsigned char *root_dir,
   global->enable_full_archive = 0;
   global->enable_printing = DFLT_G_ENABLE_PRINTING;
   global->disable_banner_page = DFLT_G_DISABLE_BANNER_PAGE;
+  global->print_just_copy = 0;
   global->printout_uses_login = 0;
   global->team_page_quota = DFLT_G_TEAM_PAGE_QUOTA;
   global->enable_l10n = 1;
@@ -6098,6 +6128,8 @@ prepare_copy_problem(const struct section_problem_data *in)
   out->enable_extended_info = in->enable_extended_info;
   out->stop_on_first_fail = in->stop_on_first_fail;
   out->enable_control_socket = in->enable_control_socket;
+  out->enable_user_input = in->enable_user_input;
+  out->enable_vcs = in->enable_vcs;
   xstrdup3(&out->test_pat, in->test_pat);
   xstrdup3(&out->corr_pat, in->corr_pat);
   xstrdup3(&out->info_pat, in->info_pat);
@@ -6144,6 +6176,8 @@ prepare_copy_problem(const struct section_problem_data *in)
   xstrdup3(&out->start_cmd, in->start_cmd);
   xstrdup3(&out->solution_src, in->solution_src);
   xstrdup3(&out->solution_cmd, in->solution_cmd);
+  xstrdup3(&out->post_pull_cmd, in->post_pull_cmd);
+  xstrdup3(&out->vcs_compile_cmd, in->vcs_compile_cmd);
   //out->lang_time_adj = NULL;
   //out->lang_time_adj_millis = NULL;
   xstrdup3(&out->super_run_dir, in->super_run_dir);
@@ -6395,6 +6429,8 @@ prepare_set_prob_value(
   INHERIT_BOOLEAN(enable_extended_info);
   INHERIT_BOOLEAN(stop_on_first_fail);
   INHERIT_BOOLEAN(enable_control_socket);
+  INHERIT_BOOLEAN(enable_user_input);
+  INHERIT_BOOLEAN(enable_vcs);
   INHERIT_BOOLEAN(hide_variant);
   INHERIT_BOOLEAN(autoassign_variants);
   INHERIT_BOOLEAN(enable_text_form);
@@ -6753,6 +6789,27 @@ prepare_set_prob_value(
     }
     break;
 
+  case CNTSPROB_post_pull_cmd:
+    if (!out->post_pull_cmd && abstr && abstr->post_pull_cmd) {
+      sformat_message(tmp_buf, sizeof(tmp_buf), 0, abstr->post_pull_cmd, NULL, out, NULL, NULL, NULL, 0, 0, 0);
+      out->post_pull_cmd = xstrdup(tmp_buf);
+    }
+    /*
+    if (out->post_pull_cmd && out->post_pull_cmd[0]
+        && global && global->advanced_layout <= 0
+        && !os_IsAbsolutePath(out->post_pull_cmd)) {
+      usprintf(&out->post_pull_cmd, "%s/%s", global->checker_dir, out->post_pull_cmd);
+    }
+    */
+    break;
+
+  case CNTSPROB_vcs_compile_cmd:
+    if (!out->vcs_compile_cmd && abstr && abstr->vcs_compile_cmd) {
+      sformat_message(tmp_buf, sizeof(tmp_buf), 0, abstr->vcs_compile_cmd, NULL, out, NULL, NULL, NULL, 0, 0, 0);
+      out->vcs_compile_cmd = xstrdup(tmp_buf);
+    }
+    break;
+
   case CNTSPROB_statement_file:
     if (!out->statement_file && abstr && abstr->statement_file) {
       sformat_message_2(&out->statement_file, 0, abstr->statement_file,
@@ -6981,6 +7038,8 @@ prepare_set_all_prob_values(
     CNTSPROB_enable_extended_info,
     CNTSPROB_stop_on_first_fail,
     CNTSPROB_enable_control_socket,
+    CNTSPROB_enable_user_input,
+    CNTSPROB_enable_vcs,
     CNTSPROB_hide_variant,
     CNTSPROB_test_pat,
     CNTSPROB_corr_pat,
@@ -7018,6 +7077,8 @@ prepare_set_all_prob_values(
     CNTSPROB_start_cmd,
     CNTSPROB_solution_src,
     CNTSPROB_solution_cmd,
+    CNTSPROB_post_pull_cmd,
+    CNTSPROB_vcs_compile_cmd,
     //CNTSPROB_lang_time_adj,
     //CNTSPROB_lang_time_adj_millis,
     CNTSPROB_super_run_dir,

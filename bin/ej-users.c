@@ -613,7 +613,7 @@ link_client_state(struct client_state *p)
 #define default_get_user_count(a, b, c, d, e, f, g) dflt_iface->get_user_count(uldb_default->data, a, b, c, d, e, f, g)
 #define default_get_group_iterator_2(a, b, c) dflt_iface->get_group_iterator_2(uldb_default->data, a, b, c)
 #define default_get_group_count(a, b) dflt_iface->get_group_count(uldb_default->data, a, b)
-#define default_new_cookie_2(a, b, c, d, e, f, g, h, i, j, k, l, m, n) dflt_iface->new_cookie_2(uldb_default->data, a, b, c, d, e, f, g, h, i, j, k, l, m, n)
+#define default_new_cookie_2(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o) dflt_iface->new_cookie_2(uldb_default->data, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o)
 
 static void
 update_all_user_contests(int user_id)
@@ -2833,6 +2833,7 @@ cmd_login(
                            0, orig_contest_id, data->locale_id, PRIV_LEVEL_USER,
                            0, 0, 0,
                            0, /* is_ws */
+                           0, /* is_job */
                            &cookie) < 0) {
     err("%s -> cookie creation failed", logbuf);
     send_reply(p, -ULS_ERR_OUT_OF_MEM);
@@ -2977,6 +2978,7 @@ cmd_check_user(
                            orig_contest_id, data->locale_id, PRIV_LEVEL_USER, 0,
                            0, 0,
                            0, /* is_ws */
+                           0, /* is_job */
                            &cookie) < 0) {
     err("%s -> cookie creation failed", logbuf);
     send_reply(p, -ULS_ERR_OUT_OF_MEM);
@@ -3094,6 +3096,7 @@ cmd_check_user_2(
                            0, data->locale_id, PRIV_LEVEL_USER, 0,
                            0, 0,
                            0, /* is_ws */
+                           0, /* is_job */
                            &cookie) < 0) {
     err("%s -> cookie creation failed", logbuf);
     send_reply(p, -ULS_ERR_OUT_OF_MEM);
@@ -3265,6 +3268,7 @@ cmd_team_login(
                            orig_contest_id, data->locale_id,
                            PRIV_LEVEL_USER, 0, 0, 1,
                            0, /* is_ws */
+                           0, /* is_job */
                            &cookie) < 0) {
     err("%s -> cookie creation failed", logbuf);
     send_reply(p, -ULS_ERR_OUT_OF_MEM);
@@ -3456,6 +3460,7 @@ cmd_team_check_user(
                            orig_contest_id, data->locale_id,
                            PRIV_LEVEL_USER, 0, 0, 1,
                            data->is_ws,
+                           0, /* is_job */
                            &cookie) < 0) {
     err("%s -> cookie creation failed", logbuf);
     send_reply(p, -ULS_ERR_OUT_OF_MEM);
@@ -3688,6 +3693,7 @@ cmd_priv_login(
                            orig_contest_id, data->locale_id,
                            priv_level, data->role, 0, 0,
                            0, /* is_ws */
+                           0, /* is_job */
                            &cookie) < 0) {
     err("%s -> cookie creation failed", logbuf);
     send_reply(p, -ULS_ERR_NO_PERMS);
@@ -3880,6 +3886,7 @@ cmd_priv_check_user(
                            orig_contest_id, data->locale_id,
                            priv_level, data->role, 0, 0,
                            0, /* is_ws */
+                           0, /* is_job */
                            &cookie) < 0) {
     err("%s -> cookie creation failed", logbuf);
     send_reply(p, -ULS_ERR_NO_PERMS);
@@ -4697,6 +4704,7 @@ cmd_priv_cookie_login(
                            0, orig_contest_id, data->locale_id,
                            priv_level, data->role, 0, 0,
                            0, /* is_ws */
+                           0, /* is_job */
                            &new_cookie) < 0) {
     err("%s -> cookie creation failed", logbuf);
     send_reply(p, -ULS_ERR_NO_PERMS);
@@ -8277,6 +8285,7 @@ cmd_get_cookie(
   int need_touch_login_time = 0;
   int passwd_method = 0;
   int cookie_is_ws = 0;
+  int cookie_is_job = 0;
   time_t cookie_expire = 0;
 
   if (pkt_len != sizeof(*data)) {
@@ -8320,6 +8329,7 @@ cmd_get_cookie(
   cookie_role = cookie->role;
   cookie_team_login = cookie->team_login;
   cookie_is_ws = cookie->is_ws;
+  cookie_is_job = cookie->is_job;
   cookie_expire = cookie->expire;
 
   if (default_get_user_info_3(cookie->user_id, new_contest_id, &u, &ui, &c) < 0
@@ -8403,6 +8413,7 @@ cmd_get_cookie(
   out->role = cookie_role;
   out->team_login = cookie_team_login;
   out->is_ws = cookie_is_ws;
+  out->is_job = cookie_is_job;
   out->reg_status = -1;
   out->passwd_method = passwd_method;
   out->expire = cookie_expire;
@@ -10724,6 +10735,7 @@ cmd_create_cookie(
     0 /* recovery */,   // ignore data->recovery
     data->team_login,
     0 /* is_ws */,
+    data->is_job,
     &cookie);
   if (r < 0) {
     err("%s -> cookie creation failed", logbuf);
@@ -10790,6 +10802,7 @@ cmd_priv_create_cookie(
     0 /* recovery */,   // ignore data->recovery
     data->team_login,
     0 /* is_ws */,
+    data->is_job,
     &cookie);
   if (r < 0) {
     err("%s -> cookie creation failed", logbuf);
@@ -11894,11 +11907,11 @@ report_uptime(time_t t1, time_t t2)
   int up_days, up_hours, up_mins, up_secs;
 
   ptm = localtime(&t1);
-  snprintf(buf1, sizeof(buf1), "%04d/%02d/%02d %02d:%02d:%02d",
+  snprintf(buf1, sizeof(buf1), "%04d-%02d-%02d %02d:%02d:%02d",
            ptm->tm_year + 1900, ptm->tm_mon + 1, ptm->tm_mday,
            ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
   ptm = localtime(&t2);
-  snprintf(buf2, sizeof(buf2), "%04d/%02d/%02d %02d:%02d:%02d",
+  snprintf(buf2, sizeof(buf2), "%04d-%02d-%02d %02d:%02d:%02d",
            ptm->tm_year + 1900, ptm->tm_mon + 1, ptm->tm_mday,
            ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
   info("server started: %s, stopped: %s", buf1, buf2);

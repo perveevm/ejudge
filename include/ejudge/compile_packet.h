@@ -36,6 +36,8 @@ struct compile_request_packet
   int lang_header;                 // 1, if header/footer lang-specific
   int user_id;
   int use_container;
+  int vcs_mode;
+  int64_t submit_id;
   ej_uuid_t uuid;
   ej_uuid_t judge_uuid;
   ej_size64_t max_vm_size;
@@ -53,6 +55,7 @@ struct compile_request_packet
   unsigned char *exam_cypher;
   unsigned char *contest_server_id; // contest server to pass the compilation result to
   unsigned char *container_options;
+  unsigned char *vcs_compile_cmd;
   int run_block_len;
   void *run_block;
   int env_num;
@@ -67,6 +70,7 @@ struct compile_reply_packet
   int contest_id;
   int run_id;
   int status;
+  int64_t submit_id;
   /* time when the compile request was queued by serve */
   int ts1;
   int ts1_us;

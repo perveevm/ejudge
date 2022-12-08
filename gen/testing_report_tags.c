@@ -85,7 +85,13 @@ enum
     Tag_user_nominal_score,
     Tag_checker_token,
     Tag_data,
-    Tag_bzip2
+    Tag_bzip2,
+    Tag_max_rss_available,
+    Tag_separate_user_score,
+    Tag_max_rss,
+    Tag_submit_id,
+    Tag_judge_uuid,
+    Tag_test_checker
 };
 static __attribute__((unused)) const char * const tag_table[] =
 {
@@ -175,6 +181,12 @@ static __attribute__((unused)) const char * const tag_table[] =
     "checker_token",
     "data",
     "bzip2",
+    "max_rss_available",
+    "separate_user_score",
+    "max_rss",
+    "submit_id",
+    "judge_uuid",
+    "test_checker",
 };
 static __attribute__((unused)) int
 match(const char *s)
@@ -321,8 +333,14 @@ match(const char *s)
         } else {
             return 0;
         }
-    } else if (s[0] == 'j' && s[1] == 'u' && s[2] == 'd' && s[3] == 'g' && s[4] == 'e' && s[5] == '_' && s[6] == 'i' && s[7] == 'd' && !s[8]) {
-        return Tag_judge_id;
+    } else if (s[0] == 'j'&& s[1] == 'u'&& s[2] == 'd'&& s[3] == 'g'&& s[4] == 'e'&& s[5] == '_') {
+        if (s[6] == 'i' && s[7] == 'd' && !s[8]) {
+            return Tag_judge_id;
+        } else if (s[6] == 'u' && s[7] == 'u' && s[8] == 'i' && s[9] == 'd' && !s[10]) {
+            return Tag_judge_uuid;
+        } else {
+            return 0;
+        }
     } else if (s[0] == 'm') {
         if (s[1] == 'a') {
             if (s[2] == 'r' && s[3] == 'k' && s[4] == 'e' && s[5] == 'd' && s[6] == '_' && s[7] == 'f' && s[8] == 'l' && s[9] == 'a' && s[10] == 'g' && !s[11]) {
@@ -333,6 +351,14 @@ match(const char *s)
                         return Tag_max_memory_used;
                     } else if (s[15] == '_' && s[16] == 'a' && s[17] == 'v' && s[18] == 'a' && s[19] == 'i' && s[20] == 'l' && s[21] == 'a' && s[22] == 'b' && s[23] == 'l' && s[24] == 'e' && !s[25]) {
                         return Tag_max_memory_used_available;
+                    } else {
+                        return 0;
+                    }
+                } else if (s[4] == 'r'&& s[5] == 's'&& s[6] == 's') {
+                    if (!s[7]) {
+                        return Tag_max_rss;
+                    } else if (s[7] == '_' && s[8] == 'a' && s[9] == 'v' && s[10] == 'a' && s[11] == 'i' && s[12] == 'l' && s[13] == 'a' && s[14] == 'b' && s[15] == 'l' && s[16] == 'e' && !s[17]) {
+                        return Tag_max_rss_available;
                     } else {
                         return 0;
                     }
@@ -412,6 +438,8 @@ match(const char *s)
             } else {
                 return 0;
             }
+        } else if (s[1] == 'e' && s[2] == 'p' && s[3] == 'a' && s[4] == 'r' && s[5] == 'a' && s[6] == 't' && s[7] == 'e' && s[8] == '_' && s[9] == 'u' && s[10] == 's' && s[11] == 'e' && s[12] == 'r' && s[13] == '_' && s[14] == 's' && s[15] == 'c' && s[16] == 'o' && s[17] == 'r' && s[18] == 'e' && !s[19]) {
+            return Tag_separate_user_score;
         } else if (s[1] == 'i' && s[2] == 'z' && s[3] == 'e' && !s[4]) {
             return Tag_size;
         } else if (s[1] == 't') {
@@ -428,6 +456,8 @@ match(const char *s)
             } else {
                 return 0;
             }
+        } else if (s[1] == 'u' && s[2] == 'b' && s[3] == 'm' && s[4] == 'i' && s[5] == 't' && s[6] == '_' && s[7] == 'i' && s[8] == 'd' && !s[9]) {
+            return Tag_submit_id;
         } else {
             return 0;
         }
@@ -440,6 +470,8 @@ match(const char *s)
             } else if (s[2] == 's'&& s[3] == 't') {
                 if (!s[4]) {
                     return Tag_test;
+                } else if (s[4] == '_' && s[5] == 'c' && s[6] == 'h' && s[7] == 'e' && s[8] == 'c' && s[9] == 'k' && s[10] == 'e' && s[11] == 'r' && !s[12]) {
+                    return Tag_test_checker;
                 } else if (s[4] == 's') {
                     if (!s[5]) {
                         return Tag_tests;

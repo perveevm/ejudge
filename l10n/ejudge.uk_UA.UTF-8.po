@@ -6,7 +6,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: 3.0\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2022-06-19 01:04+0300\n"
+"POT-Creation-Date: 2022-10-25 17:35+0300\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: Ukrainian <uk@li.org>\n"
@@ -490,6 +490,9 @@ msgid "Assign random cyphers"
 msgstr ""
 
 msgid "Assigned cyphers"
+msgstr ""
+
+msgid "Attach a file or copy text below"
 msgstr ""
 
 msgid "Attempt to submit a binary file"
@@ -1080,6 +1083,9 @@ msgid "Delete all"
 msgstr ""
 
 msgid "Delete row"
+msgstr ""
+
+msgid "Delete this integration?"
 msgstr ""
 
 msgid "Delete!"
@@ -1804,6 +1810,9 @@ msgstr ""
 msgid "Input"
 msgstr ""
 
+msgid "Input data"
+msgstr ""
+
 msgid "Input file name"
 msgstr ""
 
@@ -1847,6 +1856,9 @@ msgid "Insufficient duration to continue the contest"
 msgstr ""
 
 msgid "Internal error"
+msgstr ""
+
+msgid "Invalid ID"
 msgstr ""
 
 #, c-format
@@ -1965,6 +1977,9 @@ msgstr ""
 
 #, c-format
 msgid "Invalid status `%s' in row %d\n"
+msgstr ""
+
+msgid "Invalid submit ID"
 msgstr ""
 
 msgid "Invalid test"
@@ -2240,6 +2255,9 @@ msgstr ""
 msgid "Master"
 msgstr ""
 
+msgid "Max RSS used"
+msgstr ""
+
 msgid "Max memory used"
 msgstr ""
 
@@ -2409,9 +2427,6 @@ msgstr ""
 msgid "New user account is created"
 msgstr ""
 
-msgid "Next problem"
-msgstr ""
-
 msgid "Next soft deadline"
 msgstr ""
 
@@ -2463,6 +2478,9 @@ msgid "No entry for %s/%s\n"
 msgstr ""
 
 msgid "No guests are allowed in this contest"
+msgstr ""
+
+msgid "No integration is defined. Create a new one?"
 msgstr ""
 
 msgid "No plugin is available for problem"
@@ -2760,9 +2778,6 @@ msgid ""
 "shortly after that."
 msgstr ""
 
-msgid "Previous problem"
-msgstr ""
-
 msgid "Previous submissions of this problem"
 msgstr ""
 
@@ -2950,6 +2965,9 @@ msgid "Random seed"
 msgstr ""
 
 msgid "Random variants"
+msgstr ""
+
+msgid "Rate exceeded"
 msgstr ""
 
 msgid "Re"
@@ -3265,7 +3283,13 @@ msgstr ""
 msgid "Run log update failed"
 msgstr ""
 
+msgid "Run on server"
+msgstr ""
+
 msgid "Run penalty"
+msgstr ""
+
+msgid "Run program on server"
 msgstr ""
 
 msgid "Run selection"
@@ -3502,6 +3526,9 @@ msgstr ""
 msgid "Settings"
 msgstr ""
 
+msgid "Setup Gitlab Integration"
+msgstr ""
+
 msgid "Shift parameter"
 msgstr ""
 
@@ -3697,6 +3724,9 @@ msgid "Submit appeal"
 msgstr ""
 
 msgid "Submit clar"
+msgstr ""
+
+msgid "Submit for judgement"
 msgstr ""
 
 msgid "Submit image"

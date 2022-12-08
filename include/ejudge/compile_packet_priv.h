@@ -18,7 +18,7 @@
 
 #include "ejudge/integral.h"
 
-#define EJ_COMPILE_PACKET_VERSION 9
+#define EJ_COMPILE_PACKET_VERSION 11
 
 /* various private data structures and constants for compile packets */
 
@@ -34,6 +34,7 @@ struct compile_request_bin_packet
   rint32_t lang_id;             /* the language [1..max_lang] */
   rint32_t locale_id;           /* the locale identifier */
   rint32_t output_only;         /* the problem is output only */
+  int64_t submit_id;
   ej_size64_t max_vm_size;      /* the process VM limit */
   ej_size64_t max_stack_size;   /* the process stack size */
   ej_size64_t max_file_size;    /* the maximum file size */
@@ -48,6 +49,7 @@ struct compile_request_bin_packet
   rint32_t sc_env_num;          /* the number of style checker env. vars */
   rint32_t use_uuid;            /* use UUID instead of run_id */
   rint32_t use_container;       /* use ej-suid-container for compilation */
+  rint32_t vcs_mode;            /* github/gitlab integration */
   ej_uuid_t uuid;               /* UUID */
   ej_uuid_t judge_uuid;         /* judging UUID */
   rint32_t multi_header;        /* multi-header mode */
@@ -62,7 +64,8 @@ struct compile_request_bin_packet
   rint32_t exam_cypher_len;
   rint32_t contest_server_id_len;/* the length of the contest server id */
   rint32_t container_options_len;/* the length of the container options */
-  unsigned char pad[8];          /* padding to 16-byte boundary */
+  rint32_t vcs_compile_cmd_len;  /* compile command for vcs_mode */
+  unsigned char pad[8];         /* padding to 16-byte boundary */
   /* style checker command (aligned to 16 byte boundary) */
   /* run_block (aligned to 16 byte boundary) */
   /* env variable length array (aligned to 16-byte address boundary) */
@@ -81,6 +84,7 @@ struct compile_reply_bin_packet
   rint32_t contest_id;
   rint32_t run_id;
   rint32_t status;
+  int64_t submit_id;
   /* time when the compile request was queued by serve */
   rint32_t ts1;
   rint32_t ts1_us;
@@ -95,7 +99,7 @@ struct compile_reply_bin_packet
   ej_uuid_t uuid;              /* UUID */
   ej_uuid_t judge_uuid;        /* judgind UUID */
   rint32_t zip_mode;
-  unsigned char pad[4];        /* padding to 64-byte boundary */
+  unsigned char pad[12];        /* padding to 64-byte boundary */
   /* run block (aligned to 16 byte boundary) */
 };
 

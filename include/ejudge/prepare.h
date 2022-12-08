@@ -2,7 +2,7 @@
 #ifndef __PREPARE_H__
 #define __PREPARE_H__
 
-/* Copyright (C) 2000-2021 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2000-2022 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -388,6 +388,8 @@ struct section_global_data
   unsigned char *xuser_plugin;
   /** the contest status plugin */
   unsigned char *status_plugin;
+  /** the variant plugin */
+  unsigned char *variant_plugin;
 
   /* ====== VARIABLE FILES/DIRECTORIES SETUP ====== */
   /** root directory with working files, run sources/reports, etc */
@@ -728,7 +730,7 @@ struct section_global_data
   /** path to the file with variant assignment */
   unsigned char *variant_map_file;
   /** parsed variant map */
-  struct variant_map *variant_map META_ATTRIB((meta_private));
+  //struct variant_map *variant_map META_ATTRIB((meta_private));
 
   /** enable printing of submission by participants */
   ejintbool_t enable_printing;
@@ -738,6 +740,8 @@ struct section_global_data
   ejintbool_t printout_uses_login;
   /** printing quota (in pages) */
   int team_page_quota;
+  /** simplified printing by copying to the printing spool directory */
+  ejintbool_t print_just_copy;
 
   /* common compilation virtual address space size limit */
   ej_size64_t compile_max_vm_size;
@@ -789,6 +793,15 @@ struct section_global_data
   ejintbool_t disable_prob_long_name META_ATTRIB((meta_private));
   /** INTERNAL: all problems are output-only */
   ejintbool_t disable_passed_tests META_ATTRIB((meta_private));
+
+  /** time between user submits */
+  int time_between_submits;
+  /** max size of a user input in bytes */
+  ejintsize_t max_input_size;
+  /** max number of submits for each user */
+  int max_submit_num;
+  /** max size of submits and data */
+  ejintsize_t max_submit_total;
 };
 
 /* sizeof(struct section_problem_data) == 820/1280 */
@@ -975,6 +988,10 @@ struct section_problem_data
 
   /** send a notification to judges upon submit */
   ejbyteflag_t notify_on_submit;
+
+  ejbyteflag_t enable_user_input;
+
+  ejbyteflag_t enable_vcs;
 
   // padding to 8-byte boundary
   //unsigned char _pad1[1];
@@ -1179,6 +1196,10 @@ struct section_problem_data
   unsigned char *solution_src;
   /** solution command */
   unsigned char *solution_cmd;
+  /** post pull preparation script */
+  unsigned char *post_pull_cmd;
+  /** vcs mode compile script */
+  unsigned char *vcs_compile_cmd;
   /** time limit adjustments depending on language */
   char **lang_time_adj;
   /** time limit milliseconds adjustments depending on language (priority over lang_time_adj) */
