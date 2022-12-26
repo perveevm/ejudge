@@ -298,6 +298,7 @@ get_result_func(
     res.role = oas2.role; oas2.role = NULL;
     res.cookie = oas2.cookie; oas2.cookie = NULL;
     res.extra_data = oas2.extra_data; oas2.extra_data = NULL;
+    res.user_id = oas2.response_user_id; oas2.response_user_id = NULL;
     res.email = oas2.response_email; oas2.response_email = NULL;
     res.name = oas2.response_name; oas2.response_name = NULL;
     res.access_token = oas2.access_token; oas2.access_token = NULL;
@@ -351,6 +352,7 @@ packet_handler_auth_yandex(int uid, int argc, char **argv, void *user)
     const unsigned char *request_id = argv[1];
     const unsigned char *request_code = argv[2];
     const char *error_message = "unknown error";
+    const unsigned char *response_user_id = NULL;
     const unsigned char *response_email = NULL;
     const unsigned char *response_name = NULL;
     const unsigned char *access_token = NULL;
@@ -373,6 +375,8 @@ packet_handler_auth_yandex(int uid, int argc, char **argv, void *user)
     asprintf(&header, "Authorization: OAuth %s", request_code);
     headers = curl_slist_append(headers, header);
     json_f = open_memstream(&json_s, &json_z);
+    curl_easy_reset(state->curl);
+    curl_easy_setopt(state->curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(state->curl, CURLOPT_FOLLOWLOCATION, 1);
     curl_easy_setopt(state->curl, CURLOPT_COOKIEFILE, "");
     curl_easy_setopt(state->curl, CURLOPT_URL, url_s);
@@ -419,6 +423,11 @@ packet_handler_auth_yandex(int uid, int argc, char **argv, void *user)
         response_name = j->valuestring;
     }
 
+    j = cJSON_GetObjectItem(root, "id");
+    if (j && j->type == cJSON_String) {
+        response_user_id = j->valuestring;
+    }
+
     // success
     request_status = 3;
     error_message = NULL;
@@ -426,7 +435,9 @@ packet_handler_auth_yandex(int uid, int argc, char **argv, void *user)
 done:;
     state->bi->update_stage2(state->bd, request_id,
                              request_status, error_message,
-                             response_name, response_email,
+                             response_name,
+                             response_user_id,
+                             response_email,
                              access_token, NULL);
 
     if (root) cJSON_Delete(root);

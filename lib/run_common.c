@@ -1261,6 +1261,21 @@ start_interactive_valuer(
   if (srgp->rejudge_flag > 0) {
     task_SetEnv(tsk, "EJUDGE_REJUDGE", "1");
   }
+  if (srpp->enable_extended_info > 0) {
+    unsigned char buf[64];
+    snprintf(buf, sizeof(buf), "%d", srgp->user_id);
+    task_SetEnv(tsk, "EJUDGE_USER_ID", buf);
+    snprintf(buf, sizeof(buf), "%d", srgp->contest_id);
+    task_SetEnv(tsk, "EJUDGE_CONTEST_ID", buf);
+    snprintf(buf, sizeof(buf), "%d", srgp->run_id);
+    task_SetEnv(tsk, "EJUDGE_RUN_ID", buf);
+    task_SetEnv(tsk, "EJUDGE_USER_LOGIN", srgp->user_login);
+    task_SetEnv(tsk, "EJUDGE_USER_NAME", srgp->user_name);
+    if (srpp->test_count > 0) {
+      snprintf(buf, sizeof(buf), "%d", srpp->test_count);
+      task_SetEnv(tsk, "EJUDGE_TEST_COUNT", buf);
+    }
+  }
   //task_EnableAllSignals(tsk);
 
   task_PrintArgs(tsk);
@@ -2431,12 +2446,37 @@ invoke_checker(
   if (srpp->checker_max_rss_size > 0) {
     task_SetRSSSize(tsk, srpp->checker_max_rss_size);
   }
+	
+  switch (srgp->scoring_system_val) {
+  case SCORE_KIROV:
+  case SCORE_OLYMPIAD:
+    test_max_score = -1;
+    if (test_score_val && cur_test > 0 && cur_test < test_score_count) {
+      test_max_score = test_score_val[cur_test];
+    }
+    if (test_max_score < 0) {
+      test_max_score = srpp->test_score;
+    }
+    if (test_max_score < 0) test_max_score = 0;
+    break;
+  case SCORE_MOSCOW:
+    test_max_score = srpp->full_score - 1;
+    break;
+  case SCORE_ACM:
+    test_max_score = 0;
+    break;
+  default:
+    abort();
+  }
   setup_environment(tsk, srpp->checker_env, env_u, env_v, 1);
   if (srpp->scoring_checker > 0) {
     task_SetEnv(tsk, "EJUDGE_SCORING_CHECKER", "1");
     if (srpp->enable_checker_token > 0) {
       task_SetEnv(tsk, "EJUDGE_CHECKER_TOKEN", "1");
     }
+    unsigned char buf[64];
+    snprintf(buf, sizeof(buf), "%d", test_max_score);
+    task_SetEnv(tsk, "EJUDGE_MAX_SCORE", buf);
   }
   task_SetEnv(tsk, "EJUDGE", "1");
   if (srgp->checker_locale && srgp->checker_locale[0]) {
@@ -2518,28 +2558,7 @@ invoke_checker(
     }
     goto cleanup;
   }
-
-  switch (srgp->scoring_system_val) {
-  case SCORE_KIROV:
-  case SCORE_OLYMPIAD:
-    test_max_score = -1;
-    if (test_score_val && cur_test > 0 && cur_test < test_score_count) {
-      test_max_score = test_score_val[cur_test];
-    }
-    if (test_max_score < 0) {
-      test_max_score = srpp->test_score;
-    }
-    if (test_max_score < 0) test_max_score = 0;
-    break;
-  case SCORE_MOSCOW:
-    test_max_score = srpp->full_score - 1;
-    break;
-  case SCORE_ACM:
-    test_max_score = 0;
-    break;
-  default:
-    abort();
-  }
+	
   if (srpp->scoring_checker > 0) {
     int user_score = -1;
     int user_status = -1;

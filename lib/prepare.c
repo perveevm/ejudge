@@ -352,6 +352,7 @@ static const struct config_parse_info section_global_params[] =
   GLOBAL_PARAM(compile_max_vm_size, "E"),
   GLOBAL_PARAM(compile_max_stack_size, "E"),
   GLOBAL_PARAM(compile_max_file_size, "E"),
+  GLOBAL_PARAM(compile_max_rss_size, "E"),
 
   GLOBAL_PARAM(time_between_submits, "d"),
   GLOBAL_PARAM(max_input_size, "d"),
@@ -607,6 +608,7 @@ static const struct config_parse_info section_language_params[] =
   LANGUAGE_PARAM(max_vm_size, "E"),
   LANGUAGE_PARAM(max_stack_size, "E"),
   LANGUAGE_PARAM(max_file_size, "E"),
+  LANGUAGE_PARAM(max_rss_size, "E"),
   LANGUAGE_PARAM(run_max_stack_size, "E"),
   LANGUAGE_PARAM(run_max_vm_size, "E"),
   LANGUAGE_PARAM(run_max_rss_size, "E"),
@@ -929,6 +931,7 @@ global_init_func(struct generic_section_config *gp)
   p->compile_max_vm_size = ~(ej_size64_t) 0;
   p->compile_max_stack_size = ~(ej_size64_t) 0;
   p->compile_max_file_size = ~(ej_size64_t) 0;
+  p->compile_max_rss_size = ~(ej_size64_t) 0;
 
   p->enable_tokens = -1;
 
@@ -5790,6 +5793,7 @@ prepare_new_global_section(int contest_id, const unsigned char *root_dir,
   global->compile_max_vm_size = ~(ej_size64_t) 0;
   global->compile_max_stack_size = ~(ej_size64_t) 0;
   global->compile_max_file_size = ~(ej_size64_t) 0;
+  global->compile_max_rss_size = ~(ej_size64_t) 0;
 
   /*
   GLOBAL_PARAM(test_sfx, "s"),

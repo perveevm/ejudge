@@ -749,6 +749,8 @@ struct section_global_data
   ej_size64_t compile_max_stack_size;
   /* common file size limit */
   ej_size64_t compile_max_file_size;
+  /* common compilation RSS limit */
+  ej_size64_t compile_max_rss_size;
 
   /** per participant testing priority adjustment */
   char **user_priority_adjustments;
@@ -1351,6 +1353,8 @@ struct section_language_data
   ej_size64_t max_stack_size;
   /** max file size limit */
   ej_size64_t max_file_size;
+  /** max RSS limit  */
+  ej_size64_t max_rss_size;
   /** stack size limit for compiled programs, overrides the problem settings */
   ej_size64_t run_max_stack_size;
   /** virtual memory size limit for compiled programs, overrides the problem settings */

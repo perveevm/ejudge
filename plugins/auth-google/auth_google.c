@@ -197,6 +197,8 @@ fetch_google_endpoints(struct auth_google_state *state)
     CURLcode res = 0;
     cJSON *root = NULL;
 
+    curl_easy_reset(state->curl);
+    curl_easy_setopt(state->curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(state->curl, CURLOPT_FOLLOWLOCATION, 1);
     curl_easy_setopt(state->curl, CURLOPT_COOKIEFILE, "");
     curl_easy_setopt(state->curl, CURLOPT_URL, "https://accounts.google.com/.well-known/openid-configuration");
@@ -422,6 +424,7 @@ get_result_func(
     res.role = oas2.role; oas2.role = NULL;
     res.cookie = oas2.cookie; oas2.cookie = NULL;
     res.extra_data = oas2.extra_data; oas2.extra_data = NULL;
+    res.user_id = oas2.response_user_id; oas2.response_user_id = NULL;
     res.email = oas2.response_email; oas2.response_email = NULL;
     res.name = oas2.response_name; oas2.response_name = NULL;
     res.access_token = oas2.access_token; oas2.access_token = NULL;
@@ -478,6 +481,8 @@ packet_handler_auth_google(int uid, int argc, char **argv, void *user)
     fclose(post_f); post_f = NULL;
 
     json_f = open_memstream(&json_s, &json_z);
+    curl_easy_reset(state->curl);
+    curl_easy_setopt(state->curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(state->curl, CURLOPT_FOLLOWLOCATION, 1);
     curl_easy_setopt(state->curl, CURLOPT_COOKIEFILE, "");
     curl_easy_setopt(state->curl, CURLOPT_URL, state->token_endpoint);
@@ -569,7 +574,9 @@ packet_handler_auth_google(int uid, int argc, char **argv, void *user)
 done:
     state->bi->update_stage2(state->bd, request_id,
                              request_status, error_message,
-                             response_name, response_email,
+                             response_name,
+                             NULL /* response_user_id */,
+                             response_email,
                              access_token, id_token);
 
     free(jwt_payload);
