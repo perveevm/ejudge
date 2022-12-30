@@ -2539,6 +2539,12 @@ invoke_checker(
   if (exitcode == RUN_PRESENTATION_ERR && srpp->disable_pe > 0) {
     exitcode = RUN_WRONG_ANSWER_ERR;
   }
+  if (exitcode != RUN_OK && srgp->not_ok_is_cf > 0) {
+    append_msg_to_log(check_out_path, "checker exited with code %d", exitcode);
+    append_msg_to_log(check_out_path, "Check failed on non-OK result mode enabled");
+    status = RUN_CHECK_FAILED;
+    goto cleanup;
+  }
   if (exitcode != RUN_OK && exitcode != RUN_PRESENTATION_ERR
       && exitcode != RUN_WRONG_ANSWER_ERR && exitcode != RUN_CHECK_FAILED) {
     append_msg_to_log(check_out_path, "checker exited with code %d", exitcode);
@@ -2839,6 +2845,9 @@ run_one_test(
   if (srpp->corr_pat && srpp->corr_pat[0]) {
     snprintf(corr_base, sizeof(corr_base), srpp->corr_pat, cur_test);
     snprintf(corr_src, sizeof(corr_src), "%s/%s", srpp->corr_dir, corr_base);
+  }
+  if (srpp->use_corr > 0 && corr_src[0]) {
+    mirror_file(agent, corr_src, sizeof(corr_src), mirror_dir);
   }
   info_base[0] = 0;
   info_src[0] = 0;
@@ -3895,9 +3904,6 @@ run_checker:;
 
   file_size = -1;
   if (srpp->use_corr > 0) {
-    if (corr_src[0]) {
-      mirror_file(agent, corr_src, sizeof(corr_src), mirror_dir);
-    }
     if (srgp->enable_full_archive > 0) {
       filehash_get(corr_src, cur_info->correct_digest);
       cur_info->has_correct_digest = 1;
@@ -3947,6 +3953,11 @@ read_checker_output:;
   }
 
 cleanup:;
+  if (status != RUN_OK && status != RUN_CHECK_FAILED && srgp->not_ok_is_cf > 0) {
+    append_msg_to_log(check_out_path, "Check failed on non-OK result mode enabled");
+    status = RUN_CHECK_FAILED;
+  }
+
   if (init_cmd_started) {
     int new_status = invoke_init_cmd(srpp, "stop", test_src, corr_src,  info_src, working_dir, check_out_path,
                                      &tstinfo);
@@ -4171,10 +4182,12 @@ check_output_only(
         const struct super_run_in_global_packet *srgp,
         const struct super_run_in_problem_packet *srpp,
         struct run_reply_packet *reply_pkt,
+        struct AgentClient *agent,
         full_archive_t far,
         const unsigned char *exe_name,
         struct testinfo_vector *tests,
-        const unsigned char *check_cmd)
+        const unsigned char *check_cmd,
+        const unsigned char *mirror_dir)
 {
   int cur_test = 1;
   struct testinfo *cur_info = NULL;
@@ -4214,6 +4227,12 @@ check_output_only(
   if (srpp->corr_pat && srpp->corr_pat[0]) {
     snprintf(corr_base, sizeof(corr_base), srpp->corr_pat, cur_test);
     snprintf(corr_src, sizeof(corr_src), "%s/%s", srpp->corr_dir, corr_base);
+  }
+  if (test_src[0]) {
+    mirror_file(agent, test_src, sizeof(test_src), mirror_dir);
+  }
+  if (srpp->use_corr > 0 && corr_src[0]) {
+    mirror_file(agent, corr_src, sizeof(corr_src), mirror_dir);
   }
 
   snprintf(check_out_path, sizeof(check_out_path), "%s/checkout_%d.txt",
@@ -4601,7 +4620,10 @@ run_tests(
   }
 
   if (srpp->type_val) {
-    status = check_output_only(global, srgp, srpp, reply_pkt, far, exe_name, &tests, check_cmd);
+    status = check_output_only(global, srgp, srpp, reply_pkt,
+                               agent,
+                               far, exe_name, &tests, check_cmd,
+                               mirror_dir);
     has_user_score = reply_pkt->has_user_score;
     if (has_user_score) {
       user_status = reply_pkt->user_status;

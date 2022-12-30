@@ -1360,6 +1360,7 @@ serve_compile_request(
         int store_flags,
         int rejudge_flag,
         int vcs_mode,
+        int not_ok_is_cf,
         const struct userlist_user *user)
 {
   struct compile_run_extra rx;
@@ -1589,6 +1590,7 @@ serve_compile_request(
   if (vcs_mode > 0 && prob && prob->vcs_compile_cmd && prob->vcs_compile_cmd[0]) {
     cp.vcs_compile_cmd = prob->vcs_compile_cmd;
   }
+  cp.not_ok_is_cf = not_ok_is_cf;
 
   memset(&rx, 0, sizeof(rx));
   rx.accepting_mode = accepting_mode;
@@ -1598,6 +1600,7 @@ serve_compile_request(
     rx.is_dos = lang->is_dos;
   }
   rx.rejudge_flag = rejudge_flag;
+  rx.not_ok_is_cf = not_ok_is_cf;
 
   if (compile_request_packet_write(&cp, &pkt_len, &pkt_buf) < 0) {
     // FIXME: need reasonable recovery?
@@ -1831,6 +1834,7 @@ serve_run_request(
         int rejudge_flag,
         int zip_mode,
         int store_flags,
+        int not_ok_is_cf,
         const unsigned char *inp_text,
         size_t inp_size)
 {
@@ -2191,6 +2195,7 @@ serve_run_request(
   if (lang && lang->container_options) {
     srgp->lang_container_options = xstrdup(lang->container_options);
   }
+  srgp->not_ok_is_cf = not_ok_is_cf;
 
   struct super_run_in_problem_packet *srpp = srp->problem;
   srpp->type = xstrdup(problem_unparse_type(prob->type));
@@ -3152,6 +3157,7 @@ read_compile_packet_input(
                         0 /* rejudge_flag */,
                         0 /* zip_mode */,
                         0 /* store_flags */,
+                        0 /* not_ok_is_cf */,
                         inp_se.content,
                         inp_se.size);
   if (r < 0) {
@@ -3617,6 +3623,7 @@ prepare_run_request:
                         comp_extra->notify_flag, re.mime_type, re.eoln_type,
                         re.locale_id, compile_report_dir, comp_pkt, 0, &re.run_uuid,
                         comp_extra->rejudge_flag, comp_pkt->zip_mode, re.store_flags,
+                        comp_extra->not_ok_is_cf,
                         NULL, 0) < 0) {
     snprintf(errmsg, sizeof(errmsg), "failed to write run packet\n");
     goto report_check_failed;
@@ -4712,6 +4719,7 @@ serve_rejudge_run(
                                 re.store_flags,
                                 1 /* rejudge_flag */,
                                 re.is_vcs /* vcs_mode */,
+                                0 /* not_ok_is_cf */,
                                 user);
       if (r < 0) {
         serve_report_check_failed(config, cnts, state, run_id, serve_err_str(r));
@@ -4737,6 +4745,7 @@ serve_rejudge_run(
                       accepting_mode, 1, re.mime_type, re.eoln_type,
                       re.locale_id, 0, 0, 0, &re.run_uuid,
                       1 /* rejudge_flag */, 0 /* zip_mode */, re.store_flags,
+                      0 /* not_ok_is_cf */,
                       NULL, 0);
     xfree(run_text);
     return;
@@ -4765,6 +4774,7 @@ serve_rejudge_run(
                             re.store_flags,
                             1 /* rejudge_flag */,
                             re.is_vcs /* vcs_mode */,
+                            0 /* not_ok_is_cf */,
                             user);
   if (r < 0) {
     serve_report_check_failed(config, cnts, state, run_id, serve_err_str(r));

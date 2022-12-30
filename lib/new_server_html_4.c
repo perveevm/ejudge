@@ -1157,6 +1157,7 @@ cmd_submit_run(
                                      store_flags,
                                      0 /* rejudge_flag */,
                                      phr->is_job,
+                                     0 /* not_ok_is_cf */,
                                      user)) < 0) {
         serve_report_check_failed(ejudge_config, cnts, cs, run_id, serve_err_str(r));
       }
@@ -1189,6 +1190,7 @@ cmd_submit_run(
                                        store_flags,
                                        0 /* rejudge_flag */,
                                        phr->is_job,
+                                       0 /* not_ok_is_cf */,
                                        user)) < 0) {
           serve_report_check_failed(ejudge_config, cnts, cs, run_id, serve_err_str(r));
         }
@@ -1201,7 +1203,9 @@ cmd_submit_run(
                               NULL, /* judge_uuid */
                               -1, 0,
                               mime_type, 0, phr->locale_id, 0, 0, 0, &run_uuid,
-                              0 /* rejudge_flag */, 0 /* zip_mode */, store_flags,
+                              0 /* rejudge_flag */, 0 /* zip_mode */,
+                              store_flags,
+                              0 /* not_ok_is_cf */,
                               NULL, 0) < 0)
           FAIL(NEW_SRV_ERR_DISK_WRITE_ERROR);
       }
@@ -1251,6 +1255,7 @@ cmd_submit_run(
                                        store_flags,
                                        0 /* rejudge_flag */,
                                        phr->is_job,
+                                       0 /* not_ok_is_cf */,
                                        user)) < 0) {
           serve_report_check_failed(ejudge_config, cnts, cs, run_id, serve_err_str(r));
         }
@@ -1265,7 +1270,9 @@ cmd_submit_run(
                               NULL, /* judge_uuid */
                               -1, 0,
                               mime_type, 0, phr->locale_id, 0, 0, 0, &run_uuid,
-                              0 /* rejudge_flag */, 0 /* zip_mode */, store_flags,
+                              0 /* rejudge_flag */, 0 /* zip_mode */,
+                              store_flags,
+                              0 /* not_ok_is_cf */,
                               NULL, 0) < 0)
           FAIL(NEW_SRV_ERR_DISK_WRITE_ERROR);
       }

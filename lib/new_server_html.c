@@ -3106,6 +3106,8 @@ priv_submit_run(
   int sender_user_id = -1;
   int sender_ssl_flag;
   ej_ip_t sender_ip;
+  int not_ok_is_cf = 0;
+  int rejudge_flag = 0;
 
   if (opcaps_check(phr->caps, OPCAP_SUBMIT_RUN) < 0) {
     FAIL(NEW_SRV_ERR_PERMISSION_DENIED);
@@ -3139,6 +3141,9 @@ priv_submit_run(
     sender_ip = phr->ip;
     sender_ssl_flag = phr->ssl_flag;
   }
+
+  hr_cgi_param_int_opt(phr, "not_ok_is_cf", &not_ok_is_cf, 0);
+  hr_cgi_param_int_opt(phr, "rejudge_flag", &rejudge_flag, 0);
 
   if (hr_cgi_param(phr, "problem_uuid", &s) > 0) {
     for (prob_id = 1; prob_id <= cs->max_prob; ++prob_id) {
@@ -3545,8 +3550,9 @@ priv_submit_run(
                                      prob->style_checker_env,
                                      -1, 0, 0, prob, lang, 0, &run_uuid,
                                      NULL /* judge_uuid */,
-                                     store_flags, 0 /* rejudge_flag */,
+                                     store_flags, rejudge_flag,
                                      phr->is_job,
+                                     not_ok_is_cf,
                                      user)) < 0) {
         serve_report_check_failed(ejudge_config, cnts, cs, run_id, serve_err_str(r));
       }
@@ -3578,8 +3584,9 @@ priv_submit_run(
                                   &run_uuid,
                                   NULL /* judge_uuid */,
                                   store_flags,
-                                  0 /* rejudge_flag*/,
+                                  rejudge_flag,
                                   phr->is_job,
+                                  not_ok_is_cf,
                                   user);
         if (r < 0) {
           serve_report_check_failed(ejudge_config, cnts, cs, run_id, serve_err_str(r));
@@ -3593,7 +3600,9 @@ priv_submit_run(
                               NULL, /* judge_uuid */
                               -1, 0,
                               mime_type, 0, phr->locale_id, 0, 0, 0, &run_uuid,
-                              0 /* rejudge_flag */, 0 /* zip_mode */, store_flags,
+                              rejudge_flag, 0 /* zip_mode */,
+                              store_flags,
+                              not_ok_is_cf,
                               NULL, 0) < 0) {
           FAIL(NEW_SRV_ERR_DISK_WRITE_ERROR);
         }
@@ -3628,8 +3637,9 @@ priv_submit_run(
                                   &run_uuid,
                                   NULL /* judge_uuid */,
                                   store_flags,
-                                  0 /* rejudge_flag */,
+                                  rejudge_flag,
                                   phr->is_job,
+                                  not_ok_is_cf,
                                   user);
         if (r < 0) {
           serve_report_check_failed(ejudge_config, cnts, cs, run_id, serve_err_str(r));
@@ -3643,7 +3653,9 @@ priv_submit_run(
                               NULL, /* judge_uuid */
                               -1, 0,
                               mime_type, 0, phr->locale_id, 0, 0, 0, &run_uuid,
-                              0 /* rejudge_flag */, 0 /* zip_mode */, store_flags,
+                              rejudge_flag, 0 /* zip_mode */,
+                              store_flags,
+                              not_ok_is_cf,
                               NULL, 0) < 0) {
           FAIL(NEW_SRV_ERR_DISK_WRITE_ERROR);
         }
@@ -10847,6 +10859,7 @@ ns_submit_run(
                               store_flags,
                               0 /* rejudge_flag */,
                               phr->is_job,
+                              0 /* not_ok_is_cf */,
                               user);
     if (r < 0) {
       serve_report_check_failed(ejudge_config, cnts, cs, run_id, serve_err_str(r));
@@ -10885,6 +10898,7 @@ ns_submit_run(
                                 store_flags,
                                 0 /* rejudge_flag */,
                                 phr->is_job,
+                                0 /* not_ok_is_cf */,
                                 user);
       if (r < 0) {
         serve_report_check_failed(ejudge_config, cnts, cs, run_id, serve_err_str(r));
@@ -10904,6 +10918,7 @@ ns_submit_run(
                           -1, 1,
                           mime_type, 0, phr->locale_id, 0, 0, 0, &run_uuid,
                           0 /* rejudge_flag */, 0 /* zip_mode */, store_flags,
+                          0 /* not_ok_is_cf */,
                           NULL, 0);
     if (r < 0) {
       serve_report_check_failed(ejudge_config, cnts, cs, run_id, serve_err_str(r));
@@ -10951,6 +10966,7 @@ ns_submit_run(
                               store_flags,
                               0 /* rejudge_flag */,
                               phr->is_job,
+                              0 /* not_ok_is_cf */,
                               user);
     if (r < 0) {
       serve_report_check_failed(ejudge_config, cnts, cs, run_id, serve_err_str(r));
@@ -10968,6 +10984,7 @@ ns_submit_run(
                         -1, 1,
                         mime_type, 0, phr->locale_id, 0, 0, 0, &run_uuid,
                         0 /* rejudge_flag */, 0 /* zip_mode */, store_flags,
+                        0 /* not_ok_is_cf */,
                         NULL, 0);
   if (r < 0) {
     serve_report_check_failed(ejudge_config, cnts, cs, run_id, serve_err_str(r));
@@ -11501,6 +11518,7 @@ unpriv_submit_run(
                                      store_flags,
                                      0 /* rejudge_flag */,
                                      phr->is_job,
+                                     0 /* not_ok_is_cf */,
                                      user)) < 0) {
         serve_report_check_failed(ejudge_config, cnts, cs, run_id, serve_err_str(r));
       }
@@ -11533,6 +11551,7 @@ unpriv_submit_run(
                                   store_flags,
                                   0 /* rejudge_flag */,
                                   phr->is_job,
+                                  0 /* not_ok_is_cf */,
                                   user);
         if (r < 0) {
           serve_report_check_failed(ejudge_config, cnts, cs, run_id, serve_err_str(r));
@@ -11546,7 +11565,9 @@ unpriv_submit_run(
                               NULL, /* judge_uuid */
                               -1, 1,
                               mime_type, 0, phr->locale_id, 0, 0, 0, &run_uuid,
-                              0 /* rejudge_flag */, 0 /* zip_mode */, store_flags,
+                              0 /* rejudge_flag */, 0 /* zip_mode */,
+                              store_flags,
+                              0 /* not_ok_is_cf */,
                               NULL, 0) < 0) {
           FAIL2(NEW_SRV_ERR_DISK_WRITE_ERROR);
         }
@@ -11603,6 +11624,7 @@ unpriv_submit_run(
                                   store_flags,
                                   0 /* rejudge_flag */,
                                   phr->is_job,
+                                  0 /* not_ok_is_cf */,
                                   user);
         if (r < 0) {
           serve_report_check_failed(ejudge_config, cnts, cs, run_id, serve_err_str(r));
@@ -11619,7 +11641,9 @@ unpriv_submit_run(
                               NULL, /* judge_uuid */
                               -1, 1,
                               mime_type, 0, phr->locale_id, 0, 0, 0, &run_uuid,
-                              0 /* rejudge_flag */, 0 /* zip_mode */, store_flags,
+                              0 /* rejudge_flag */, 0 /* zip_mode */,
+                              store_flags,
+                              0 /* not_ok_is_cf */,
                               NULL, 0) < 0) {
           FAIL2(NEW_SRV_ERR_DISK_WRITE_ERROR);
         }
@@ -12161,6 +12185,7 @@ ns_submit_run_input(
                             0 /* store_flags */,
                             0 /* rejudge_flag */,
                             0 /* vcs_mode */,
+                            0 /* not_ok_is_cf */,
                             user);
   if (r < 0) {
     err_num = NEW_SRV_ERR_RUNLOG_UPDATE_FAILED;

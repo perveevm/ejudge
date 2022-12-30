@@ -364,6 +364,7 @@ struct compile_run_extra
   int notify_flag;
   int is_dos;
   int rejudge_flag;
+  unsigned char not_ok_is_cf;
 };
 
 serve_state_t serve_state_init(int contest_id);
@@ -513,6 +514,7 @@ serve_compile_request(
         int store_flags,
         int rejudge_flag,
         int vcs_mode,
+        int not_ok_is_cf,
         const struct userlist_user *user)
 #if defined __GNUC__
   __attribute__((warn_unused_result))
@@ -550,6 +552,7 @@ serve_run_request(
         int rejudge_flag,
         int zip_mode,
         int store_flags,
+        int not_ok_is_cf,
         const unsigned char *inp_text,
         size_t inp_size);
 
