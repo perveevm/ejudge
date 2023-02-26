@@ -3,7 +3,7 @@
 #ifndef __STARTSTOP_H__
 #define __STARTSTOP_H__
 
-/* Copyright (C) 2006-2015 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2006-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -21,6 +21,7 @@ enum
 {
   START_RESTART = 1,
   START_STOP,
+  START_ROTATE,
 };
 
 void start_set_self_args(int argc, char *argv[]);
@@ -41,5 +42,13 @@ int start_daemon(const unsigned char *log_path);
 int start_open_log(const unsigned char *log_path);
 
 void start_shutdown(const unsigned char *cmd) __attribute__((noreturn));
+
+int
+start_stop_and_wait(
+        const unsigned char *program_name,
+        const unsigned char *process_name,
+        const unsigned char *signame,
+        int signum,
+        long long timeout_us);
 
 #endif /* __STARTSTOP_H__ */

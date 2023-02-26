@@ -1,6 +1,6 @@
 /* -*- c -*- */
 
-/* Copyright (C) 2012-2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2012-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -558,6 +558,7 @@ parse_checker_score(
         int default_score, // if >= 0, allow failure
         int testlib_mode,
         int checker_token_mode,
+        int verdict,
         int *p_score,
         int *p_user_score,
         int *p_user_verdict,
@@ -567,7 +568,11 @@ parse_checker_score(
   size_t score_buf_size = 0;
   int x, n, r;
 
-  r = generic_read_file(&score_buf, 0, &score_buf_size, 0, 0, path, "");
+  if (testlib_mode > 0) {
+    r = generic_read_file(&score_buf, 0, &score_buf_size, 0, 0, log_path, "");
+  } else {
+    r = generic_read_file(&score_buf, 0, &score_buf_size, 0, 0, path, "");
+  }
   if (r < 0) {
     append_msg_to_log(log_path, "Cannot read the %s score output", what);
     goto fail;
@@ -584,13 +589,44 @@ parse_checker_score(
       *p_score = 0;
       *p_user_score = 0;
       *p_user_verdict = RUN_WRONG_ANSWER_ERR;
-      return 0;
+      goto done;
     }
     append_msg_to_log(log_path, "The %s score output is empty", what);
     goto fail;
   }
 
-  if (user_score_mode) {
+  if (testlib_mode > 0) {
+    fprintf(stderr, ">>%s<<\n", score_buf);
+    if (strncasecmp(score_buf, "points ", 7) != 0) {
+      //append_msg_to_log(log_path, "The %s output does not start with 'points'",
+      //                  what);
+      if (verdict == RUN_OK) {
+        *p_score = max_score;
+      } else {
+        *p_score = 0;
+      }
+      if (user_score_mode > 0) {
+        *p_user_score = *p_score;
+        *p_user_verdict = verdict;
+      }
+      goto done;
+    }
+    char *ptr = score_buf + 7;
+    char *eptr = NULL;
+    errno = 0;
+    long lx = strtol(ptr, &eptr, 10);
+    if (errno || eptr == ptr || (*eptr && !isspace((unsigned char) *eptr)) || (int) lx != lx || lx < 0) {
+      append_msg_to_log(log_path, "The %s score is invalid", what);
+      goto fail;
+    }
+    if (lx > max_score) lx = max_score;
+    *p_score = lx;
+    if (user_score_mode > 0) {
+      *p_user_score = lx;
+      *p_user_verdict = RUN_WRONG_ANSWER_ERR;
+      if (lx == max_score) *p_user_verdict = RUN_OK;
+    }
+  } else if (user_score_mode) {
     // valid score file variants:
     //   score user_score user_verdict
     //   score user_score
@@ -650,41 +686,40 @@ parse_checker_score(
         }
       }
     }
-  } else {
-    if (checker_token_mode) {
-      char *eptr = NULL;
-      errno = 0;
-      long xx = strtol(score_buf, &eptr, 10);
-      if (errno || (*eptr && !isspace((unsigned char) *eptr))) {
-        append_msg_to_log(log_path, "The %s score output (%s) is invalid", what, score_buf);
-        goto fail;
-      }
-      if (xx < 0 || xx > max_score) {
-        append_msg_to_log(log_path, "The %s score (%ld) is invalid", what, xx);
-        goto fail;
-      }
-      if (p_score) *p_score = xx;
-      if (*eptr) {
-        char *ptr = eptr;
-        while (isspace((unsigned char) *ptr)) ++ptr;
-        if (*ptr && p_checker_token) {
-          if (*p_checker_token) free(*p_checker_token);
-          *p_checker_token = xstrdup(ptr);
-        }
-      }
-    } else {
-      if (sscanf(score_buf, "%d%n", &x, &n) != 1 || score_buf[n]) {
-        append_msg_to_log(log_path, "The %s score output (%s) is invalid", what, score_buf);
-        goto fail;
-      }
-      if (x < 0 || x > max_score) {
-        append_msg_to_log(log_path, "The %s score (%d) is invalid", what, x);
-        goto fail;
-      }
-      if (p_score) *p_score = x;
+  } else if (checker_token_mode) {
+    char *eptr = NULL;
+    errno = 0;
+    long xx = strtol(score_buf, &eptr, 10);
+    if (errno || (*eptr && !isspace((unsigned char) *eptr))) {
+      append_msg_to_log(log_path, "The %s score output (%s) is invalid", what, score_buf);
+      goto fail;
     }
+    if (xx < 0 || xx > max_score) {
+      append_msg_to_log(log_path, "The %s score (%ld) is invalid", what, xx);
+      goto fail;
+    }
+    if (p_score) *p_score = xx;
+    if (*eptr) {
+      char *ptr = eptr;
+      while (isspace((unsigned char) *ptr)) ++ptr;
+      if (*ptr && p_checker_token) {
+        if (*p_checker_token) free(*p_checker_token);
+        *p_checker_token = xstrdup(ptr);
+      }
+    }
+  } else {
+    if (sscanf(score_buf, "%d%n", &x, &n) != 1 || score_buf[n]) {
+      append_msg_to_log(log_path, "The %s score output (%s) is invalid", what, score_buf);
+      goto fail;
+    }
+    if (x < 0 || x > max_score) {
+      append_msg_to_log(log_path, "The %s score (%d) is invalid", what, x);
+      goto fail;
+    }
+    if (p_score) *p_score = x;
   }
 
+done:
   xfree(score_buf);
   return 0;
 
@@ -2539,6 +2574,9 @@ invoke_checker(
   if (exitcode == RUN_PRESENTATION_ERR && srpp->disable_pe > 0) {
     exitcode = RUN_WRONG_ANSWER_ERR;
   }
+  if (exitcode == 7 && srgp->testlib_mode > 0) {
+    exitcode = RUN_WRONG_ANSWER_ERR;
+  }
   if (exitcode != RUN_OK && srgp->not_ok_is_cf > 0) {
     append_msg_to_log(check_out_path, "checker exited with code %d", exitcode);
     append_msg_to_log(check_out_path, "Check failed on non-OK result mode enabled");
@@ -2575,12 +2613,16 @@ invoke_checker(
                             test_max_score, default_score,
                             srgp->testlib_mode,
                             srpp->enable_checker_token,
+                            status,
                             &cur_info->score,
                             &user_score,
                             &user_status,
                             &cur_info->checker_token) < 0) {
       status = RUN_CHECK_FAILED;
       goto cleanup;
+    }
+    if (cur_info->score == test_max_score) {
+      status = RUN_OK;
     }
     if (user_score_mode) {
       if (user_score < 0) user_score = cur_info->score;
@@ -3604,7 +3646,6 @@ run_one_test(
                                 &tstinfo, pfd1[0], pfd2[1], cfd[1], task_GetPid(tsk), srgp, srpp, cur_test);
     if (!tsk_int) {
       append_msg_to_log(check_out_path, "interactor failed to start");
-      goto check_failed;
     }
   }
 #endif
@@ -3634,6 +3675,13 @@ run_one_test(
   if (tst && tst->no_redirect > 0 && isatty(0)) {
     if (tcsetattr(0, TCSADRAIN, &term_attrs) < 0)
       err("tcsetattr failed: %s", os_ErrorMsg());
+  }
+#endif
+
+  // postpone "Check failed" failure on interactor start up
+#ifndef __WIN32__
+  if (interactor_cmd && !tsk_int) {
+    goto check_failed;
   }
 #endif
 

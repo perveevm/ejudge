@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2006-2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2006-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -74,6 +74,7 @@
 #include "ejudge/userprob_plugin.h"
 #include "ejudge/job_packet.h"
 #include "ejudge/sha256utils.h"
+#include "ejudge/metrics_contest.h"
 
 #include "ejudge/xalloc.h"
 #include "ejudge/logger.h"
@@ -3260,6 +3261,20 @@ priv_submit_run(
   hr_cgi_param_int_opt(phr, "is_visible", &is_visible, 0);
   if (is_visible > 0) is_hidden = 0;
 
+  if (prob->type == PROB_TYPE_STANDARD && prob->custom_compile_cmd && prob->custom_compile_cmd[0]) {
+    // only enable_custom language is allowed
+    if (!lang || lang->enable_custom <= 0) {
+      fprintf(phr->log_f, "custom language is expected\n");
+      FAIL(NEW_SRV_ERR_INV_LANG_ID);
+    }
+  } else if (prob->type == PROB_TYPE_STANDARD) {
+    // enable_custom language is disabled
+    if (lang && lang->enable_custom > 0) {
+      fprintf(phr->log_f, "custom language is not allowed\n");
+      FAIL(NEW_SRV_ERR_INV_LANG_ID);
+    }
+  }
+
   /* get the submission text */
   switch (prob->type) {
     /*
@@ -3506,6 +3521,9 @@ priv_submit_run(
   if (run_id < 0) {
     FAIL(NEW_SRV_ERR_RUNLOG_UPDATE_FAILED);
   }
+  if (metrics.data) {
+    ++metrics.data->runs_submitted;
+  }
   serve_move_files_to_insert_run(cs, run_id);
 
   if (store_flags == STORE_FLAGS_UUID || store_flags == STORE_FLAGS_UUID_BSON) {
@@ -3542,12 +3560,10 @@ priv_submit_run(
                       "priv-submit", "ok", RUN_COMPILING, NULL);
       if ((r = serve_compile_request(phr->config, cs, run_text, run_size, cnts->id,
                                      run_id, 0 /* submit_id */, sender_user_id,
-                                     lang->compile_id, variant,
+                                     variant,
                                      phr->locale_id, 0,
                                      lang->src_sfx,
-                                     lang->compiler_env,
-                                     0, prob->style_checker_cmd,
-                                     prob->style_checker_env,
+                                     0,
                                      -1, 0, 0, prob, lang, 0, &run_uuid,
                                      NULL /* judge_uuid */,
                                      store_flags, rejudge_flag,
@@ -3569,13 +3585,11 @@ priv_submit_run(
                       "priv-submit", "ok", RUN_COMPILING, NULL);
       if (prob->style_checker_cmd && prob->style_checker_cmd[0]) {
         r = serve_compile_request(phr->config, cs, run_text, run_size, cnts->id,
-                                  run_id, 0 /* submit_id */, sender_user_id, 0 /* lang_id */, variant,
+                                  run_id, 0 /* submit_id */, sender_user_id,
+                                  variant,
                                   0 /* locale_id */, 1 /* output_only*/,
                                   mime_type_get_suffix(mime_type),
-                                  NULL /* compiler_env */,
                                   1 /* style_check_only */,
-                                  prob->style_checker_cmd,
-                                  prob->style_checker_env,
                                   0 /* accepting_mode */,
                                   0 /* priority_adjustment */,
                                   0 /* notify flag */,
@@ -3622,13 +3636,11 @@ priv_submit_run(
       /* FIXME: check for XML problem */
       if (prob->style_checker_cmd && prob->style_checker_cmd[0]) {
         r = serve_compile_request(phr->config, cs, run_text, run_size, cnts->id,
-                                  run_id, 0 /* submit_id */, sender_user_id, 0 /* lang_id */, variant,
+                                  run_id, 0 /* submit_id */, sender_user_id,
+                                  variant,
                                   0 /* locale_id */, 1 /* output_only*/,
                                   mime_type_get_suffix(mime_type),
-                                  NULL /* compiler_env */,
                                   1 /* style_check_only */,
-                                  prob->style_checker_cmd,
-                                  prob->style_checker_env,
                                   0 /* accepting_mode */,
                                   0 /* priority_adjustment */,
                                   0 /* notify flag */,
@@ -5450,6 +5462,9 @@ priv_new_run(FILE *fout,
                           0 /* is_vcs */);
   if (run_id < 0) FAIL(NEW_SRV_ERR_RUNLOG_UPDATE_FAILED);
   serve_move_files_to_insert_run(cs, run_id);
+  if (metrics.data) {
+    ++metrics.data->runs_submitted;
+  }
 
   if (store_flags == STORE_FLAGS_UUID || store_flags == STORE_FLAGS_UUID_BSON) {
     arch_flags = uuid_archive_prepare_write_path(cs, run_path, sizeof(run_path),
@@ -6440,6 +6455,8 @@ priv_upsolving_operation(
     break;
   case NEW_SRV_ACTION_UPSOLVING_CONFIG_3: // stop upsolving
     if (!cs->upsolving_mode) break;
+    // do not allow disabling upsolving for virtual contests
+    if (cs->global->is_virtual > 0) break;
     run_stop_contest(cs->runlog_state, cs->current_time);
     serve_invoke_stop_script(cs);
     cs->upsolving_mode = 0;
@@ -10294,6 +10311,26 @@ unpriv_generate_telegram_token(
   ns_refresh_page(fout, phr, NEW_SRV_ACTION_VIEW_SETTINGS, param_buf);
 }
 
+void
+ns_get_accepted_set(
+        serve_state_t cs,
+        int user_id,
+        unsigned char *acc_set)
+{
+  run_get_accepted_set(cs->runlog_state, user_id, cs->accepting_mode, cs->max_prob, acc_set);
+  if (!cs->accepting_mode) return;
+  for (int prob_id = 1; prob_id <= cs->max_prob; ++prob_id) {
+    if (acc_set[prob_id] == 2) {
+      const struct section_problem_data *p = cs->probs[prob_id];
+      if (p && p->type != PROB_TYPE_STANDARD) {
+        acc_set[prob_id] = 1;
+      } else {
+        acc_set[prob_id] = 0;
+      }
+    }
+  }
+}
+
 int
 ns_submit_run(
         FILE *log_f,
@@ -10370,6 +10407,20 @@ ns_submit_run(
     if (cs->global->enable_eoln_select > 0) {
       hr_cgi_param_int_opt(phr, "eoln_type", &eoln_type, 0);
       if (eoln_type < 0 || eoln_type > EOLN_CRLF) eoln_type = 0;
+    }
+  }
+
+  if (prob->type == PROB_TYPE_STANDARD && prob->custom_compile_cmd && prob->custom_compile_cmd[0]) {
+    // only enable_custom language is allowed
+    if (!lang || lang->enable_custom <= 0) {
+      fprintf(phr->log_f, "custom language is expected\n");
+      FAIL(NEW_SRV_ERR_INV_LANG_ID);
+    }
+  } else if (prob->type == PROB_TYPE_STANDARD) {
+    // enable_custom language is disabled
+    if (lang && lang->enable_custom > 0) {
+      fprintf(phr->log_f, "custom language is not allowed\n");
+      FAIL(NEW_SRV_ERR_INV_LANG_ID);
     }
   }
 
@@ -10704,8 +10755,7 @@ ns_submit_run(
       && global->score_system != SCORE_OLYMPIAD && !cs->accepting_mode) {
     if (!acc_probs) {
       XALLOCAZ(acc_probs, cs->max_prob + 1);
-      run_get_accepted_set(cs->runlog_state, user_id,
-                           cs->accepting_mode, cs->max_prob, acc_probs);
+      ns_get_accepted_set(cs, user_id, acc_probs);
     }
     if (acc_probs[prob_id]) {
       FAIL(NEW_SRV_ERR_PROB_ALREADY_SOLVED);
@@ -10715,8 +10765,7 @@ ns_submit_run(
   if (!admin_mode && prob->require) {
     if (!acc_probs) {
       XALLOCAZ(acc_probs, cs->max_prob + 1);
-      run_get_accepted_set(cs->runlog_state, user_id,
-                           cs->accepting_mode, cs->max_prob, acc_probs);
+      ns_get_accepted_set(cs, user_id, acc_probs);
     }
     if (prob->require_any > 0) {
       int i;
@@ -10788,6 +10837,9 @@ ns_submit_run(
     FAIL(NEW_SRV_ERR_RUNLOG_UPDATE_FAILED);
   }
   serve_move_files_to_insert_run(cs, run_id);
+  if (metrics.data) {
+    ++metrics.data->runs_submitted;
+  }
 
   unsigned char run_path[PATH_MAX];
   run_path[0] = 0;
@@ -10845,13 +10897,10 @@ ns_submit_run(
                     "submit", "ok", RUN_COMPILING, NULL);
     r = serve_compile_request(phr->config, cs, run_text, run_size, cnts->id,
                               run_id, 0 /* submit_id */, user_id,
-                              lang->compile_id, variant,
+                              variant,
                               phr->locale_id, 0 /* output_only */,
                               lang->src_sfx,
-                              lang->compiler_env,
                               0 /* style_check_only */,
-                              prob->style_checker_cmd,
-                              prob->style_checker_env,
                               -1 /* accepting_mode */, 0 /* priority_adjustment */,
                               1 /* notify_flag */, prob, lang,
                               0 /* no_db_flag */, &run_uuid,
@@ -10882,13 +10931,11 @@ ns_submit_run(
       serve_audit_log(cs, run_id, NULL, user_id, &phr->ip, phr->ssl_flag,
                       "submit", "ok", RUN_COMPILING, NULL);
       r = serve_compile_request(phr->config, cs, run_text, run_size, cnts->id,
-                                run_id, 0 /* submit_id */, user_id, 0 /* lang_id */, variant,
+                                run_id, 0 /* submit_id */, user_id,
+                                variant,
                                 0 /* locale_id */, 1 /* output_only */,
                                 mime_type_get_suffix(mime_type),
-                                NULL /* compiler_env */,
                                 1 /* style_check_only */,
-                                prob->style_checker_cmd,
-                                prob->style_checker_env,
                                 0 /* accepting_mode */,
                                 0 /* priority_adjustment */,
                                 0 /* notify flag */,
@@ -10950,13 +10997,11 @@ ns_submit_run(
 
   if (prob->style_checker_cmd && prob->style_checker_cmd[0]) {
     r = serve_compile_request(phr->config, cs, run_text, run_size, cnts->id,
-                              run_id, 0 /* submit_id */, user_id, 0 /* lang_id */, variant,
+                              run_id, 0 /* submit_id */, user_id,
+                              variant,
                               0 /* locale_id */, 1 /* output_only */,
                               mime_type_get_suffix(mime_type),
-                              NULL /* compiler_env */,
                               1 /* style_check_only */,
-                              prob->style_checker_cmd,
-                              prob->style_checker_env,
                               0 /* accepting_mode */,
                               0 /* priority_adjustment */,
                               0 /* notify flag */,
@@ -11103,6 +11148,20 @@ unpriv_submit_run(
     if (global->enable_eoln_select > 0) {
       hr_cgi_param_int_opt(phr, "eoln_type", &eoln_type, 0);
       if (eoln_type < 0 || eoln_type > EOLN_CRLF) eoln_type = 0;
+    }
+  }
+
+  if (prob->type == PROB_TYPE_STANDARD && prob->custom_compile_cmd && prob->custom_compile_cmd[0]) {
+    // only enable_custom language is allowed
+    if (!lang || lang->enable_custom <= 0) {
+      fprintf(phr->log_f, "custom language is expected\n");
+      FAIL(NEW_SRV_ERR_INV_LANG_ID);
+    }
+  } else if (prob->type == PROB_TYPE_STANDARD) {
+    // enable_custom language is disabled
+    if (lang && lang->enable_custom > 0) {
+      fprintf(phr->log_f, "custom language is not allowed\n");
+      FAIL(NEW_SRV_ERR_INV_LANG_ID);
     }
   }
 
@@ -11288,7 +11347,7 @@ unpriv_submit_run(
   if (cs->clients_suspended) {
     FAIL2(NEW_SRV_ERR_CLIENTS_SUSPENDED);
   }
-  if (!start_time) {
+  if (!start_time && !cs->upsolving_mode) {
     FAIL2(NEW_SRV_ERR_CONTEST_NOT_STARTED);
   }
   if (stop_time && !cs->upsolving_mode) {
@@ -11392,8 +11451,7 @@ unpriv_submit_run(
   if (prob->disable_submit_after_ok
       && global->score_system != SCORE_OLYMPIAD && !cs->accepting_mode) {
     XALLOCAZ(acc_probs, cs->max_prob + 1);
-    run_get_accepted_set(cs->runlog_state, phr->user_id,
-                         cs->accepting_mode, cs->max_prob, acc_probs);
+    ns_get_accepted_set(cs, phr->user_id, acc_probs);
     if (acc_probs[prob_id]) {
       FAIL2(NEW_SRV_ERR_PROB_ALREADY_SOLVED);
     }
@@ -11402,8 +11460,7 @@ unpriv_submit_run(
   if (prob->require) {
     if (!acc_probs) {
       XALLOCAZ(acc_probs, cs->max_prob + 1);
-      run_get_accepted_set(cs->runlog_state, phr->user_id,
-                           cs->accepting_mode, cs->max_prob, acc_probs);
+      ns_get_accepted_set(cs, phr->user_id, acc_probs);
     }
     if (prob->require_any > 0) {
       for (i = 0; prob->require[i]; ++i) {
@@ -11458,12 +11515,23 @@ unpriv_submit_run(
     store_flags = STORE_FLAGS_UUID;
     if (testing_report_bson_available()) store_flags = STORE_FLAGS_UUID_BSON;
   }
+  int is_hidden = 0;
+  if (cs->upsolving_mode) {
+    if (start_time <= 0 || cs->current_time < start_time) {
+      is_hidden = 1;
+    } else if (stop_time >= 0 && cs->current_time >= stop_time) {
+      is_hidden = 1;
+    }
+  }
   run_id = run_add_record(cs->runlog_state,
                           &precise_time,
                           run_size, shaval, &run_uuid,
                           &phr->ip, phr->ssl_flag,
                           phr->locale_id, phr->user_id,
-                          prob_id, lang_id, eoln_type, 0, 0, mime_type,
+                          prob_id, lang_id, eoln_type,
+                          0 /* variant */,
+                          is_hidden,
+                          mime_type,
                           prob->uuid,
                           store_flags,
                           phr->is_job /* is_vcs */);
@@ -11471,6 +11539,9 @@ unpriv_submit_run(
     FAIL2(NEW_SRV_ERR_RUNLOG_UPDATE_FAILED);
   }
   serve_move_files_to_insert_run(cs, run_id);
+  if (metrics.data) {
+    ++metrics.data->runs_submitted;
+  }
 
   if (store_flags == STORE_FLAGS_UUID || store_flags == STORE_FLAGS_UUID_BSON) {
     arch_flags = uuid_archive_prepare_write_path(cs, run_path, sizeof(run_path),
@@ -11507,12 +11578,10 @@ unpriv_submit_run(
                       "submit", "ok", RUN_COMPILING, NULL);
       if ((r = serve_compile_request(phr->config, cs, run_text, run_size, cnts->id,
                                      run_id, 0 /* submit_id */, phr->user_id,
-                                     lang->compile_id, variant,
+                                     variant,
                                      phr->locale_id, 0,
                                      lang->src_sfx,
-                                     lang->compiler_env,
-                                     0, prob->style_checker_cmd,
-                                     prob->style_checker_env,
+                                     0,
                                      -1, 0, 1, prob, lang, 0, &run_uuid,
                                      NULL /* judge_uuid */,
                                      store_flags,
@@ -11535,13 +11604,11 @@ unpriv_submit_run(
                       "submit", "ok", RUN_COMPILING, NULL);
       if (prob->style_checker_cmd && prob->style_checker_cmd[0]) {
         r = serve_compile_request(phr->config, cs, run_text, run_size, cnts->id,
-                                  run_id, 0 /* submit_id */, phr->user_id, 0 /* lang_id */, variant,
+                                  run_id, 0 /* submit_id */, phr->user_id,
+                                  variant,
                                   0 /* locale_id */, 1 /* output_only*/,
                                   mime_type_get_suffix(mime_type),
-                                  NULL /* compiler_env */,
                                   1 /* style_check_only */,
-                                  prob->style_checker_cmd,
-                                  prob->style_checker_env,
                                   0 /* accepting_mode */,
                                   0 /* priority_adjustment */,
                                   0 /* notify flag */,
@@ -11608,13 +11675,11 @@ unpriv_submit_run(
                         "submit", "ok", RUN_COMPILING, NULL);
 
         r = serve_compile_request(phr->config, cs, run_text, run_size, cnts->id,
-                                  run_id, 0 /* submit_id */, phr->user_id, 0 /* lang_id */, variant,
+                                  run_id, 0 /* submit_id */, phr->user_id,
+                                  variant,
                                   0 /* locale_id */, 1 /* output_only*/,
                                   mime_type_get_suffix(mime_type),
-                                  NULL /* compiler_env */,
                                   1 /* style_check_only */,
-                                  prob->style_checker_cmd,
-                                  prob->style_checker_env,
                                   0 /* accepting_mode */,
                                   0 /* priority_adjustment */,
                                   0 /* notify flag */,
@@ -11976,7 +12041,7 @@ ns_submit_run_input(
       err_num = NEW_SRV_ERR_CLIENTS_SUSPENDED;
       goto done;
     }
-    if (start_time <= 0) {
+    if (start_time <= 0 && !cs->upsolving_mode) {
       err_num = NEW_SRV_ERR_CONTEST_NOT_STARTED;
       goto done;
     }
@@ -12051,8 +12116,7 @@ ns_submit_run_input(
 
   if (prob->require) {
     XALLOCAZ(acc_probs, cs->max_prob + 1);
-    run_get_accepted_set(cs->runlog_state, sender_user_id,
-                         cs->accepting_mode, cs->max_prob, acc_probs);
+    ns_get_accepted_set(cs, sender_user_id, acc_probs);
     if (prob->require_any > 0) {
       int i;
       for (i = 0; prob->require[i]; ++i) {
@@ -12165,15 +12229,11 @@ ns_submit_run_input(
                             0  /* run_id */,
                             se.serial_id,
                             sender_user_id,
-                            lang->compile_id,
                             variant,
                             phr->locale_id,
                             0 /* output_only */,
                             lang->src_sfx,
-                            lang->compiler_env,
                             0 /* style_check_only */,
-                            prob->style_checker_cmd,
-                            prob->style_checker_env,
                             -1 /* accepting_mode */,
                             0 /* priority_adjustment */,
                             1 /* notify_flag */,
@@ -12709,6 +12769,9 @@ unpriv_command(
   int run_id, i;
   unsigned char bb[1024];
   int retval = 0;
+  struct run_header hdr;
+
+  run_get_header(cs->runlog_state, &hdr);
 
   l10n_setlocale(phr->locale_id);
 
@@ -12718,6 +12781,9 @@ unpriv_command(
   case NEW_SRV_ACTION_VIRTUAL_RESTART:
     if (global->is_virtual <= 0) {
       FAIL2(NEW_SRV_ERR_NOT_VIRTUAL);
+    }
+    if (hdr.start_time <= 0) {
+      FAIL2(NEW_SRV_ERR_VIRTUAL_NOT_STARTED);
     }
     if (run_get_start_time(cs->runlog_state) <= 0) {
       FAIL2(NEW_SRV_ERR_VIRTUAL_NOT_STARTED);
@@ -12738,6 +12804,9 @@ unpriv_command(
     if (cnts->close_time > 0 && cs->current_time >= cnts->close_time) {
       FAIL2(NEW_SRV_ERR_PERMISSION_DENIED);
     }
+    if (hdr.stop_time >= 0) {
+      FAIL2(NEW_SRV_ERR_PERMISSION_DENIED);
+    }
     start_time = run_get_virtual_start_time(cs->runlog_state, phr->user_id);
     if (start_time <= 0) {
       FAIL2(NEW_SRV_ERR_CONTEST_NOT_STARTED);
@@ -12756,6 +12825,9 @@ unpriv_command(
       FAIL2(NEW_SRV_ERR_PERMISSION_DENIED);
     }
     if (cnts->close_time > 0 && cs->current_time >= cnts->close_time) {
+      FAIL2(NEW_SRV_ERR_PERMISSION_DENIED);
+    }
+    if (hdr.stop_time >= 0) {
       FAIL2(NEW_SRV_ERR_PERMISSION_DENIED);
     }
     start_time = run_get_virtual_start_time(cs->runlog_state, phr->user_id);
@@ -13289,7 +13361,7 @@ ns_unparse_statement(
 
   const unsigned char **vars = NULL;
   const unsigned char **vals = NULL;
-  int varcount = 7;
+  int varcount = 8;
   if (prob->statement_env) {
     for (int i = 0; prob->statement_env[i]; ++i)
       ++varcount;
@@ -13716,8 +13788,7 @@ unpriv_xml_update_answer(
   if (prob->require) {
     if (!acc_probs) {
       XALLOCAZ(acc_probs, cs->max_prob + 1);
-      run_get_accepted_set(cs->runlog_state, phr->user_id,
-                           cs->accepting_mode, cs->max_prob, acc_probs);
+      ns_get_accepted_set(cs, phr->user_id, acc_probs);
     }
     if (prob->require_any > 0) {
       for (i = 0; prob->require[i]; ++i) {
@@ -13760,6 +13831,9 @@ unpriv_xml_update_answer(
                             0 /* is_vcs */);
     if (run_id < 0) FAIL(NEW_SRV_ERR_RUNLOG_UPDATE_FAILED);
     serve_move_files_to_insert_run(cs, run_id);
+    if (metrics.data) {
+      ++metrics.data->runs_submitted;
+    }
     new_flag = 1;
   }
 
@@ -16678,56 +16752,6 @@ ns_int_external_action(
 }
 
 void
-do_write_kirov_standings(
-        const serve_state_t,
-        const struct contest_desc *cnts,
-        FILE *f,
-        const unsigned char *stand_dir,
-        int users_on_page,
-        int client_flag,
-        int only_table_flag,
-        int user_id,
-        const unsigned char *header_str,
-        unsigned char const *footer_str,
-        int accepting_mode,
-        int force_fancy_style,
-        time_t cur_time,
-        int charset_id,
-        struct user_filter_info *u,
-        int user_mode);
-
-void
-do_write_standings(
-        const serve_state_t,
-        const struct contest_desc *cnts,
-        FILE *f,
-        int client_flag,
-        int only_table_flag,
-        int user_id,
-        const unsigned char *header_str,
-        unsigned char const *footer_str,
-        const unsigned char *user_name,
-        int force_fancy_style,
-        time_t cur_time,
-        struct user_filter_info *u);
-
-void
-do_write_moscow_standings(
-        const serve_state_t,
-        const struct contest_desc *cnts,
-        FILE *f,
-        const unsigned char *stand_dir,
-        int client_flag, int only_table_flag,
-        int user_id,
-        const unsigned char *header_str,
-        const unsigned char *footer_str,
-        const unsigned char *user_name,
-        int force_fancy_style,
-        time_t cur_time,
-        int charset_id,
-        struct user_filter_info *u);
-
-void
 ns_write_standings(
         struct http_request_info *phr,
         struct contest_extra *extra,
@@ -16756,11 +16780,7 @@ ns_write_standings(
   if (phr && !cnts) cnts = phr->cnts;
 
   ASSERT(extra);
-  serve_state_t state = extra->serve_state;
-  ASSERT(state);
 
-  int score_system = 0;
-  if (state->global) score_system = state->global->score_system;
   int hr_allocated = 0;
 
   StandingsExtraInfo extra_info =
@@ -16795,92 +16815,18 @@ ns_write_standings(
   }
   phr->config = ejudge_config;
   phr->extra_info = &extra_info;
-  if (!compat_mode) {
-    int r = ns_int_external_action(phr, NEW_SRV_INT_STANDINGS);
-    if (r >= 0) {
-      if (hr_allocated) {
-        if (phr->log_f) fclose(phr->log_f);
-        xfree(phr->log_t);
-        if (phr->out_f) fclose(phr->out_f);
-        xfree(phr->out_t);
-      }
-      return;
-    }
+  int r = ns_int_external_action(phr, NEW_SRV_INT_STANDINGS);
+  if (r < 0) {
+    err("ns_write_standings: int_standings action failed");
+    return;
   }
-
-  // backward mode: no charset conversion, no multi-page standings
-  charset_id = 0;
-  users_on_page = 0;
-  file_name2 = NULL;
-  unsigned char file_path[PATH_MAX];
-  int file_is_opened = 0;
-  if (!f) {
-    snprintf(file_path, sizeof(file_path), "%s/dir/%s", stand_dir, file_name);
-    f = fopen(file_path, "w");
-    if (!f) {
-      err("ns_write_standings: cannot open '%s': %s", file_path, os_ErrorMsg());
-      return;
-    }
-    file_is_opened = 1;
+  if (hr_allocated) {
+    if (phr->log_f) fclose(phr->log_f);
+    xfree(phr->log_t);
+    if (phr->out_f) fclose(phr->out_f);
+    xfree(phr->out_t);
   }
-
-  // default action
-  switch (score_system) {
-  case SCORE_KIROV:
-  case SCORE_OLYMPIAD:
-    do_write_kirov_standings(state,
-                             cnts,
-                             f,
-                             stand_dir,
-                             users_on_page,
-                             client_flag,
-                             only_table_flag,
-                             user_id,
-                             header_str,
-                             footer_str,
-                             accepting_mode,
-                             force_fancy_style,
-                             stand_time,
-                             charset_id,
-                             user_filter,
-                             user_mode);
-    break;
-  case SCORE_MOSCOW:
-    do_write_moscow_standings(state,
-                              cnts,
-                              f,
-                              stand_dir,
-                              client_flag,
-                              only_table_flag,
-                              user_id,
-                              header_str,
-                              footer_str,
-                              user_name,
-                              force_fancy_style,
-                              stand_time,
-                              charset_id,
-                              user_filter);
-    break;
-  case SCORE_ACM:
-  default:
-    do_write_standings(state,
-                       cnts,
-                       f,
-                       client_flag,
-                       only_table_flag,
-                       user_id,
-                       header_str,
-                       footer_str,
-                       user_name,
-                       force_fancy_style,
-                       stand_time,
-                       user_filter);
-    break;
-  }
-
-  if (file_is_opened) {
-    fclose(f);
-  }
+  return;
 }
 
 void

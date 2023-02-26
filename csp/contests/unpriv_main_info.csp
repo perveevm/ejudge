@@ -31,7 +31,7 @@
 %><s:_>The contest is in progress</s:_><%
         }
       }
-    } else {
+    } else if (!cs->upsolving_mode) {
       if (cnts->exam_mode) {
 %><s:_>The exam is not started</s:_><%
       } else {
@@ -40,11 +40,11 @@
     }
 %></b></p>
 
-<%    if (cs->upsolving_mode && !cs->global->is_virtual) {
+<%
+    if (cs->upsolving_mode) {
+      if (!cs->global->is_virtual || start_time <= 0 || stop_time > 0) {
 %><p><b><s:_>Upsolving mode</s:_></b></p>
-<%  }
-  if (cs->upsolving_mode && cs->global->is_virtual && stop_time > 0) {
-%><p><b><s:_>Upsolving mode</s:_></b></p><%
+<%      }
     }
 %>
 
@@ -160,14 +160,51 @@
     }
   }
 %>
+<script>
+$(function() {
+  $("#virtual-stop-confirm").dialog({
+    resizable: true,
+    autoOpen: false,
+    height: "auto",
+    width: 600,
+    modal: true,
+    open: function() {
+      //$(this).parents('.ui-dialog-buttonpane button:eq(1)').focus();
+    },
+    buttons: {
+      "Stop the contest": function() {
+        $(this).dialog("close");
+        $("#virtual-stop-form").submit();
+      },
+      Cancel: function() {
+        $(this).dialog("close");
+      }
+    }
+  });
+  $("#virtual-stop-button").on("click", function(event) {
+    $("#virtual-stop-confirm").dialog("open");
+    event.preventDefault();
+    return false;
+  });
+});
+</script>
+
+<div id="virtual-stop-confirm" title="<s:_>Stop virtual contest?</s:_>">
+<p><span class="ui-icon ui-icon-alert" style="float:left; margin:12px 12px 20px 0;"></span>Are you sure you want to stop your virtual contest?</p>
+</div>
+
 <%
   if (!cnts->exam_mode && global->is_virtual && start_time <= 0) {
     enable_virtual_start = 1;
-    if (global->disable_virtual_start > 0 || cs->disable_virtual_start > 0) {
+    if (contest_start_time <= 0 || contest_stop_time > 0) {
+      enable_virtual_start = 0;
+    } else if (global->disable_virtual_start > 0 || cs->disable_virtual_start > 0) {
       enable_virtual_start = 0;
     } else if (cnts->open_time > 0 && cs->current_time < cnts->open_time) {
       enable_virtual_start = 0;
     } else if (cnts->close_time > 0 && cs->current_time >= cnts->close_time) {
+      enable_virtual_start = 0;
+    } else if (cs->upsolving_mode) {
       enable_virtual_start = 0;
     }
     if (enable_virtual_start) {
@@ -180,11 +217,12 @@
 %></s:form><%
     }
   } else if (!cnts->exam_mode && global->is_virtual && stop_time <= 0) {
-%><s:form><%
+%><s:form id="virtual-stop-form">
+<s:hidden name="action" ac="virtual-stop" /><%
     if (cnts->exam_mode) {
-%><p></p><%
+%><p><button class="ui-button ui-widget" id="virtual-stop-button"><s:_>Stop exam</s:_></button></p><%
     } else {
-%><p></p><%
+%><p><button class="ui-button ui-widget" id="virtual-stop-button"><s:_>Stop virtual contest</s:_></button></p><%
     }
 %></s:form><%
   } else if (!cnts->exam_mode && global->is_virtual && start_time > 0 && stop_time > 0 && global->enable_virtual_restart > 0 && !cs->upsolving_mode) {
@@ -216,6 +254,7 @@ function setOperationVisibility(oper, value)
   for (cur_lang_id = 1; cur_lang_id <= cs->max_lang; ++cur_lang_id) {
     const struct section_language_data *lang = cs->langs[cur_lang_id];
     if (!lang || lang->disabled > 0) continue;
+    if (lang->enable_custom > 0) continue;
     const unsigned char *opts = serve_get_compiler_options(phr->config, cs, cur_lang_id);
 %>
   <tr>

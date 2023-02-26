@@ -2,7 +2,7 @@
 #ifndef __METRICS_CONTEST_H__
 #define __METRICS_CONTEST_H__
 
-/* Copyright (C) 2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2022-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -27,6 +27,9 @@ struct metrics_contest_data
     struct timeval update_time;
     long long client_serial;
     int loaded_contests;
+    int runs_submitted;
+    long long total_compile_time_ms;
+    long long total_testing_time_ms;
 };
 
 struct metrics_desc

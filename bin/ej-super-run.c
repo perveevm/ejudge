@@ -1,6 +1,6 @@
 /* -*- c -*- */
 
-/* Copyright (C) 2012-2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2012-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -86,6 +86,7 @@ static unsigned char *agent_name = NULL;
 static unsigned char *agent_instance_id = NULL;
 static struct AgentClient *agent;
 static int verbose_mode;
+static int daemon_mode;
 
 static int ignored_archs_count = 0;
 static int ignored_problems_count = 0;
@@ -597,7 +598,11 @@ do_super_run_status_init(struct super_run_status *prs)
   if (public_hostname) prs->public_host_idx = super_run_status_add_str(prs, public_hostname);
   if (queue_name) prs->queue_idx = super_run_status_add_str(prs, queue_name);
   prs->ej_ver_idx = super_run_status_add_str(prs, compile_version);
-  if (super_run_id) prs->super_run_idx = super_run_status_add_str(prs, super_run_id);
+  if (super_run_id) {
+    prs->super_run_idx = super_run_status_add_str(prs, super_run_id);
+  } else if (agent_instance_id) {
+    prs->super_run_idx = super_run_status_add_str(prs, agent_instance_id);
+  }
   prs->super_run_pid = getpid();
   prs->stop_pending = pending_stop_flag;
   prs->down_pending = pending_down_flag;
@@ -674,6 +679,7 @@ do_loop(
   */
   interrupt_init();
   interrupt_setup_usr1();
+  interrupt_setup_usr2();
   interrupt_disable();
 
   while (1) {
@@ -690,6 +696,12 @@ do_loop(
 
     if (pending_stop_flag) break;
     if (pending_down_flag) break;
+    if (interrupt_was_usr1()) {
+      if (daemon_mode) {
+        start_open_log(super_run_log_path);
+      }
+      interrupt_reset_usr1();
+    }
 
     time_t current_time = time(NULL);
     if (halt_timeout > 0 && last_handled + halt_timeout <= current_time) {
@@ -700,8 +712,8 @@ do_loop(
     r = 0;
     pkt_name[0] = 0;
     if (agent) {
-      if (interrupt_was_usr1()) {
-        interrupt_reset_usr1();
+      if (interrupt_was_usr2()) {
+        interrupt_reset_usr2();
         if (future) {
           r = agent->ops->async_wait_complete(agent, &future, pkt_name, sizeof(pkt_name));
           if (r < 0) {
@@ -710,7 +722,7 @@ do_loop(
           }
         }
       } else if (!future) {
-        r = agent->ops->async_wait_init(agent, SIGUSR1, 1, pkt_name, sizeof(pkt_name), &future);
+        r = agent->ops->async_wait_init(agent, SIGUSR2, 1, pkt_name, sizeof(pkt_name), &future);
         if (r < 0) {
           err("async_wait_init failed");
           break;
@@ -1336,7 +1348,7 @@ main(int argc, char *argv[])
   unsigned char ejudge_xml_path[PATH_MAX];
   serve_state_t state = &serve_state;
   int retval = 0;
-  int daemon_mode = 0, restart_mode = 0, alternate_log_mode = 0;
+  int restart_mode = 0, alternate_log_mode = 0;
   const unsigned char *user = NULL, *group = NULL, *workdir = NULL;
   int halt_timeout = 0, halt_requested = 0;
   unsigned char *halt_command = NULL;
@@ -1579,6 +1591,8 @@ main(int argc, char *argv[])
     fatal("%d processes are already running", pid_count);
   }
 
+  info("%s %s, compiled %s", program_name, compile_version, compile_date);
+
   if (!contests_home_dir && ejudge_config->contests_home_dir) {
     contests_home_dir = ejudge_config->contests_home_dir;
   }
@@ -1648,8 +1662,6 @@ main(int argc, char *argv[])
   }
 
   make_super_run_name();
-
-  fprintf(stderr, "%s %s, compiled %s\n", program_name, compile_version, compile_date);
 
   if (do_loop(state, halt_timeout, &halt_requested) < 0) {
     retval = 1;

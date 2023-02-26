@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2002-2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2002-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -198,11 +198,11 @@ static time_t last_cookie_check;
 static time_t last_user_check;
 static time_t cookie_check_interval;
 static time_t user_check_interval;
-static int interrupt_signaled;
-static int restart_signaled;
-static int usr1_signaled;
-static int usr2_signaled;
-static int winch_signaled;
+static volatile int interrupt_signaled;
+static volatile int restart_signaled;
+static volatile int usr1_signaled;
+static volatile int usr2_signaled;
+static volatile int winch_signaled;
 static int daemon_mode = 0;
 static int forced_mode = 0;
 
@@ -8117,6 +8117,84 @@ cmd_copy_user_info(
 }
 
 static void
+cmd_copy_all(
+        struct client_state *p,
+        int pkt_len,
+        struct userlist_pk_edit_field *data)
+{
+  unsigned char logbuf[1024];
+
+  int user_id = data->user_id;
+  if (user_id <= 0) user_id = p->user_id;
+  int from_contest_id = data->contest_id;
+  int to_contest_id = data->serial;
+  const struct contest_desc *from_cnts = NULL;
+  const struct contest_desc *to_cnts = NULL;
+  const struct userlist_user *u = NULL;
+  const struct userlist_user_info *ui = NULL;
+  const struct userlist_contest *uc = NULL;
+  const struct userlist_contest *to_uc = NULL;
+
+  snprintf(logbuf, sizeof(logbuf), "COPY_ALL: %d, %d, %d, %d",
+           p->user_id, user_id, from_contest_id, to_contest_id);
+
+  if (is_judge(p, logbuf) < 0) return;
+  if (full_get_contest(p, logbuf, &from_contest_id, &from_cnts) < 0) return;
+  if (full_get_contest(p, logbuf, &to_contest_id, &to_cnts) < 0) return;
+  if (default_get_user_info_3(user_id,from_contest_id,&u,&ui,&uc) < 0 || !u) {
+    err("%s -> invalid user_id", logbuf);
+    send_reply(p, -ULS_ERR_BAD_UID);
+    return;
+  }
+  if (!uc) {
+    err("%s -> not registered", logbuf);
+    send_reply(p, -ULS_ERR_NOT_REGISTERED);
+    return;
+  }
+  int to_bits = OPCAP_CREATE_REG;
+  if (is_privileged_cnts_user(u, to_cnts) >= 0) to_bits = OPCAP_PRIV_CREATE_REG;
+  if (is_cnts_capable(p, to_cnts, to_bits, logbuf) < 0) return;
+
+  int copy_passwd_flag = 1;
+  if (is_dbcnts_capable(p, from_cnts, OPCAP_GET_USER, logbuf) < 0) return;
+  if (is_privileged_cnts_user(u, from_cnts) >= 0) {
+    if (check_dbcnts_capable(p, from_cnts, OPCAP_PRIV_EDIT_PASSWD) < 0)
+      copy_passwd_flag = 0;
+  } else {
+    if (check_dbcnts_capable(p, from_cnts, OPCAP_EDIT_PASSWD) < 0)
+      copy_passwd_flag = 0;
+  }
+  if (is_privileged_cnts_user(u, to_cnts) >= 0) {
+    if (is_dbcnts_capable(p, to_cnts, OPCAP_PRIV_EDIT_USER, logbuf) < 0) return;
+    if (check_dbcnts_capable(p, to_cnts, OPCAP_PRIV_EDIT_PASSWD) < 0)
+      copy_passwd_flag = 0;
+  } else {
+    if (is_dbcnts_capable(p, to_cnts, OPCAP_EDIT_USER, logbuf) < 0) return;
+    if (check_dbcnts_capable(p, to_cnts, OPCAP_EDIT_PASSWD) < 0)
+      copy_passwd_flag = 0;
+  }
+
+  int r = default_register_contest(user_id, to_contest_id, uc->status, uc->flags, cur_time, &to_uc);
+  if (r < 0) {
+    err("%s -> registration failed", logbuf);
+    send_reply(p, -ULS_ERR_DB_ERROR);
+    return;
+  }
+
+  default_copy_user_info(user_id, from_contest_id, to_contest_id,
+                         copy_passwd_flag, cur_time, to_cnts);
+
+  default_check_user_reg_data(user_id, to_contest_id);
+
+  if (to_uc && to_uc->status == USERLIST_REG_OK) {
+    update_userlist_table(to_contest_id);
+  }
+
+  info("%s -> OK", logbuf);
+  send_reply(p, ULS_OK);
+}
+
+static void
 cmd_lookup_user(struct client_state *p,
                 int pkt_len,
                 struct userlist_pk_do_login *data)
@@ -10375,6 +10453,10 @@ cmd_create_user_2(
     reg_password_len = strlen(pwdnew.encoded);
   }
 
+  if (user_id > 0 && data->reset_existing_passwords_flag > 0) {
+    default_set_reg_passwd(user_id, reg_password_method, reg_password_str, cur_time);
+  }
+
   if (user_id < 0) {
     user_id = default_new_user(login_str,
                                email_str,
@@ -11383,6 +11465,7 @@ static void (*cmd_table[])() =
   [ULS_GET_API_KEYS_FOR_USER] = cmd_get_api_keys_for_user,
   [ULS_DELETE_API_KEY] =        cmd_delete_api_key,
   [ULS_PRIV_CREATE_COOKIE] =    cmd_priv_create_cookie,
+  [ULS_COPY_ALL] =              cmd_copy_all,
 
   [ULS_LAST_CMD] = 0
 };
@@ -11495,6 +11578,7 @@ static int (*check_table[])() =
   [ULS_GET_API_KEYS_FOR_USER] = check_pk_api_key_data,
   [ULS_DELETE_API_KEY] =        check_pk_api_key_data,
   [ULS_PRIV_CREATE_COOKIE] =    NULL,
+  [ULS_COPY_ALL] =              check_pk_edit_field,
 
   [ULS_LAST_CMD] = 0
 };
@@ -11645,11 +11729,20 @@ do_work(void)
     }
 
     if (usr1_signaled) {
+      if (daemon_mode) {
+        start_open_log(config->userlist_log);
+      }
+      usr1_signaled = 0;
+    }
+    /*
+      FIXME: use another signal
+    if (usr1_signaled) {
       default_forced_sync();
       if (dflt_iface->disable_cache)
         (*dflt_iface->disable_cache)(uldb_default->data);
       usr1_signaled = 0;
     }
+    */
     if (usr2_signaled) {
       default_sync();
       if (dflt_iface->drop_cache)
@@ -12040,6 +12133,16 @@ convert_database(const unsigned char *from_name, const unsigned char *to_name)
     err("plugin %s failed to open its connection", to_plugin->iface->b.name);
     return 1;
   }
+  int v = ((struct uldb_plugin_iface*)to_plugin->iface)->check(to_plugin->data);
+  if (v < 0) {
+    err("plugin %s database is invalid",to_plugin->iface->b.name);
+    return 1;
+  }
+  if (v > 0) {
+    info("plugin %s database already created",to_plugin->iface->b.name);
+    return 0;
+  }
+
   if (((struct uldb_plugin_iface*)to_plugin->iface)->create(to_plugin->data) < 0) {
     err("plugin %s failed to create a new database",to_plugin->iface->b.name);
     return 1;

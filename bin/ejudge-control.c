@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2006-2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2006-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -20,6 +20,8 @@
 #include "ejudge/ejudge_cfg.h"
 #include "ejudge/pathutl.h"
 #include "ejudge/ej_process.h"
+#include "ejudge/startstop.h"
+#include "ejudge/logrotate.h"
 
 #include "ejudge/logger.h"
 #include "ejudge/osdeps.h"
@@ -30,6 +32,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <ctype.h>
+#include <signal.h>
 
 #define EJ_USERS_MASK 1
 #define EJ_SUPER_SERVER_MASK 2
@@ -100,6 +103,7 @@ write_help(void)
          "    start     start the ejudge daemons\n"
          "    stop      stop the ejudge daemons\n"
          "    restart   restart the ejudge daemons\n"
+         "    rotate    rotate log files\n"
          /*"    status    report the ejudge daemon status\n"*/,
          program_name, program_name);
   exit(0);
@@ -112,7 +116,7 @@ write_version(void)
   exit(0);
 }
 
-static void
+static int
 invoke_stopper(const char *prog, const char *ejudge_xml_path)
 {
   path_t path;
@@ -122,6 +126,40 @@ invoke_stopper(const char *prog, const char *ejudge_xml_path)
   tsk = task_New();
   task_AddArg(tsk, path);
   task_AddArg(tsk, "stop");
+  if (strcmp(prog, "ej-compile") != 0) {
+    if (ejudge_xml_path) task_AddArg(tsk, ejudge_xml_path);
+  }
+  if (task_Start(tsk) < 0) {
+    fprintf(stderr, "%s: failed to start %s\n", program_name, path);
+    task_Delete(tsk);
+    return -1;
+  }
+  task_Wait(tsk);
+  if (task_IsAbnormal(tsk)) {
+    fprintf(stderr, "%s: subcommand %s failed\n", program_name, path);
+    task_Delete(tsk);
+    return -1;
+  }
+  task_Delete(tsk);
+  return 0;
+}
+
+static void
+invoke_rotate(
+        const char *prog,
+        const char *ejudge_xml_path,
+        int date_suffix_flag)
+{
+  path_t path;
+  tTask *tsk = 0;
+
+  snprintf(path, sizeof(path), "%s/%s-control", EJUDGE_SERVER_BIN_PATH, prog);
+  tsk = task_New();
+  task_AddArg(tsk, path);
+  if (date_suffix_flag > 0) {
+    task_AddArg(tsk, "--date-suffix");
+  }
+  task_AddArg(tsk, "rotate");
   if (strcmp(prog, "ej-compile") != 0) {
     if (ejudge_xml_path) task_AddArg(tsk, ejudge_xml_path);
   }
@@ -301,6 +339,8 @@ command_start(
                  "%s-run", instance_id);
         task_AddArg(tsk, "--instance-id");
         task_AddArg(tsk, tool_instance_id);
+        task_AddArg(tsk, "-hi");
+        task_AddArg(tsk, instance_id);
       }
       if (queue && *queue) {
         task_AddArg(tsk, "-p");
@@ -404,23 +444,23 @@ command_start(
  failed:
   task_Delete(tsk); tsk = 0;
 
-  if (userlist_server_started) {
-    invoke_stopper("ej-users", ejudge_xml_path);
-  }
-  if (super_serve_started) {
-    invoke_stopper("ej-super-server", ejudge_xml_path);
-  }
   if (compile_started) {
     invoke_stopper("ej-compile", ejudge_xml_path);
   }
   if (super_run_started) {
     invoke_stopper("ej-super-run", ejudge_xml_path);
   }
-  if (job_server_started) {
-    invoke_stopper("ej-jobs", ejudge_xml_path);
+  if (super_serve_started) {
+    invoke_stopper("ej-super-server", ejudge_xml_path);
   }
   if (new_server_started) {
     invoke_stopper("ej-contests", ejudge_xml_path);
+  }
+  if (job_server_started) {
+    invoke_stopper("ej-jobs", ejudge_xml_path);
+  }
+  if (userlist_server_started) {
+    invoke_stopper("ej-users", ejudge_xml_path);
   }
 
   return -1;
@@ -433,21 +473,88 @@ command_stop(
         int slave_mode,
         int master_mode)
 {
-  if (!slave_mode) {
-    invoke_stopper("ej-contests", ejudge_xml_path);
+  if (!master_mode) {
+    if (invoke_stopper("ej-compile", ejudge_xml_path) < 0)
+      return -1;
   }
   if (!master_mode) {
-    invoke_stopper("ej-compile", ejudge_xml_path);
+    if (invoke_stopper("ej-super-run", ejudge_xml_path) < 0)
+      return -1;
+  }
+  if (!slave_mode) {
+    if (invoke_stopper("ej-super-server", ejudge_xml_path) < 0)
+      return -1;
+  }
+  if (!slave_mode) {
+    if (invoke_stopper("ej-contests", ejudge_xml_path) < 0)
+      return -1;
+  }
+  if (!slave_mode) {
+    if (invoke_stopper("ej-jobs", ejudge_xml_path) < 0)
+      return -1;
+    if (invoke_stopper("ej-users", ejudge_xml_path) < 0)
+      return -1;
+  }
+
+  return 0;
+}
+
+static void
+rotate_agent_log(
+        const struct ejudge_cfg *config,
+        const char *ejudge_xml_path,
+        int date_suffix_flag)
+{
+  unsigned char lpd[PATH_MAX];
+  unsigned char lpf[PATH_MAX];
+  if (rotate_get_log_dir_and_file(lpd, sizeof(lpd),
+                                  lpf, sizeof(lpf),
+                                  config,
+                                  NULL,
+                                  "ej-agent.log") < 0) {
+    return;
+  }
+
+  unsigned char *log_group = NULL;
+#if defined EJUDGE_PRIMARY_USER
+  log_group = EJUDGE_PRIMARY_USER;
+#endif
+
+  rotate_log_files(lpd, lpf, NULL, NULL, log_group, 0620, date_suffix_flag);
+
+  int *pids = NULL;
+  int pid_count = start_find_all_processes("ej-agent", &pids);
+  for (int i = 0; i < pid_count; ++i) {
+    start_kill(pids[i], SIGUSR1);
+  }
+}
+
+static int
+command_rotate(
+        const struct ejudge_cfg *config,
+        const char *ejudge_xml_path,
+        int slave_mode,
+        int master_mode,
+        int date_suffix_flag)
+{
+  if (!slave_mode) {
+    invoke_rotate("ej-contests", ejudge_xml_path, date_suffix_flag);
   }
   if (!master_mode) {
-    invoke_stopper("ej-super-run", ejudge_xml_path);
+    invoke_rotate("ej-compile", ejudge_xml_path, date_suffix_flag);
+  }
+  if (!master_mode) {
+    invoke_rotate("ej-super-run", ejudge_xml_path, date_suffix_flag);
   }
   if (!slave_mode) {
-    invoke_stopper("ej-super-server", ejudge_xml_path);
+    invoke_rotate("ej-super-server", ejudge_xml_path, date_suffix_flag);
   }
   if (!slave_mode) {
-    invoke_stopper("ej-users", ejudge_xml_path);
-    invoke_stopper("ej-jobs", ejudge_xml_path);
+    invoke_rotate("ej-users", ejudge_xml_path, date_suffix_flag);
+    invoke_rotate("ej-jobs", ejudge_xml_path, date_suffix_flag);
+  }
+  if (!slave_mode) {
+    rotate_agent_log(config, ejudge_xml_path, date_suffix_flag);
   }
 
   return 0;
@@ -478,6 +585,7 @@ main(int argc, char *argv[])
   int disable_heartbeat = 0;
   const char *timeout_str = NULL;
   const char *shutdown_script = NULL;
+  int date_suffix_flag = 0;
 
   logger_set_level(-1, LOG_WARNING);
   program_name = os_GetBasename(argv[0]);
@@ -566,6 +674,9 @@ main(int argc, char *argv[])
     } else if (!strcmp(argv[i], "-nhb")) {
       disable_heartbeat = 1;
       i++;
+    } else if (!strcmp(argv[i], "--date-suffix")) {
+      date_suffix_flag = 1;
+      i++;
     } else if (!strcmp(argv[i], "--")) {
       i++;
       break;
@@ -614,6 +725,10 @@ main(int argc, char *argv[])
       r = 1;
   } else if (!strcmp(command, "stop")) {
     if (command_stop(config, ejudge_xml_path, slave_mode, master_mode) < 0)
+      r = 1;
+  } else if (!strcmp(command, "rotate")) {
+    if (command_rotate(config, ejudge_xml_path, slave_mode, master_mode,
+                       date_suffix_flag) < 0)
       r = 1;
   } else if (!strcmp(command, "restart")) {
     startup_error("`restart' command is not yet implemented");

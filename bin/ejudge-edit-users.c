@@ -1,6 +1,6 @@
 /* -*- mode:c -*- */
 
-/* Copyright (C) 2002-2017 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2002-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -1264,8 +1264,7 @@ get_cookie_str(unsigned char *buf, size_t len,
 }
 
 static int
-get_contest_str(unsigned char *buf, size_t len,
-                const struct userlist_contest *reg)
+estimate_contest_str(const struct userlist_contest *reg)
 {
   const struct contest_desc *d = 0;
   const unsigned char *s = 0;
@@ -1273,19 +1272,37 @@ get_contest_str(unsigned char *buf, size_t len,
   if (contests_get(reg->id, &d) >= 0 && d) {
     s = d->name;
   }
-
   if (!s) s = "???";
-  return snprintf(buf, len,
-                  "%6d %c%c%c%c%c%c %-7.7s  %s",
-                  reg->id,
-                  (reg->flags & USERLIST_UC_BANNED)?'B':' ',
-                  (reg->flags & USERLIST_UC_INVISIBLE)?'I':' ',
-                  (reg->flags & USERLIST_UC_LOCKED)?'L':' ',
-                  (reg->flags & USERLIST_UC_PRIVILEGED)?'P':((reg->flags & USERLIST_UC_INCOMPLETE)?'N':' '),
-                  (reg->flags & USERLIST_UC_DISQUALIFIED)?'D':' ',
-                  (reg->flags & USERLIST_UC_REG_READONLY)?'R':' ',
-                  userlist_unparse_reg_status(reg->status),
-                  s);
+
+  return 4 * COLS + 1 + strlen(s);
+}
+
+static unsigned char *
+append_padded_string(unsigned char *buf, const unsigned char *str, int width);
+
+static void
+get_contest_str(unsigned char *buf, const struct userlist_contest *reg)
+{
+  const struct contest_desc *d = 0;
+  const unsigned char *s = 0;
+
+  if (contests_get(reg->id, &d) >= 0 && d) {
+    s = d->name;
+  }
+  if (!s) s = "???";
+
+  unsigned char *p = buf;
+  p += sprintf(p, "%-6d ", reg->id);
+  *p++ = (reg->flags & USERLIST_UC_BANNED)?'B':' ';
+  *p++ = (reg->flags & USERLIST_UC_INVISIBLE)?'I':' ';
+  *p++ = (reg->flags & USERLIST_UC_LOCKED)?'L':' ';
+  *p++ = (reg->flags & USERLIST_UC_PRIVILEGED)?'P':((reg->flags & USERLIST_UC_INCOMPLETE)?'N':' ');
+  *p++ = (reg->flags & USERLIST_UC_DISQUALIFIED)?'D':' ';
+  *p++ = (reg->flags & USERLIST_UC_REG_READONLY)?'R':' ';
+  *p++ = ' ';
+  p = append_padded_string(p, userlist_unparse_reg_status(reg->status), 7);
+  *p++ = ' ';
+  append_padded_string(p, s, COLS - 25);
 }
 
 struct field_ref
@@ -1323,34 +1340,82 @@ set_user_field(struct userlist_user *u, int field, const unsigned char *value)
   }
 }
 
+static unsigned char *
+append_padded_string(unsigned char *buf, const unsigned char *str, int width)
+{
+  if (!utf8_mode) {
+    while (*str && width > 0) {
+      *buf++ = *str++;
+      --width;
+    }
+    while (width > 0) {
+      *buf++ = ' ';
+      --width;
+    }
+    *buf = 0;
+    return buf;
+  } else {
+    return utf8_padded_append(buf, str, width);
+  }
+}
+
+static int
+user_menu_estimate(struct userlist_user *u, int f)
+{
+  unsigned char buf[4096];
+
+  if (f >= USERLIST_PSEUDO_FIRST && f < USERLIST_PSEUDO_LAST) {
+    return COLS - 2 + 1;
+  } else if (!user_descs[f].has_value) {
+    return COLS - 2 + 1;
+  } else {
+    get_user_field(buf, sizeof(buf), u, f, 1);
+    return 3 + strlen(user_descs[f].name) + COLS * 4 + strlen(buf);
+  }
+}
+
 static void
 user_menu_string(struct userlist_user *u, int f, unsigned char *out)
 {
-  unsigned char buf[128];
-  int w = 60, y = 0;
+  unsigned char buf[256];
 
   if (f >= USERLIST_PSEUDO_FIRST && f < USERLIST_PSEUDO_LAST) {
-    snprintf(out, 78, "%s", user_descs[f].name);
+    snprintf(out, COLS - 2, "%s", user_descs[f].name);
   } else if (!user_descs[f].has_value) {
-    snprintf(out, 78, "%s", user_descs[f].name);
+    snprintf(out, COLS - 2, "%s", user_descs[f].name);
   } else {
     get_user_field(buf, sizeof(buf), u, f, 1);
-    if (utf8_mode) w = utf8_cnt(buf, w, &y);
-    sprintf(out, "%-15.15s: %-*.*s", user_descs[f].name, w + y, w, buf);
+    out = append_padded_string(out, user_descs[f].name, 15);
+    *out++ = ':'; *out++ = ' ';
+    append_padded_string(out, buf, COLS - 20);
   }
 }
+
+static int
+member_menu_estimate(const struct userlist_member *m, int f)
+{
+  unsigned char buf[4096];
+
+  if (!member_descs[f].has_value) {
+    return COLS - 2 + 1;
+  } else {
+    userlist_get_member_field_str(buf, sizeof(buf), m, f, 1, 0);
+    return 3 + strlen(member_descs[f].name) + COLS * 4 + strlen(buf);
+  }
+}
+
 static void
 member_menu_string(const struct userlist_member *m, int f, unsigned char *out)
 {
-  unsigned char buf[128];
-  int w = 60, y = 0;
+  unsigned char buf[256];
 
   if (!member_descs[f].has_value) {
-    snprintf(out, 78, "%s", member_descs[f].name);
+    snprintf(out, COLS - 2, "%s", member_descs[f].name);
   } else {
     userlist_get_member_field_str(buf, sizeof(buf), m, f, 1, 0);
-    if (utf8_mode) w = utf8_cnt(buf, w, &y);
-    sprintf(out, "%-15.15s: %-*.*s", member_descs[f].name, w + y, w, buf);
+    out = append_padded_string(out, member_descs[f].name, 15);
+    *out++ = ':'; *out++ = ' ';
+    append_padded_string(out, buf, COLS - 20);
   }
 }
 
@@ -1497,15 +1562,13 @@ do_display_user(unsigned char const *upper, int user_id, int contest_id,
   XCALLOC(descs, tot_items + 1);
   XCALLOC(refs, tot_items + 1);
   XCALLOC(info, tot_items + 1);
-  for (i = 0; i < tot_items; i++) {
-    XCALLOC(descs[i], 512);
-  }
 
   j = 0;
   for (i = 0; i < field_order_size; i++) {
     info[j].role = -1;
     info[j].pers = 0;
     info[j].field = field_order[i];
+    descs[j] = xmalloc(user_menu_estimate(u, field_order[i]));
     user_menu_string(u, field_order[i], descs[j++]);
   }
   for (role = 0; role < CONTEST_LAST_MEMBER; role++) {
@@ -1515,7 +1578,8 @@ do_display_user(unsigned char const *upper, int user_id, int contest_id,
     info[j].role = role;
     info[j].pers = -1;
     info[j].field = 0;
-    snprintf(descs[j++], 78, "*%s*", member_string_pl[role]);
+    descs[j] = xmalloc(COLS - 2 + 1);
+    snprintf(descs[j++], COLS - 2, "*%s*", member_string_pl[role]);
 
     for (pers = 0; pers < role_cnt; pers++) {
       if (!(m = (struct userlist_member*) userlist_members_get_nth(ui->members, role, pers)))
@@ -1525,13 +1589,15 @@ do_display_user(unsigned char const *upper, int user_id, int contest_id,
       info[j].pers = pers;
       info[j].field = -1;
       refs[j] = m;
-      snprintf(descs[j++], 78, "*%s %d*", member_string[role], pers + 1);
+      descs[j] = xmalloc(COLS - 2 + 1);
+      snprintf(descs[j++], COLS - 2, "*%s %d*", member_string[role], pers + 1);
 
       for (i = USERLIST_NM_FIRST; i < USERLIST_NM_LAST; i++) {
         info[j].role = role;
         info[j].pers = pers;
         info[j].field = i;
         refs[j] = m;
+        descs[j] = xmalloc(member_menu_estimate(m, i));
         member_menu_string(m, i, descs[j++]);
       }
     }
@@ -1540,14 +1606,16 @@ do_display_user(unsigned char const *upper, int user_id, int contest_id,
     info[j].role = -1;
     info[j].pers = 1;
     info[j].field = -1;
-    snprintf(descs[j++], 78, "*%s*", "Registrations");
+    descs[j] = xmalloc(COLS - 2 + 1);
+    snprintf(descs[j++], COLS - 2, "*%s*", "Registrations");
 
     for (reg = FIRST_CONTEST(u), i = 0; reg; reg = NEXT_CONTEST(reg), i++) {
       info[j].role = -1;
       info[j].pers = 1;
       info[j].field = i;
       refs[j] = reg;
-      get_contest_str(descs[j], 78, reg);
+      descs[j] = xmalloc(estimate_contest_str(reg));
+      get_contest_str(descs[j], reg);
       j++;
     }
   }
@@ -1555,14 +1623,16 @@ do_display_user(unsigned char const *upper, int user_id, int contest_id,
     info[j].role = -1;
     info[j].pers = 2;
     info[j].field = -1;
-    snprintf(descs[j++], 78, "*%s*", "Cookies");
+    descs[j] = xmalloc(COLS - 2 + 1);
+    snprintf(descs[j++], COLS - 2, "*%s*", "Cookies");
 
     for (cookie=FIRST_COOKIE(u),i=0;cookie;cookie=NEXT_COOKIE(cookie),i++) {
       info[j].role = -1;
       info[j].pers = 2;
       info[j].field = i;
       refs[j] = cookie;
-      get_cookie_str(descs[j], 78, cookie);
+      descs[j] = xmalloc(COLS - 2 + 1);
+      get_cookie_str(descs[j], COLS - 2, cookie);
       j++;
     }
   }
@@ -1850,7 +1920,7 @@ do_display_user(unsigned char const *upper, int user_id, int contest_id,
         vis_err("Operation failed: %s", userlist_strerror(-r));
         goto menu_continue;
       }
-      get_contest_str(descs[cur_i], 78, reg);
+      get_contest_str(descs[cur_i], reg);
     }
 
     /* delete field */
@@ -2598,31 +2668,48 @@ selected_mask_clear(struct selected_users_info *info)
 }
 
 static int
-generate_reg_user_item(unsigned char *buf, size_t size, int i,
-                       struct userlist_user **uu,
-                       struct userlist_contest **uc,
-                       unsigned char *mask)
+estimate_reg_user_item(
+        int i,
+        struct userlist_user **uu)
 {
-  int buflen;
-  int w = 36, y = 0;
+  int len = 4 * COLS + 1;
+  if (uu[i] && uu[i]->login) {
+    len += strlen(uu[i]->login);
+  }
+  if (uu[i] && uu[i]->cnts0 && uu[i]->cnts0->name) {
+    len += strlen(uu[i]->cnts0->name);
+  }
+  return len;
+}
+
+static void
+generate_reg_user_item(
+        unsigned char *buf,
+        int i,
+        struct userlist_user **uu,
+        struct userlist_contest **uc,
+        unsigned char *mask)
+{
   const unsigned char *name = 0;
 
   if (uu[i]->cnts0) name = uu[i]->cnts0->name;
   if (!name) name = "";
 
-  // 77 - 6 - 16 - 10 - 6 = 77 - 38 = 39
-  if (utf8_mode) w = utf8_cnt(name, 36, &y);
-  buflen = snprintf(buf, size, "%c%6d  %-16.16s  %-*.*s %c%c%c%c%c%c %-6.6s",
-                    mask[i]?'!':' ',
-                    uu[i]->id, uu[i]->login, w + y, w, name,
-                    (uc[i]->flags & USERLIST_UC_BANNED)?'B':' ',
-                    (uc[i]->flags & USERLIST_UC_INVISIBLE)?'I':' ',
-                    (uc[i]->flags & USERLIST_UC_LOCKED)?'L':' ',
-                    (uc[i]->flags & USERLIST_UC_PRIVILEGED)?'P':((uc[i]->flags & USERLIST_UC_INCOMPLETE)?'N':' '),
-                    (uc[i]->flags & USERLIST_UC_DISQUALIFIED)?'D':' ',
-                    (uc[i]->flags & USERLIST_UC_REG_READONLY)?'R':' ',
-                    userlist_unparse_reg_status(uc[i]->status));
-  return buflen;
+  *buf++ = mask[i]?'!':' ';
+  buf += sprintf(buf, "%-6d", uu[i]->id);
+  *buf++ = ' ';
+  buf = append_padded_string(buf, uu[i]->login, 16);
+  *buf++ = ' ';
+  buf = append_padded_string(buf, name, COLS - 38);
+  *buf++ = ' ';
+  *buf++ = (uc[i]->flags & USERLIST_UC_BANNED)?'B':' ';
+  *buf++ = (uc[i]->flags & USERLIST_UC_INVISIBLE)?'I':' ';
+  *buf++ = (uc[i]->flags & USERLIST_UC_LOCKED)?'L':' ';
+  *buf++ = (uc[i]->flags & USERLIST_UC_PRIVILEGED)?'P':((uc[i]->flags & USERLIST_UC_INCOMPLETE)?'N':' ');
+  *buf++ = (uc[i]->flags & USERLIST_UC_DISQUALIFIED)?'D':' ';
+  *buf++ = (uc[i]->flags & USERLIST_UC_REG_READONLY)?'R':' ';
+  *buf++ = ' ';
+  buf = append_padded_string(buf, userlist_unparse_reg_status(uc[i]->status), 2);
 }
 
 static unsigned char csv_path[1024];
@@ -2737,8 +2824,8 @@ do_display_registered_users(
   XCALLOC(descs, nuser);
   XCALLOC(items, nuser + 1);
   for (i = 0; i < nuser; i++) {
-    descs[i] = xmalloc(256);
-    generate_reg_user_item(descs[i], 256, i, uu, uc, sel_users.mask);
+    descs[i] = xmalloc(estimate_reg_user_item(i, uu));
+    generate_reg_user_item(descs[i], i, uu, uc, sel_users.mask);
     items[i] = new_item(descs[i], 0);
   }
 
@@ -2841,7 +2928,7 @@ do_display_registered_users(
         sel_users.mask[i] = 1;
         sel_users.total_selected++;
       }
-      generate_reg_user_item(descs[i], 256, i, uu, uc, sel_users.mask);
+      generate_reg_user_item(descs[i], i, uu, uc, sel_users.mask);
       menu_driver(menu, REQ_DOWN_ITEM);
     } else if (c == '0') {
       // clear all selection
@@ -2883,7 +2970,7 @@ do_display_registered_users(
             continue;
           }
           sel_users.mask[j] = 0;
-          generate_reg_user_item(descs[j], 256, j, uu, uc, sel_users.mask);
+          generate_reg_user_item(descs[j], j, uu, uc, sel_users.mask);
         }
         memset(sel_users.mask, 0, sel_users.allocated);
         sel_users.total_selected = 0;
@@ -2920,7 +3007,7 @@ do_display_registered_users(
             }
           }
           sel_users.mask[j] = 0;
-          generate_reg_user_item(descs[j], 256, j, uu, uc, sel_users.mask);
+          generate_reg_user_item(descs[j], j, uu, uc, sel_users.mask);
         }
         memset(sel_users.mask, 0, sel_users.allocated);
         sel_users.total_selected = 0;
@@ -2940,7 +3027,7 @@ do_display_registered_users(
           continue;
         }
         uc[i]->status = new_status;
-        generate_reg_user_item(descs[i], 256, i, uu, uc, sel_users.mask);
+        generate_reg_user_item(descs[i], i, uu, uc, sel_users.mask);
       } else {
         // operation on a group of users
         if (okcancel("Set registration status for the selected users to %s?",
@@ -2958,7 +3045,7 @@ do_display_registered_users(
           }
           uc[j]->status = new_status;
           sel_users.mask[j] = 0;
-          generate_reg_user_item(descs[j], 256, j, uu, uc, sel_users.mask);
+          generate_reg_user_item(descs[j], j, uu, uc, sel_users.mask);
         }
         memset(sel_users.mask, 0, sel_users.allocated);
         sel_users.total_selected = 0;
@@ -3007,7 +3094,7 @@ do_display_registered_users(
           continue;
         }
         uc[i]->flags ^= USERLIST_UC_BANNED;
-        generate_reg_user_item(descs[i], 256, i, uu, uc, sel_users.mask);
+        generate_reg_user_item(descs[i], i, uu, uc, sel_users.mask);
       } else {
         // operation on the selected users
         if (okcancel("Toggle BANNED status for selected users?") != 1)
@@ -3024,7 +3111,7 @@ do_display_registered_users(
           }
           uc[j]->flags ^= USERLIST_UC_BANNED;
           sel_users.mask[j] = 0;
-          generate_reg_user_item(descs[j], 256, j, uu, uc, sel_users.mask);
+          generate_reg_user_item(descs[j], j, uu, uc, sel_users.mask);
         }
         memset(sel_users.mask, 0, sel_users.allocated);
         sel_users.total_selected = 0;
@@ -3043,7 +3130,7 @@ do_display_registered_users(
           continue;
         }
         uc[i]->flags ^= USERLIST_UC_INVISIBLE;
-        generate_reg_user_item(descs[i], 256, i, uu, uc, sel_users.mask);
+        generate_reg_user_item(descs[i], i, uu, uc, sel_users.mask);
       } else {
         // operation on the selected users
         if (okcancel("Toggle INVISIBLE status for selected users?") != 1)
@@ -3060,7 +3147,7 @@ do_display_registered_users(
           }
           uc[j]->flags ^= USERLIST_UC_INVISIBLE;
           sel_users.mask[j] = 0;
-          generate_reg_user_item(descs[j], 256, j, uu, uc, sel_users.mask);
+          generate_reg_user_item(descs[j], j, uu, uc, sel_users.mask);
         }
         memset(sel_users.mask, 0, sel_users.allocated);
         sel_users.total_selected = 0;
@@ -3079,7 +3166,7 @@ do_display_registered_users(
           continue;
         }
         uc[i]->flags ^= USERLIST_UC_LOCKED;
-        generate_reg_user_item(descs[i], 256, i, uu, uc, sel_users.mask);
+        generate_reg_user_item(descs[i], i, uu, uc, sel_users.mask);
       } else {
         // operation on the selected users
         if (okcancel("Toggle LOCKED status for selected users?") != 1)
@@ -3096,7 +3183,7 @@ do_display_registered_users(
           }
           uc[j]->flags ^= USERLIST_UC_LOCKED;
           sel_users.mask[j] = 0;
-          generate_reg_user_item(descs[j], 256, j, uu, uc, sel_users.mask);
+          generate_reg_user_item(descs[j], j, uu, uc, sel_users.mask);
         }
         memset(sel_users.mask, 0, sel_users.allocated);
         sel_users.total_selected = 0;
@@ -3115,7 +3202,7 @@ do_display_registered_users(
           continue;
         }
         uc[i]->flags ^= USERLIST_UC_INCOMPLETE;
-        generate_reg_user_item(descs[i], 256, i, uu, uc, sel_users.mask);
+        generate_reg_user_item(descs[i], i, uu, uc, sel_users.mask);
       } else {
         // operation on the selected users
         if (okcancel("Toggle INCOMPLETE status for selected users?") != 1)
@@ -3132,7 +3219,7 @@ do_display_registered_users(
           }
           uc[j]->flags ^= USERLIST_UC_INCOMPLETE;
           sel_users.mask[j] = 0;
-          generate_reg_user_item(descs[j], 256, j, uu, uc, sel_users.mask);
+          generate_reg_user_item(descs[j], j, uu, uc, sel_users.mask);
         }
         memset(sel_users.mask, 0, sel_users.allocated);
         sel_users.total_selected = 0;
@@ -3151,7 +3238,7 @@ do_display_registered_users(
           continue;
         }
         uc[i]->flags ^= USERLIST_UC_DISQUALIFIED;
-        generate_reg_user_item(descs[i], 256, i, uu, uc, sel_users.mask);
+        generate_reg_user_item(descs[i], i, uu, uc, sel_users.mask);
       } else {
         // operation on the selected users
         if (okcancel("Toggle DISQUALIFIED status for selected users?") != 1)
@@ -3168,7 +3255,7 @@ do_display_registered_users(
           }
           uc[j]->flags ^= USERLIST_UC_DISQUALIFIED;
           sel_users.mask[j] = 0;
-          generate_reg_user_item(descs[j], 256, j, uu, uc, sel_users.mask);
+          generate_reg_user_item(descs[j], j, uu, uc, sel_users.mask);
         }
         memset(sel_users.mask, 0, sel_users.allocated);
         sel_users.total_selected = 0;
@@ -3187,7 +3274,7 @@ do_display_registered_users(
           continue;
         }
         uc[i]->flags ^= USERLIST_UC_PRIVILEGED;
-        generate_reg_user_item(descs[i], 256, i, uu, uc, sel_users.mask);
+        generate_reg_user_item(descs[i], i, uu, uc, sel_users.mask);
       } else {
         // operation on the selected users
         if (okcancel("Toggle PRIVILEGED status for selected users?") != 1)
@@ -3204,7 +3291,7 @@ do_display_registered_users(
           }
           uc[j]->flags ^= USERLIST_UC_PRIVILEGED;
           sel_users.mask[j] = 0;
-          generate_reg_user_item(descs[j], 256, j, uu, uc, sel_users.mask);
+          generate_reg_user_item(descs[j], j, uu, uc, sel_users.mask);
         }
         memset(sel_users.mask, 0, sel_users.allocated);
         sel_users.total_selected = 0;
@@ -3223,7 +3310,7 @@ do_display_registered_users(
           continue;
         }
         uc[i]->flags ^= USERLIST_UC_REG_READONLY;
-        generate_reg_user_item(descs[i], 256, i, uu, uc, sel_users.mask);
+        generate_reg_user_item(descs[i], i, uu, uc, sel_users.mask);
       } else {
         // operation on the selected users
         if (okcancel("Toggle REG_READONLY status for selected users?") != 1)
@@ -3240,7 +3327,7 @@ do_display_registered_users(
           }
           uc[j]->flags ^= USERLIST_UC_REG_READONLY;
           sel_users.mask[j] = 0;
-          generate_reg_user_item(descs[j], 256, j, uu, uc, sel_users.mask);
+          generate_reg_user_item(descs[j], j, uu, uc, sel_users.mask);
         }
         memset(sel_users.mask, 0, sel_users.allocated);
         sel_users.total_selected = 0;
@@ -3320,7 +3407,7 @@ do_display_registered_users(
         i = item_index(current_item(menu));
         if (okcancel("Copy user %d info to contest %d?", uu[i]->id, k) != 1)
           continue;
-        r = userlist_clnt_copy_user_info(server_conn, uu[i]->id, cnts->id, k);
+        r = userlist_clnt_copy_user_info(server_conn, ULS_COPY_ALL, uu[i]->id, cnts->id, k);
         if (r < 0) {
           vis_err("Operation failed: %s", userlist_strerror(-r));
           continue;
@@ -3331,13 +3418,13 @@ do_display_registered_users(
           continue;
         for (j = 0; j < nuser; j++) {
           if (!sel_users.mask[j]) continue;
-          r = userlist_clnt_copy_user_info(server_conn, uu[j]->id, cnts->id, k);
+          r = userlist_clnt_copy_user_info(server_conn, ULS_COPY_ALL, uu[j]->id, cnts->id, k);
           if (r < 0) {
             vis_err("Operation failed: %s", userlist_strerror(-r));
             continue;
           }
           sel_users.mask[j] = 0;
-          generate_reg_user_item(descs[j], 256, j, uu, uc, sel_users.mask);
+          generate_reg_user_item(descs[j], j, uu, uc, sel_users.mask);
         }
         memset(sel_users.mask, 0, sel_users.allocated);
         sel_users.total_selected = 0;
@@ -3376,7 +3463,7 @@ do_display_registered_users(
             }
           }
           sel_users.mask[j] = 0;
-          generate_reg_user_item(descs[j], 256, j, uu, uc, sel_users.mask);
+          generate_reg_user_item(descs[j], j, uu, uc, sel_users.mask);
         }
         memset(sel_users.mask, 0, sel_users.allocated);
         sel_users.total_selected = 0;
@@ -3553,10 +3640,9 @@ display_registered_users(
 static int
 display_contests_menu(unsigned char *upper, int only_choose)
 {
-  int ncnts = 0, i, j, w, y;
+  int ncnts = 0, i, j;
   const struct contest_desc *cc;
   unsigned char **descs;
-  unsigned char buf[128];
   ITEM **items;
   MENU *menu = 0;
   WINDOW *in_win = 0, *out_win = 0;
@@ -3629,16 +3715,15 @@ display_contests_menu(unsigned char *upper, int only_choose)
 
   for (i = 0; i < ncnts; i++) {
     j = cntsi[i];
-    if (cnts_names[j]) {
-      w = 66; y = 0;
-      if (utf8_mode) w = utf8_cnt(cnts_names[j], w, &y);
-      snprintf(buf, sizeof(buf), "%c%-8d  %-*.*s",
-               sel_cnts.mask[j]?'!':' ', j, w + y, w, cnts_names[j]);
-    } else {
-      snprintf(buf, sizeof(buf), "%c%-8d  (removed)", sel_cnts.mask[j]?'!':' ', j);
-    }
+    const unsigned char *cnts_name = cnts_names[j];
+    if (!cnts_name) cnts_name = "(removed)";
+    unsigned char *disp_str = xmalloc(strlen(cnts_name) + COLS * 4 + 1);
+    unsigned char *s = disp_str;
+    *s++ = sel_cnts.mask[j]?'!':' ';
+    s += sprintf(s, "%-8d ", j);
+    append_padded_string(s, cnts_name, COLS - 13);
     xfree(descs[i]);
-    descs[i] = xstrdup(buf);
+    descs[i] = disp_str;
   }
 
   // free menus from the previous iteration
@@ -3808,16 +3893,37 @@ display_contests_menu(unsigned char *upper, int only_choose)
   return retval;
 }
 
+static unsigned char *
+make_user_menu_item(
+        unsigned char *prev_item,
+        const struct userlist_user *uu,
+        int sel_flag)
+{
+  const unsigned char *name = NULL;
+  if (uu->cnts0) name = uu->cnts0->name;
+  if (!name) name = "";
+
+  unsigned char *buf = xmalloc(strlen(name) + COLS * 4 + 1);
+  unsigned char *s = buf;
+
+  *s++ = sel_flag?'!':' ';
+  s += sprintf(s, "%-6d ", uu->id);
+  s = append_padded_string(s, uu->login, 16);
+  *s++ = ' ';
+  append_padded_string(s, name, COLS - 28);
+  free(prev_item);
+  return buf;
+}
+
 static int
 do_display_user_menu(unsigned char *upper, int *p_start_item, int only_choose)
 {
-  int r, w, y;
+  int r;
   unsigned char *xml_text = 0;
   struct userlist_list *users = 0;
   int nusers, i, j, k;
   struct userlist_user **uu = 0;
   unsigned char **descs = 0;
-  unsigned char buf[1024];
   ITEM **items;
   MENU *menu;
   WINDOW *in_win, *out_win;
@@ -3827,7 +3933,6 @@ do_display_user_menu(unsigned char *upper, int *p_start_item, int only_choose)
   int retval = -1;
   int first_row;
   int loc_start_item;
-  const unsigned char *name;
 
   snprintf(current_level, sizeof(current_level),
            "%s->%s", upper, "User list");
@@ -3892,16 +3997,7 @@ do_display_user_menu(unsigned char *upper, int *p_start_item, int only_choose)
 
   XCALLOC(descs, nusers);
   for (i = 0; i < nusers; i++) {
-    name = 0;
-    if (uu[i]->cnts0) name = uu[i]->cnts0->name;
-    if (!name) name = "";
-
-    w = 50; y = 0;
-    if (utf8_mode) w = utf8_cnt(name, w, &y);
-    snprintf(buf, sizeof(buf), "%s%6d  %-16.16s  %-*.*s",
-             g_sel_users.mask[i]?"!":" ",
-             uu[i]->id, uu[i]->login, w + y, w, name);
-    descs[i] = xstrdup(buf);
+    descs[i] = make_user_menu_item(NULL, uu[i], g_sel_users.mask[i]);
   }
 
   XCALLOC(items, nusers + 1);
@@ -4177,15 +4273,7 @@ do_display_user_menu(unsigned char *upper, int *p_start_item, int only_choose)
         g_sel_users.mask[i] = 1;
         g_sel_users.total_selected++;
       }
-      name = 0;
-      if (uu[i]->cnts0) name = uu[i]->cnts0->name;
-      if (!name) name = "";
-      w = 50; y = 0;
-      if (utf8_mode) w = utf8_cnt(name, w, &y);
-      snprintf(buf, sizeof(buf), "%s%6d  %-16.16s  %-*.*s",
-               g_sel_users.mask[i]?"!":" ",
-               uu[i]->id, uu[i]->login, w + y, w, name);
-      strcpy(descs[i], buf);
+      descs[i] = make_user_menu_item(descs[i], uu[i], g_sel_users.mask[i]);
       menu_driver(menu, REQ_DOWN_ITEM);
       goto menu_continue;
     }
@@ -4233,15 +4321,7 @@ do_display_user_menu(unsigned char *upper, int *p_start_item, int only_choose)
             goto menu_continue;
           }
           g_sel_users.mask[j] = 0;
-          name = 0;
-          if (uu[i]->cnts0) name = uu[i]->cnts0->name;
-          if (!name) name = "";
-          w = 50; y = 0;
-          if (utf8_mode) w = utf8_cnt(name, w, &y);
-          snprintf(buf, sizeof(buf), "%s%6d  %-16.16s  %-*.*s",
-                   g_sel_users.mask[j]?"!":" ",
-                   uu[j]->id, uu[j]->login, w + y, w, name);
-          strcpy(descs[j], buf);
+          descs[j] = make_user_menu_item(descs[j], uu[j], g_sel_users.mask[j]);
         }
         memset(g_sel_users.mask, 0, g_sel_users.allocated);
         g_sel_users.total_selected = 0;
@@ -4278,15 +4358,7 @@ do_display_user_menu(unsigned char *upper, int *p_start_item, int only_choose)
             }
           }
           g_sel_users.mask[j] = 0;
-          name = 0;
-          if (uu[i]->cnts0) name = uu[i]->cnts0->name;
-          if (!name) name = "";
-          w = 50; y = 0;
-          if (utf8_mode) w = utf8_cnt(name, w, &y);
-          snprintf(buf, sizeof(buf), "%s%6d  %-16.16s  %-*.*s",
-                   g_sel_users.mask[j]?"!":" ",
-                   uu[j]->id, uu[j]->login, w + y, w, name);
-          strcpy(descs[j], buf);
+          descs[j] = make_user_menu_item(descs[j], uu[j], g_sel_users.mask[j]);
         }
         memset(g_sel_users.mask, 0, g_sel_users.allocated);
         g_sel_users.total_selected = 0;
@@ -4356,11 +4428,11 @@ group_member_menu_entry(
         struct userlist_groupmember *gm,
         int sel_flag)
 {
-  int w1 = 50, y1 = 0;
-  if (utf8_mode) w1 = utf8_cnt(gm->user->login, w1, &y1);
   unsigned char buf[512];
-  snprintf(buf, sizeof(buf), "%c%6d %-*.*s", sel_flag?'!':' ',
-           gm->user->id, w1 + y1, w1, gm->user->login);
+  unsigned char *s = buf;
+  *s++ = sel_flag?'!':' ';
+  s += sprintf(s, "%-6d ", gm->user->id);
+  append_padded_string(s, gm->user->login, 50);
   xfree(prev_entry);
   return xstrdup(buf);
 }
@@ -4863,15 +4935,15 @@ group_menu_entry(
 {
   const unsigned char *description = grp->description;
   if (!description) description = "";
-  int w1 = 15, y1 = 0;
-  if (utf8_mode) w1 = utf8_cnt(grp->group_name, w1, &y1);
-  int w2 = 50, y2 = 0;
-  if (utf8_mode) w2 = utf8_cnt(description, w2, &y2);
+
+  // FIXME: use COLS
   unsigned char buf[512];
-  snprintf(buf, sizeof(buf), "%c%6d %-*.*s %-*.*s",
-           sel_flag?'!':' ',
-           grp->group_id, w1 + y1, w1, grp->group_name,
-           w2 + y2, w2, description);
+  unsigned char *s = buf;
+  *s++ = sel_flag?'!':' ';
+  s += sprintf(s, "%-6d ", grp->group_id);
+  s = append_padded_string(s, grp->group_name, 15);
+  *s++ = ' ';
+  s = append_padded_string(s, description, 50);
   xfree(prev_entry);
   return xstrdup(buf);
 }

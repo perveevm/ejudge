@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2012-2015 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2012-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -19,6 +19,7 @@
 #include "ejudge/version.h"
 #include "ejudge/ejudge_cfg.h"
 #include "ejudge/startstop.h"
+#include "ejudge/logrotate.h"
 
 #include "ejudge/osdeps.h"
 
@@ -27,10 +28,13 @@
 #include <stdarg.h>
 #include <string.h>
 #include <ctype.h>
+#include <limits.h>
+
+#define WAIT_TIMEOUT_US 300000000LL // 300s
 
 /*
  * usage: ej-super-run-control COMMAND CONFIG
- *   COMMAND is one of `stop', `restart', `status'
+ *   COMMAND is one of 'stop', 'restart', 'rotate'
  */
 
 static const unsigned char *program_name = "";
@@ -80,6 +84,7 @@ write_help(void)
          "  COMMAND:\n"
          "    stop      stop the ej-super-run\n"
          "    restart   restart the ej-super-run\n"
+         "    rotate    rotate the log file\n"
          /*"    status    report the ej-super-run status\n"*/,
          program_name, program_name);
   exit(0);
@@ -103,14 +108,22 @@ main(int argc, char *argv[])
   const unsigned char *signame = "";
   int pid_count;
   int *pids = NULL;
+  int date_suffix_flag = 0;
 
   program_name = os_GetBasename(argv[0]);
   if (argc < 2) startup_error("not enough parameters");
 
-  if (!strcmp(argv[i], "--help")) {
-    write_help();
-  } else if (!strcmp(argv[i], "--version")) {
-    write_version();
+  while (1) {
+    if (!strcmp(argv[i], "--help")) {
+      write_help();
+    } else if (!strcmp(argv[i], "--version")) {
+      write_version();
+    } else if (!strcmp(argv[i], "--date-suffix")) {
+      ++i;
+      date_suffix_flag = 1;
+    } else {
+      break;
+    }
   }
 
   command = argv[i];
@@ -134,9 +147,30 @@ main(int argc, char *argv[])
   if (!strcmp(command, "stop")) {
     signum = START_STOP;
     signame = "TERM";
+    return (start_stop_and_wait(program_name, "ej-super-run", signame, signum, WAIT_TIMEOUT_US) < 0);
   } else if (!strcmp(command, "restart")) {
     signum = START_RESTART;
     signame = "HUP";
+  } else if (!strcmp(command, "rotate")) {
+    unsigned char lpd[PATH_MAX];
+    unsigned char lpf[PATH_MAX];
+    if (rotate_get_log_dir_and_file(lpd, sizeof(lpd),
+                                    lpf, sizeof(lpf),
+                                    config,
+                                    NULL,
+                                    "ej-super-run.log") < 0) {
+      startup_error("log file is not defined or invalid");
+    }
+
+    unsigned char *log_group = NULL;
+#if defined EJUDGE_PRIMARY_USER
+    log_group = EJUDGE_PRIMARY_USER;
+#endif
+
+    rotate_log_files(lpd, lpf, NULL, NULL, log_group, 0620, date_suffix_flag);
+
+    signum = START_ROTATE;
+    signame = "USR1";
   } else {
     startup_error("invalid command");
   }

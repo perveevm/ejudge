@@ -1,6 +1,6 @@
 /* -*- c -*- */
 
-/* Copyright (C) 2000-2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2000-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -40,6 +40,7 @@
 #include "ejudge/random.h"
 #include "ejudge/ej_process.h"
 #include "ejudge/agent_client.h"
+#include "ejudge/version.h"
 
 #include "ejudge/meta_generic.h"
 #include "ejudge/meta/compile_packet_meta.h"
@@ -70,6 +71,7 @@ static int initialize_mode = 0;
 
 static int daemon_mode;
 static int restart_mode;
+static int slave_mode;
 
 static unsigned char *compile_server_id;
 static __attribute__((unused)) unsigned char compile_server_spool_dir[PATH_MAX];
@@ -225,6 +227,26 @@ invoke_compiler(
     if (req->vcs_compile_cmd && req->vcs_compile_cmd[0]) {
       task_AddArg(tsk, req->vcs_compile_cmd);
     }
+  } else if (lang->enable_custom > 0 && req->compile_cmd && req->compile_cmd[0]) {
+    unsigned char cmd_name[PATH_MAX];
+    os_rGetLastname(req->compile_cmd, cmd_name, sizeof(cmd_name));
+    if (generic_copy_file(0, NULL, req->compile_cmd, NULL, 0, working_dir, cmd_name, NULL) < 0) {
+      err("failed to copy custom compiler '%s'", req->compile_cmd);
+      fprintf(log_f, "\nFailed to copy custom compiler '%s'\n", req->compile_cmd);
+      task_Delete(tsk);
+      return RUN_CHECK_FAILED;
+    }
+    unsigned char cmd_path[PATH_MAX];
+    if (snprintf(cmd_path, sizeof(cmd_path), "%s/%s", working_dir, cmd_name) >= (int) sizeof(cmd_path)) {
+      abort();
+    }
+    make_executable(cmd_path);
+    if (snprintf(cmd_path, sizeof(cmd_path), "./%s", cmd_name) >= (int) sizeof(cmd_path)) {
+      abort();
+    }
+    task_AddArg(tsk, cmd_path);
+    task_AddArg(tsk, input_file);
+    task_AddArg(tsk, output_file);
   } else {
     task_AddArg(tsk, lang->cmd);
     task_AddArg(tsk, input_file);
@@ -881,7 +903,7 @@ cleanup:
 }
 
 static int
-new_loop(int parallel_mode)
+new_loop(int parallel_mode, const unsigned char *global_log_path)
 {
   int retval = 0;
   const struct section_global_data *global = serve_state.global;
@@ -936,18 +958,27 @@ new_loop(int parallel_mode)
 
   interrupt_init();
   interrupt_setup_usr1();
+  interrupt_setup_usr2();
   interrupt_disable();
 
   while (1) {
     // terminate if signaled
     if (interrupt_get_status() || interrupt_restart_requested()) break;
+    if (interrupt_was_usr1()) {
+      if ((daemon_mode || slave_mode) && global_log_path && *global_log_path) {
+        start_open_log(global_log_path);
+        dup2(STDERR_FILENO, STDOUT_FILENO);
+      }
+      interrupt_reset_usr1();
+      continue;
+    }
 
     unsigned char pkt_name[PATH_MAX];
     pkt_name[0] = 0;
     int r = 0;
     if (agent) {
-      if (interrupt_was_usr1()) {
-        interrupt_reset_usr1();
+      if (interrupt_was_usr2()) {
+        interrupt_reset_usr2();
         if (future) {
           r = agent->ops->async_wait_complete(agent, &future, pkt_name, sizeof(pkt_name));
           if (r < 0) {
@@ -956,7 +987,7 @@ new_loop(int parallel_mode)
           }
         }
       } else if (!future) {
-        r = agent->ops->async_wait_init(agent, SIGUSR1, 0, pkt_name, sizeof(pkt_name), &future);
+        r = agent->ops->async_wait_init(agent, SIGUSR2, 0, pkt_name, sizeof(pkt_name), &future);
         //r = agent->ops->poll_queue(agent, pkt_name, sizeof(pkt_name));
         if (r < 0) {
           err("async_wait_init failed");
@@ -1377,6 +1408,7 @@ main(int argc, char *argv[])
   unsigned char *user = 0, *group = 0, *workdir = 0;
   int     parallel_mode = 0;
   int     ejudge_xml_fd = -1;
+  int     stderr_fd = -1;
 
 #if HAVE_SETSID - 0
   path_t  log_path;
@@ -1435,6 +1467,9 @@ main(int argc, char *argv[])
     } else if (!strcmp(argv[i], "-D")) {
       daemon_mode = 1;
       i++;
+    } else if (!strcmp(argv[i], "-S")) {
+      slave_mode = 1;
+      i++;
     } else if (!strcmp(argv[i], "-R")) {
       restart_mode = 1;
       i++;
@@ -1482,6 +1517,15 @@ main(int argc, char *argv[])
       struct stat stb;
       if (fstat(lval, &stb) < 0 || !S_ISREG(stb.st_mode)) goto print_usage;
       ejudge_xml_fd = lval;
+    } else if (!strcmp(argv[i], "-e")) {
+      if (++i >= argc) goto print_usage;
+      char *eptr = NULL;
+      errno = 0;
+      long lval = strtol(argv[i++], &eptr, 10);
+      if (errno || *eptr || eptr == argv[i - 1] || (int) lval != lval || lval < 0) goto print_usage;
+      struct stat stb;
+      if (fstat(lval, &stb) < 0) goto print_usage;
+      stderr_fd = lval;
     } else if (!strcmp(argv[i], "--agent")) {
       if (++i >= argc) goto print_usage;
       xfree(agent_name);
@@ -1598,6 +1642,17 @@ main(int argc, char *argv[])
   }
   xfree(pids); pids = NULL;
 #endif
+
+  int tmp_fd = -1;
+  if (stderr_fd >= 0) {
+    tmp_fd = dup(STDERR_FILENO);
+    dup2(stderr_fd, STDERR_FILENO);
+  }
+  info("%s %s, compiled %s", "ej-compile", compile_version, compile_date);
+  if (stderr_fd >= 0) {
+    dup2(tmp_fd, STDERR_FILENO); close(tmp_fd); tmp_fd = -1;
+    close(stderr_fd); stderr_fd = -1;
+  }
 
 #ifdef __WIN32__
   if (!compile_home_dir[0] && contests_home_dir[0]) {
@@ -1809,7 +1864,7 @@ main(int argc, char *argv[])
   xfree(lang_log_t); lang_log_t = 0; lang_log_z = 0;
 #endif /* HAVE_OPEN_MEMSTREAM */
 
-  if (new_loop(parallel_mode) < 0) return 1;
+  if (new_loop(parallel_mode, log_path) < 0) return 1;
 
   if (interrupt_restart_requested()) start_restart();
 

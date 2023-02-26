@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2011-2021 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2011-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -1138,7 +1138,7 @@ super_serve_op_USER_SEL_RANDOM_PASSWD_ACTION(
       r = userlist_clnt_register_contest(phr->userlist_clnt, ULS_PRIV_REGISTER_CONTEST,
                                          user_id, other_contest_id, 0, 0);
       if (r >= 0) {
-        r = userlist_clnt_copy_user_info(phr->userlist_clnt, user_id, contest_id, other_contest_id);
+        r = userlist_clnt_copy_user_info(phr->userlist_clnt, ULS_COPY_USER_INFO, user_id, contest_id, other_contest_id);
       }
       break;
     case SSERV_CMD_USER_SEL_CREATE_GROUP_MEMBER_ACTION:
@@ -2175,6 +2175,7 @@ super_serve_op_USER_CREATE_FROM_CSV_ACTION(
     up.cnts_use_sha1_flag = params.cnts_sha1;
     up.group_id = params.other_group_id;
     up.register_existing_flag = params.register_existing;
+    up.reset_existing_passwords_flag = params.reset_existing_passwords;
     r = userlist_clnt_create_user_2(phr->userlist_clnt, ULS_CREATE_USER_2, &up,
                                     login_str, email_str,
                                     reg_password_str, cnts_password_str,

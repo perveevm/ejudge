@@ -1,6 +1,6 @@
 /* -*- c -*- */
 
-/* Copyright (C) 2000-2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2000-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -1196,13 +1196,16 @@ run_get_accepted_set(
     q = &state->runs[i - state->run_f];
     ASSERT(q->user_id == user_id);
 
-    if (accepting_mode) {
-      if ((q->status == RUN_OK || q->status == RUN_ACCEPTED || q->status == RUN_PARTIAL || q->status == RUN_PENDING_REVIEW || q->status == RUN_SUMMONED)
-          && q->prob_id > 0 && q->prob_id <= max_prob)
-        acc_set[q->prob_id] = 1;
-    } else {
-      if ((q->status == RUN_OK || q->status == RUN_PENDING_REVIEW || q->status == RUN_SUMMONED) && q->prob_id > 0 && q->prob_id <= max_prob)
-        acc_set[q->prob_id] = 1;
+    if (q->prob_id > 0 && q->prob_id <= max_prob) {
+      if (accepting_mode) {
+        if (q->status == RUN_OK || q->status == RUN_ACCEPTED || q->status == RUN_PARTIAL || q->status == RUN_PENDING_REVIEW || q->status == RUN_SUMMONED)
+          acc_set[q->prob_id] = 1;
+        if (q->status == RUN_WRONG_ANSWER_ERR && acc_set[q->prob_id] != 1)
+          acc_set[q->prob_id] = 2;
+      } else {
+        if (q->status == RUN_OK || q->status == RUN_PENDING_REVIEW || q->status == RUN_SUMMONED)
+          acc_set[q->prob_id] = 1;
+      }
     }
   }
   ASSERT(i == -1);
@@ -1797,7 +1800,7 @@ run_clear_entry(runlog_state_t state, int run_id)
   if (state->runs[run_id - state->run_f].is_readonly) ERR_R("run %d is readonly", run_id);
   switch (state->runs[run_id - state->run_f].status) {
   case RUN_EMPTY:
-    break;
+    return 0;
   case RUN_VIRTUAL_STOP:
     /* VSTOP events can safely be cleared */
     urh = run_get_user_run_header(state, state->runs[run_id - state->run_f].user_id, NULL);

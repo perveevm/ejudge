@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2006-2016 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2006-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -34,6 +34,7 @@
 #include <errno.h>
 #include <string.h>
 #include <fcntl.h>
+#include <sys/time.h>
 
 static path_t self_exe;
 static char **self_argv;
@@ -122,22 +123,46 @@ start_set_args(char *argv[])
   self_argv[0] = self_exe;
 }
 
+static int
+get_process_name(unsigned char *buf, size_t size, int pid)
+{
+  unsigned char path[PATH_MAX];
+  if (snprintf(path, sizeof(path), "/proc/%d/cmdline", pid) >= (int) sizeof(path)) {
+    return -1;
+  }
+  int fd = open(path, O_RDONLY, 0);
+  if (fd < 0) {
+    return -1;
+  }
+  unsigned char cmdbuf[PATH_MAX];
+  int r = read(fd, cmdbuf, sizeof(cmdbuf));
+  if (r < 0 || r == sizeof(cmdbuf)) {
+    close(fd);
+    return -1;
+  }
+  cmdbuf[r] = 0;
+  unsigned char *p = strrchr(cmdbuf, '/');
+  if (p) {
+    ++p;
+  } else {
+    p = cmdbuf;
+  }
+  r = snprintf(buf, size, "%s", p);
+  close(fd);
+  return r;
+}
+
 int
 start_find_process(const unsigned char *name, int *p_uid)
 {
   DIR *d = 0;
   struct dirent *dd;
   char *eptr;
-  int pid, nlen, mypid, dlen;
-  path_t fpath, xpath, dpath;
-  long llen;
+  int pid, mypid;
   int retval = -1;
+  unsigned char cmdname[PATH_MAX];
 
-  nlen = strlen(name);
   mypid = getpid();
-
-  snprintf(dpath, sizeof(dpath), "%s (deleted)", name);
-  dlen = strlen(dpath);
 
   if (!(d = opendir("/proc"))) goto cleanup;
   retval = 0;
@@ -146,20 +171,9 @@ start_find_process(const unsigned char *name, int *p_uid)
     pid = strtol(dd->d_name, &eptr, 10);
     if (errno || *eptr || eptr == dd->d_name || pid <= 0 || pid == mypid)
       continue;
-    snprintf(fpath, sizeof(fpath), "/proc/%d/exe", pid);
-    xpath[0] = 0;
-    llen = readlink(fpath, xpath, sizeof(xpath));
-    if (llen <= 0 || llen >= sizeof(xpath)) continue;
-    xpath[llen] = 0;
-    if (llen < nlen + 1) continue;
-    if (xpath[llen - nlen - 1] == '/' && !strcmp(xpath + llen - nlen, name)) {
-      retval = pid;
-      // FIXME: get the actual uid
-      if (p_uid) *p_uid = getuid();
-      goto cleanup;
-    }
-    if (llen < dlen + 1) continue;
-    if (xpath[llen - dlen - 1] == '/' && !strcmp(xpath + llen - dlen, dpath)) {
+    if (get_process_name(cmdname, sizeof(cmdname), pid) <= 0)
+      continue;
+    if (!strcmp(name, cmdname)) {
       retval = pid;
       // FIXME: get the actual uid
       if (p_uid) *p_uid = getuid();
@@ -179,17 +193,12 @@ start_find_all_processes(const unsigned char *name, int **p_pids)
   DIR *d = 0;
   struct dirent *dd;
   char *eptr;
-  int pid, nlen, mypid, dlen;
-  path_t fpath, xpath, dpath;
-  long llen;
+  int pid, mypid;
   int a = 0, u = 0;
   int *pids = NULL;
+  unsigned char cmdname[PATH_MAX];
 
-  nlen = strlen(name);
   mypid = getpid();
-
-  snprintf(dpath, sizeof(dpath), "%s (deleted)", name);
-  dlen = strlen(dpath);
 
   if (!(d = opendir("/proc"))) return -1;
   while ((dd = readdir(d))) {
@@ -197,21 +206,9 @@ start_find_all_processes(const unsigned char *name, int **p_pids)
     pid = strtol(dd->d_name, &eptr, 10);
     if (errno || *eptr || eptr == dd->d_name || pid <= 0 || pid == mypid)
       continue;
-    snprintf(fpath, sizeof(fpath), "/proc/%d/exe", pid);
-    xpath[0] = 0;
-    llen = readlink(fpath, xpath, sizeof(xpath));
-    if (llen <= 0 || llen >= sizeof(xpath)) continue;
-    xpath[llen] = 0;
-    if (llen < nlen + 1) continue;
-    if (xpath[llen - nlen - 1] == '/' && !strcmp(xpath + llen - nlen, name)) {
-      if (u >= a) {
-        if (!a) a = 4;
-        XREALLOC(pids, a);
-      }
-      pids[u++] = pid;
-    }
-    if (llen < dlen + 1) continue;
-    if (xpath[llen - dlen - 1] == '/' && !strcmp(xpath + llen - dlen, dpath)) {
+    if (get_process_name(cmdname, sizeof(cmdname), pid) <= 0)
+      continue;
+    if (!strcmp(name, cmdname)) {
       if (u >= a) {
         if (!a) a = 4;
         XREALLOC(pids, a);
@@ -232,6 +229,7 @@ start_kill(int pid, int op)
   switch (op) {
   case START_RESTART: signum = SIGHUP; break;
   case START_STOP: signum = SIGTERM; break;
+  case START_ROTATE: signum = SIGUSR1; break;
   }
   return kill(pid, signum);
 }
@@ -276,3 +274,51 @@ start_shutdown(const unsigned char *command)
   err("cannot execute shutdown command '%s'", command);
   exit(1);
 }
+
+int
+start_stop_and_wait(
+        const unsigned char *program_name,
+        const unsigned char *process_name,
+        const unsigned char *signame,
+        int signum,
+        long long timeout_us)
+{
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  long long t1 = tv.tv_sec * 1000000LL + tv.tv_usec;
+  int signals_sent = 0;
+  while (1) {
+    int *pids = NULL;
+    int pid_count = start_find_all_processes(process_name, &pids);
+    if (pid_count < 0) {
+      fprintf(stderr, "%s: cannot get the list of processes from /proc\n",
+              program_name);
+      return -1;
+    }
+    if (!pid_count) {
+      break;
+    }
+    if (!signals_sent) {
+      fprintf(stderr, "%s: %s is running as pids", program_name, process_name);
+      for (int i = 0; i < pid_count; ++i) {
+        fprintf(stderr, " %d", pids[i]);
+      }
+      fprintf(stderr, "\n");
+      fprintf(stderr, "%s: sending the %s signal\n", program_name, signame);
+      for (int i = 0; i < pid_count; ++i) {
+        start_kill(pids[i], signum);
+      }
+      signals_sent = 1;
+    }
+    free(pids); pids = NULL;
+    gettimeofday(&tv, NULL);
+    long long t2 = tv.tv_sec * 1000000LL + tv.tv_usec;
+    if (timeout_us > 0 && t1 + timeout_us <= t2) {
+      fprintf(stderr, "%s: wait timed out\n", program_name);
+      return -1;
+    }
+    usleep(100000);
+  }
+  return 0;
+}
+

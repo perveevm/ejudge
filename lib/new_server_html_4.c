@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2006-2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2006-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -763,6 +763,7 @@ cmd_clar_operation(
   return retval;
 }
 
+
 static int
 cmd_submit_run(
         FILE *fout,
@@ -889,6 +890,20 @@ cmd_submit_run(
     if (cs->global->enable_eoln_select > 0) {
       hr_cgi_param_int_opt(phr, "eoln_type", &eoln_type, 0);
       if (eoln_type < 0 || eoln_type > EOLN_CRLF) eoln_type = 0;
+    }
+  }
+
+  if (prob->type == PROB_TYPE_STANDARD && prob->custom_compile_cmd && prob->custom_compile_cmd[0]) {
+    // only enable_custom language is allowed
+    if (!lang || lang->enable_custom <= 0) {
+      fprintf(phr->log_f, "custom language is expected\n");
+      FAIL(NEW_SRV_ERR_INV_LANG_ID);
+    }
+  } else if (prob->type == PROB_TYPE_STANDARD) {
+    // enable_custom language is disabled
+    if (lang && lang->enable_custom > 0) {
+      fprintf(phr->log_f, "custom language is not allowed\n");
+      FAIL(NEW_SRV_ERR_INV_LANG_ID);
     }
   }
 
@@ -1054,8 +1069,7 @@ cmd_submit_run(
     if (prob->disable_submit_after_ok
         && global->score_system != SCORE_OLYMPIAD && !cs->accepting_mode) {
       XALLOCAZ(acc_probs, cs->max_prob + 1);
-      run_get_accepted_set(cs->runlog_state, phr->user_id,
-                           cs->accepting_mode, cs->max_prob, acc_probs);
+      ns_get_accepted_set(cs, phr->user_id, acc_probs);
       if (acc_probs[prob->id])
         FAIL(NEW_SRV_ERR_PROB_ALREADY_SOLVED);
     }
@@ -1063,8 +1077,7 @@ cmd_submit_run(
     if (prob->require) {
       if (!acc_probs) {
         XALLOCAZ(acc_probs, cs->max_prob + 1);
-        run_get_accepted_set(cs->runlog_state, phr->user_id,
-                             cs->accepting_mode, cs->max_prob, acc_probs);
+        ns_get_accepted_set(cs, phr->user_id, acc_probs);
       }
       if (prob->require_any > 0) {
         for (i = 0; prob->require[i]; i++) {
@@ -1146,12 +1159,10 @@ cmd_submit_run(
                         "submit", "ok", RUN_COMPILING, NULL);
       if ((r = serve_compile_request(phr->config, cs, run_text, run_size, cnts->id,
                                      run_id, 0 /* submit_id */, phr->user_id,
-                                     lang->compile_id, variant,
+                                     variant,
                                      phr->locale_id, 0,
                                      lang->src_sfx,
-                                     lang->compiler_env,
-                                     0, prob->style_checker_cmd,
-                                     prob->style_checker_env,
+                                     0,
                                      -1, 0, 0, prob, lang, 0, &run_uuid,
                                      NULL /* judge_uuid */,
                                      store_flags,
@@ -1174,13 +1185,11 @@ cmd_submit_run(
                         "submit", "ok", RUN_COMPILING, NULL);
       if (prob->style_checker_cmd && prob->style_checker_cmd[0]) {
         if ((r = serve_compile_request(phr->config, cs, run_text, run_size, cnts->id,
-                                       run_id, 0 /* submit_id */, phr->user_id, 0 /* lang_id */, variant,
+                                       run_id, 0 /* submit_id */, phr->user_id,
+                                       variant,
                                        0 /* locale_id */, 1 /* output_only*/,
                                        mime_type_get_suffix(mime_type),
-                                       NULL /* compiler_env */,
                                        1 /* style_check_only */,
-                                       prob->style_checker_cmd,
-                                       prob->style_checker_env,
                                        0 /* accepting_mode */,
                                        0 /* priority_adjustment */,
                                        0 /* notify flag */,
@@ -1239,13 +1248,11 @@ cmd_submit_run(
         serve_audit_log(cs, run_id, NULL, phr->user_id, &phr->ip, phr->ssl_flag,
                         "submit", "ok", RUN_COMPILING, NULL);
         if ((r = serve_compile_request(phr->config, cs, run_text, run_size, cnts->id,
-                                       run_id, 0 /* submit_id */, phr->user_id, 0 /* lang_id */, variant,
+                                       run_id, 0 /* submit_id */, phr->user_id,
+                                       variant,
                                        0 /* locale_id */, 1 /* output_only*/,
                                        mime_type_get_suffix(mime_type),
-                                       NULL /* compiler_env */,
                                        1 /* style_check_only */,
-                                       prob->style_checker_cmd,
-                                       prob->style_checker_env,
                                        0 /* accepting_mode */,
                                        0 /* priority_adjustment */,
                                        0 /* notify flag */,

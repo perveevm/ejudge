@@ -1,6 +1,6 @@
 /* -*- mode: c; c-basic-offset: 4 -*- */
 
-/* Copyright (C) 2021-2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2021-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -137,6 +137,8 @@ static int enable_compile_mode = 0;
 static int enable_seccomp = 1;
 static int enable_sys_execve = 0;
 static int enable_sys_fork = 0;
+static int enable_sys_memfd = 0;
+static int enable_sys_unshare = 0;
 
 static char *working_dir = NULL;
 static char *working_dir_parent = NULL;
@@ -407,6 +409,31 @@ change_ownership(int user_id, int group_id, int from_user_id)
     safe_chown_rec(dir, user_id, group_id, from_user_id);
 }
 
+static void
+mount_tmpfs(
+        const unsigned char *dir,
+        const unsigned char *subdir,
+        int user,
+        int group)
+{
+    unsigned char path[PATH_MAX];
+    if (snprintf(path, sizeof(path), "%s/%s", dir, subdir) >= (int) sizeof(path)) {
+        ffatal("path %s/%s is too long", dir, subdir);
+    }
+    if (mkdir(path, 0700) < 0 && errno != EEXIST) {
+        ffatal("mkdir '%s' failed: %s", path, strerror(errno));
+    }
+    if (chown(path, user, group) < 0) {
+        ffatal("chown '%s' failed: %s", path, strerror(errno));
+    }
+    if (chmod(path, 0700) < 0) {
+        ffatal("chmod '%s' failed: %s", path, strerror(errno));
+    }
+    if (mount("tmpfs", path, "tmpfs", MS_NOSUID | MS_NODEV, "size=1024m,nr_inodes=1024") < 0) {
+        ffatal("mount '%s' failed: %s", path, strerror(errno));
+    }
+}
+
 struct MountInfo
 {
     char *src_path;
@@ -657,6 +684,16 @@ reconfigure_fs(void)
             if (preserve_compile) {
                 if ((r = mount(alt_path, compile_dir, NULL, MS_BIND, NULL)) < 0) {
                     ffatal("failed to mount %s to %s: %s", compile_dir, alt_path, strerror(errno));
+                }
+                if (enable_compile_mode) {
+                    static const unsigned char * const subdirs[] =
+                    {
+                        ".cache", ".dotnet", ".local", ".nuget", ".template", ".templateengine", NULL,
+                    };
+                    for (int di = 0; subdirs[di]; ++di) {
+                        mount_tmpfs(compile_dir, subdirs[di],
+                                    compile_uid, compile_gid);
+                    }
                 }
             }
         } else {
@@ -1360,7 +1397,7 @@ static struct sock_filter seccomp_filter_default[] =
 #endif
 
     // blacklist exec-like syscalls
-#if defined __NR_clone3
+#if defined __NR_execveat
     /*  9 */ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_execveat, 0, 1),
     /* 10 */ BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL_PROCESS),
 #else
@@ -1374,15 +1411,33 @@ static struct sock_filter seccomp_filter_default[] =
     /* 13 */ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, 0, 1, 0), // patched in tune_seccomp
     /* 14 */ BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL_PROCESS),
 
+    // blacklist memfd_create
+#if defined __NR_memfd_create
+    /* 15 */ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_memfd_create, 0, 1),
+    /* 16 */ BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL_PROCESS),
+#else
+    /* 15 */ BPF_JUMP(BPF_JMP+BPF_JA, 0, 0, 0),
+    /* 16 */ BPF_JUMP(BPF_JMP+BPF_JA, 0, 0, 0),
+#endif
+
+    // blacklist unshare
+#if defined __NR_unshare
+    /* 17 */ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_unshare, 0, 1),
+    /* 18 */ BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL_PROCESS),
+#else
+    /* 17 */ BPF_JUMP(BPF_JMP+BPF_JA, 0, 0, 0),
+    /* 18 */ BPF_JUMP(BPF_JMP+BPF_JA, 0, 0, 0),
+#endif
+
     // allow remaining
-    /* 15 */ BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+    /* 19 */ BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
 };
 
 static struct sock_filter seccomp_filter_x86_64[] =
 {
     /*  0 */ BPF_STMT(BPF_LD+BPF_W+BPF_ABS, (offsetof(struct seccomp_data, arch))),
     /*  1 */ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, AUDIT_ARCH_X86_64, 2, 0), // jeq (4)
-    /*  2 */ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, AUDIT_ARCH_I386, 17, 0),  // jeq (20)
+    /*  2 */ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, AUDIT_ARCH_I386, 21, 0),  // jeq (24)
     /*  3 */ BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL_PROCESS),
 
     // x86_64 part
@@ -1420,7 +1475,7 @@ static struct sock_filter seccomp_filter_x86_64[] =
 #endif
 
     // blacklist exec-like syscalls
-#if defined __NR_clone3
+#if defined __NR_execveat
     /* 13 */ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_execveat, 0, 1),
     /* 14 */ BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL_PROCESS),
 #else
@@ -1434,31 +1489,79 @@ static struct sock_filter seccomp_filter_x86_64[] =
     /* 17 */ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, 0, 1, 0), // patched in tune_seccomp
     /* 18 */ BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL_PROCESS),
 
+    // blacklist memfd_create
+#if defined __NR_memfd_create
+    /* 19 */ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_memfd_create, 0, 1),
+    /* 20 */ BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL_PROCESS),
+#else
+    /* 19 */ BPF_JUMP(BPF_JMP+BPF_JA, 0, 0, 0),
+    /* 20 */ BPF_JUMP(BPF_JMP+BPF_JA, 0, 0, 0),
+#endif
+
+    // blacklist unshare
+#if defined __NR_unshare
+    /* 21 */ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_unshare, 0, 1),
+    /* 22 */ BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL_PROCESS),
+#else
+    /* 21 */ BPF_JUMP(BPF_JMP+BPF_JA, 0, 0, 0),
+    /* 22 */ BPF_JUMP(BPF_JMP+BPF_JA, 0, 0, 0),
+#endif
+
     // allow remaining
-    /* 19 */ BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+    /* 23 */ BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
 
     // i686 under x86_64 part
     // load syscall number
-    /* 20 */ BPF_STMT(BPF_LD+BPF_W+BPF_ABS, (offsetof(struct seccomp_data, nr))),
+    /* 24 */ BPF_STMT(BPF_LD+BPF_W+BPF_ABS, (offsetof(struct seccomp_data, nr))),
 
     // blacklist fork-like syscalls
-    /* 21 */ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_32_fork, 0, 1),
-    /* 22 */ BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL_PROCESS),
-    /* 23 */ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_32_vfork, 0, 1),
-    /* 24 */ BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL_PROCESS),
-    /* 25 */ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_32_clone, 0, 1),
+    /* 25 */ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_32_fork, 0, 1),
     /* 26 */ BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL_PROCESS),
-    /* 27 */ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_32_clone3, 0, 1),
+    /* 27 */ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_32_vfork, 0, 1),
     /* 28 */ BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL_PROCESS),
+    /* 29 */ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_32_clone, 0, 1),
+    /* 30 */ BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL_PROCESS),
+
+#if defined __NR_32_clone3
+    /* 31 */ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_32_clone3, 0, 1),
+    /* 32 */ BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL_PROCESS),
+#else
+    /* 31 */ BPF_JUMP(BPF_JMP+BPF_JA, 0, 0, 0),
+    /* 32 */ BPF_JUMP(BPF_JMP+BPF_JA, 0, 0, 0),
+#endif
 
     // blacklist exec-like syscalls
-    /* 29 */ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_32_execve, 0, 1),
-    /* 30 */ BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL_PROCESS),
-    /* 31 */ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_32_execveat, 0, 1),
-    /* 32 */ BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL_PROCESS),
+    /* 33 */ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_32_execve, 0, 1),
+    /* 34 */ BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL_PROCESS),
+
+#if defined __NR_32_execveat
+    /* 35 */ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_32_execveat, 0, 1),
+    /* 36 */ BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL_PROCESS),
+#else
+    /* 35 */ BPF_JUMP(BPF_JMP+BPF_JA, 0, 0, 0),
+    /* 36 */ BPF_JUMP(BPF_JMP+BPF_JA, 0, 0, 0),
+#endif
+
+    // blacklist memfd_create
+#if defined __NR_32_memfd_create
+    /* 37 */ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_32_memfd_create, 0, 1),
+    /* 38 */ BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL_PROCESS),
+#else
+    /* 37 */ BPF_JUMP(BPF_JMP+BPF_JA, 0, 0, 0),
+    /* 38 */ BPF_JUMP(BPF_JMP+BPF_JA, 0, 0, 0),
+#endif
+
+    // blacklist unshare
+#if defined __NR_32_unshare
+    /* 39 */ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_32_unshare, 0, 1),
+    /* 40 */ BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL_PROCESS),
+#else
+    /* 39 */ BPF_JUMP(BPF_JMP+BPF_JA, 0, 0, 0),
+    /* 40 */ BPF_JUMP(BPF_JMP+BPF_JA, 0, 0, 0),
+#endif
 
     // allow remaining
-    /* 33 */ BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+    /* 41 */ BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
 };
 
 static __attribute__((unused)) struct sock_fprog seccomp_prog_x86_64 =
@@ -1503,14 +1606,14 @@ tune_seccomp()
         seccomp_filter_x86_64[10] = nop[0];
         seccomp_filter_x86_64[11] = nop[0];
         seccomp_filter_x86_64[12] = nop[0];
-        seccomp_filter_x86_64[21] = nop[0];
-        seccomp_filter_x86_64[22] = nop[0];
-        seccomp_filter_x86_64[23] = nop[0];
-        seccomp_filter_x86_64[24] = nop[0];
         seccomp_filter_x86_64[25] = nop[0];
         seccomp_filter_x86_64[26] = nop[0];
         seccomp_filter_x86_64[27] = nop[0];
         seccomp_filter_x86_64[28] = nop[0];
+        seccomp_filter_x86_64[29] = nop[0];
+        seccomp_filter_x86_64[30] = nop[0];
+        seccomp_filter_x86_64[31] = nop[0];
+        seccomp_filter_x86_64[32] = nop[0];
     }
     if (enable_sys_execve) {
         seccomp_filter_x86_64[13] = nop[0];
@@ -1519,10 +1622,22 @@ tune_seccomp()
         seccomp_filter_x86_64[16] = nop[0];
         seccomp_filter_x86_64[17] = nop[0];
         seccomp_filter_x86_64[18] = nop[0];
-        seccomp_filter_x86_64[29] = nop[0];
-        seccomp_filter_x86_64[30] = nop[0];
-        seccomp_filter_x86_64[31] = nop[0];
-        seccomp_filter_x86_64[32] = nop[0];
+        seccomp_filter_x86_64[33] = nop[0];
+        seccomp_filter_x86_64[34] = nop[0];
+        seccomp_filter_x86_64[35] = nop[0];
+        seccomp_filter_x86_64[36] = nop[0];
+    }
+    if (enable_sys_memfd) {
+        seccomp_filter_x86_64[19] = nop[0];
+        seccomp_filter_x86_64[20] = nop[0];
+        seccomp_filter_x86_64[37] = nop[0];
+        seccomp_filter_x86_64[38] = nop[0];
+    }
+    if (enable_sys_unshare) {
+        seccomp_filter_x86_64[21] = nop[0];
+        seccomp_filter_x86_64[22] = nop[0];
+        seccomp_filter_x86_64[39] = nop[0];
+        seccomp_filter_x86_64[40] = nop[0];
     }
 #else
     seccomp_prog_active = &seccomp_prog_default;
@@ -1550,6 +1665,14 @@ tune_seccomp()
         seccomp_filter_default[12] = nop[0];
         seccomp_filter_default[13] = nop[0];
         seccomp_filter_default[14] = nop[0];
+    }
+    if (enable_sys_memfd) {
+        seccomp_filter_default[15] = nop[0];
+        seccomp_filter_default[16] = nop[0];
+    }
+    if (enable_sys_unshare) {
+        seccomp_filter_default[17] = nop[0];
+        seccomp_filter_default[18] = nop[0];
     }
 #endif
 }
@@ -1621,7 +1744,9 @@ apply_language_profiles(void)
         enable_proc = 1;
         limit_vm_size = -1;
     } else if (!strcmp(language_name, "dotnet-cs") || !strcmp(language_name, "dotnet-vb")) {
-        enable_seccomp = 0;
+        enable_sys_fork = 1;
+        enable_sys_execve = 1;
+        enable_sys_memfd = 1;
         enable_proc = 1;
         limit_processes = 40;
         limit_stack_size = 1024 * 1024; // 1M
@@ -1630,10 +1755,12 @@ apply_language_profiles(void)
             limit_vm_size = -1;
         }
     } else if (!strcmp(language_name, "make")) {
-        enable_seccomp = 0;
+        enable_sys_fork = 1;
+        enable_sys_execve = 1;
         enable_proc = 1;
     } else if (!strcmp(language_name, "make-vg")) {
-        enable_seccomp = 0;
+        enable_sys_fork = 1;
+        enable_sys_execve = 1;
         enable_proc = 1;
         limit_vm_size = -1;
     } else if (!strcmp(language_name, "gccgo")) {
@@ -1764,6 +1891,8 @@ extract_size(const char **ppos, int init_offset, const char *opt_name)
  *   s0     - disable syscall filtering
  *   se     - enable execve(at)
  *   sf     - enable fork, vfork, clone, clone3
+ *   sm     - enable memfd_create
+ *   su     - enable unshare
  *   cf<FD> - specify control socket fd
  *   cu<N>  - specify ejcompile/ejexec serial (ejexec1, ejexec2...)
  */
@@ -1979,6 +2108,12 @@ main(int argc, char *argv[])
                 opt += 2;
             } else if (*opt == 's' && opt[1] == 'f') {
                 enable_sys_fork = 1;
+                opt += 2;
+            } else if (*opt == 's' && opt[1] == 'm') {
+                enable_sys_memfd = 1;
+                opt += 2;
+            } else if (*opt == 's' && opt[1] == 'u') {
+                enable_sys_unshare = 1;
                 opt += 2;
             } else if (*opt == 'o' && opt[1] == 'l') {
                 language_name = extract_string(&opt, 2, "ol");
@@ -2303,6 +2438,12 @@ main(int argc, char *argv[])
                     fprintf(stderr, "seccomp loading failed: %s\n", strerror(errno));
                     _exit(127);
                 }
+            }
+
+            if (enable_compile_mode) {
+                setenv("USER", COMPILE_USER, 1);
+                setenv("LOGNAME", COMPILE_USER, 1);
+                setenv("HOME", compile_dir, 1);
             }
 
             if (bash_mode) {

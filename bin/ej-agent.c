@@ -1,6 +1,6 @@
 /* -*- mode: c; c-basic-offset: 4 -*- */
 
-/* Copyright (C) 2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2022-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -47,6 +47,7 @@
 #include <sys/mman.h>
 
 static const unsigned char *program_name;
+static const unsigned char *log_file;
 
 static void die(const char *format, ...)
   __attribute__((noreturn, format(printf, 1, 2)));
@@ -164,6 +165,7 @@ struct AppState
     int spool_wd;
     int wait_finished;
     int wait_random_mode;
+    int reopen_log_flag;
 
     int ifd;                    /* inotify file descriptor */
     int sfd;                    /* signal file descriptor */
@@ -458,6 +460,7 @@ signal_read_func(struct AppState *as, struct FDInfo *fdi)
         switch (sss.ssi_signo) {
         case SIGINT:  as->term_flag = 1; break;
         case SIGTERM: as->term_flag = 1; break;
+        case SIGUSR1:  as->reopen_log_flag = 1; break;
         default:
             err("%s: signal_read_func: unexpected signal %d", as->inst_id, sss.ssi_signo);
             break;
@@ -649,7 +652,7 @@ done:
     if (as->verbose_mode) {
         info("%s: json: %s", as->inst_id, jstr);
     }
-    jstr = realloc(jstr, jlen + 2);
+    jstr = realloc(jstr, jlen + 3);
     jstr[jlen++] = '\n';
     jstr[jlen++] = '\n';
     jstr[jlen] = 0;
@@ -712,7 +715,7 @@ pipe_write_func(struct AppState *as, struct FDInfo *fdi)
             fdi->wr_size = c->size;
             fdi->wr_pos = 0;
             if (fdi->wchunku > 0) {
-                memcpy(&fdi->wchunks[0], &fdi->wchunks[1], fdi->wchunku - 1);
+                memcpy(&fdi->wchunks[0], &fdi->wchunks[1], (fdi->wchunku - 1) * sizeof(fdi->wchunks[0]));
             }
             --fdi->wchunku;
             continue;
@@ -752,11 +755,13 @@ app_state_prepare(struct AppState *as)
     sigaction(SIGINT, &(struct sigaction) { .sa_handler = dummy_handler }, NULL);
     sigaction(SIGTERM, &(struct sigaction) { .sa_handler = dummy_handler }, NULL);
     sigaction(SIGHUP, &(struct sigaction) { .sa_handler = dummy_handler }, NULL);
+    sigaction(SIGUSR1, &(struct sigaction) { .sa_handler = dummy_handler }, NULL);
 
     sigset_t ss;
     sigemptyset(&ss);
     sigaddset(&ss, SIGINT);
     sigaddset(&ss, SIGTERM);
+    sigaddset(&ss, SIGUSR1);
     sigprocmask(SIG_BLOCK, &ss, NULL);
     if ((as->sfd = signalfd(-1, &ss, SFD_CLOEXEC | SFD_NONBLOCK)) < 0) {
         err("%s: signalfd failed: %s", as->inst_id, os_ErrorMsg());
@@ -881,7 +886,7 @@ check_spool_state(struct AppState *as)
     if (as->verbose_mode) {
         info("%s: json: %s", as->inst_id, jstr);
     }
-    jstr = realloc(jstr, jlen + 2);
+    jstr = realloc(jstr, jlen + 3);
     jstr[jlen++] = '\n';
     jstr[jlen++] = '\n';
     jstr[jlen] = 0;
@@ -930,6 +935,19 @@ do_loop(struct AppState *as)
                 struct FDInfo *fdi = (struct FDInfo *) ev->data.ptr;
                 fdi->ops->op_write(as, fdi);
             }
+        }
+
+        if (as->reopen_log_flag) {
+            if (log_file && *log_file) {
+                int fd = open(log_file, O_WRONLY | O_CREAT | O_APPEND | O_NOCTTY, 0600);
+                if (fd < 0) {
+                    err("%s: cannot open log file '%s': %s", as->inst_id, log_file, strerror(errno));
+                } else {
+                    dup2(fd, STDERR_FILENO);
+                    close(fd);
+                }
+            }
+            as->reopen_log_flag = 0;
         }
 
         if (as->timer_flag) {
@@ -1437,6 +1455,12 @@ wait_func(
     as->wait_serial = channel;
     as->wait_time_ms = as->current_time_ms;
     as->spool_wd = inotify_add_watch(as->ifd, as->queue_packet_dir, IN_CREATE | IN_MOVED_TO);
+    if (as->spool_wd < 0) {
+        // for debug purposes: fail immediately
+        err("%s: wait_func: inotify_add_watch failed: %s",
+            as->inst_id, os_ErrorMsg());
+        exit(1);
+    }
 
     cJSON_AddNumberToObject(reply, "channel", as->wait_serial);
     cJSON_AddStringToObject(reply, "q", "channel-result");
@@ -1826,6 +1850,10 @@ main(int argc, char *argv[])
             if (argi + 1 >= argc) die("argument expected for -i");
             inst_id = argv[argi + 1];
             argi += 2;
+        } else if (!strcmp(argv[argi], "-l")) {
+            if (argi + 1 >= argc) die("argument expected for -l");
+            log_file = argv[argi + 1];
+            argi += 2;
         } else if (!strcmp(argv[argi], "-m")) {
             if (argi + 1 >= argc) die("argument expected for -m");
             if (!strcmp(argv[argi + 1], "compile")) {
@@ -1894,6 +1922,15 @@ main(int argc, char *argv[])
     app_state_add_query_callback(&app, "delete-heartbeat", NULL, delete_heartbeat_func);
     app_state_add_query_callback(&app, "put-archive", NULL, put_archive_func);
     app_state_add_query_callback(&app, "mirror", NULL, mirror_func);
+
+    if (log_file && *log_file) {
+        int fd = open(log_file, O_WRONLY | O_CREAT | O_APPEND | O_NOCTTY, 0600);
+        if (fd < 0) {
+            die("cannot open log file '%s': %s", log_file, strerror(errno));
+        }
+        dup2(fd, STDERR_FILENO);
+        close(fd);
+    }
 
     info("%s: started", app.inst_id);
     do_loop(&app);

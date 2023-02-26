@@ -1,6 +1,6 @@
 /* -*- mode: c; c-basic-offset: 4 -*- */
 
-/* Copyright (C) 2006-2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2006-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -200,6 +200,8 @@ struct AppState
     int term_flag;
     int restart_flag;
     int timer_flag;
+    int reopen_log_flag;
+    int daemon_mode;
 
     int sfd;
     int tfd;
@@ -466,6 +468,7 @@ signal_read_func(struct AppState *as, struct FDInfo *fdi)
         case SIGINT:  as->term_flag = 1; break;
         case SIGTERM: as->term_flag = 1; break;
         case SIGCHLD: as->child_flag = 1; break;
+        case SIGUSR1: as->reopen_log_flag = 1; break;
         default:
             err("signal_read_func: unexpected signal %d", sss.ssi_signo);
             break;
@@ -855,6 +858,7 @@ app_state_prepare(struct AppState *as)
     sigaction(SIGINT, &(struct sigaction) { .sa_handler = dummy_handler }, NULL);
     sigaction(SIGTERM, &(struct sigaction) { .sa_handler = dummy_handler }, NULL);
     sigaction(SIGHUP, &(struct sigaction) { .sa_handler = dummy_handler }, NULL);
+    sigaction(SIGUSR1, &(struct sigaction) { .sa_handler = dummy_handler }, NULL);
 
     sigset_t ss;
     sigemptyset(&ss);
@@ -862,6 +866,7 @@ app_state_prepare(struct AppState *as)
     sigaddset(&ss, SIGTERM);
     sigaddset(&ss, SIGHUP);
     sigaddset(&ss, SIGCHLD);
+    sigaddset(&ss, SIGUSR1);
     sigprocmask(SIG_BLOCK, &ss, NULL);
     if ((as->sfd = signalfd(-1, &ss, SFD_CLOEXEC | SFD_NONBLOCK)) < 0) {
         err("signalfd failed: %s", os_ErrorMsg());
@@ -1530,6 +1535,13 @@ do_loop(struct AppState *as)
             as->child_flag = 0;
         }
 
+        if (as->reopen_log_flag) {
+            if (as->daemon_mode) {
+                start_open_log(as->job_server_log);
+            }
+            as->reopen_log_flag = 0;
+        }
+
         {
             struct ProcessState *p, *q;
             for (p = as->rd_prc_first; p; p = q) {
@@ -1800,7 +1812,7 @@ int main(int argc, char *argv[])
     XCALLOC(argv_restart, argc + 2);
     argv_restart[j++] = argv[0];
 
-    int daemon_mode = 0, restart_mode = 0;
+    int restart_mode = 0;
     const unsigned char *user = NULL;
     const unsigned char *group = NULL;
     const unsigned char *workdir = NULL;
@@ -1808,7 +1820,7 @@ int main(int argc, char *argv[])
 
     while (cur_arg < argc) {
         if (!strcmp(argv[cur_arg], "-D")) {
-            daemon_mode = 1;
+            as.daemon_mode = 1;
             cur_arg++;
         } else if (!strcmp(argv[cur_arg], "-R")) {
             restart_mode = 1;
@@ -1883,7 +1895,7 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    if (daemon_mode) {
+    if (as.daemon_mode) {
         if (start_open_log(as.job_server_log) < 0)
             return 1;
 

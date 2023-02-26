@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2005-2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2005-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -907,6 +907,8 @@ prepare_unparse_lang(
     unparse_bool(f, "disable_auto_testing", lang->disable_auto_testing);
   if (lang->disable_testing)
     unparse_bool(f, "disable_testing", lang->disable_testing);
+  if (lang->enable_custom > 0)
+    unparse_bool(f, "enable_custom", lang->enable_custom);
   if (lang->content_type && lang->content_type[0]) {
     fprintf(f, "content_type = \"%s\"\n", CARMOR(lang->content_type));
   }
@@ -1639,6 +1641,10 @@ prepare_unparse_prob(
     fprintf(f, "source_header = \"%s\"\n", CARMOR(prob->source_header));
   if (prob->source_footer)
     fprintf(f, "source_footer = \"%s\"\n", CARMOR(prob->source_footer));
+  if (prob->custom_compile_cmd)
+    fprintf(f, "custom_compile_cmd = \"%s\"\n", CARMOR(prob->custom_compile_cmd));
+  if (prob->custom_lang_name)
+    fprintf(f, "custom_lang_name = \"%s\"\n", CARMOR(prob->custom_lang_name));
   if (prob->normalization)
     fprintf(f, "normalization = \"%s\"\n", CARMOR(prob->normalization));
   if (prob->super_run_dir && prob->super_run_dir[0]) {
@@ -2069,6 +2075,10 @@ prepare_unparse_actual_prob(
     fprintf(f, "source_header = \"%s\"\n", CARMOR(prob->source_header));
   if (prob->source_footer)
     fprintf(f, "source_footer = \"%s\"\n", CARMOR(prob->source_footer));
+  if (prob->custom_compile_cmd)
+    fprintf(f, "custom_compile_cmd = \"%s\"\n", CARMOR(prob->custom_compile_cmd));
+  if (prob->custom_lang_name)
+    fprintf(f, "custom_lang_name = \"%s\"\n", CARMOR(prob->custom_lang_name));
   if (prob->normalization)
     fprintf(f, "normalization = \"%s\"\n", CARMOR(prob->normalization));
   if (prob->extid && prob->extid[0])

@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2006-2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2006-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -5134,10 +5134,6 @@ kirov_score_default(
 {
   int cur_score = 0;
 
-  if (pinfo->solved_flag) {
-    // if the problem is already solved, no need to process this run
-    return;
-  }
   if (cur_prob->ignore_unmarked > 0 && !re->is_marked) {
     // ignore "unmarked" runs, if the option is set
     return;
@@ -5703,7 +5699,7 @@ ns_get_user_problems_summary(
   xfree(user_flag);
 
   // nothing before contest start
-  if (start_time <= 0) return;
+  if (start_time <= 0 && !cs->upsolving_mode) return;
 
   for (int prob_id = 1; prob_id <= cs->max_prob; prob_id++) {
     if (!(cur_prob = cs->probs[prob_id])) continue;
@@ -5788,6 +5784,10 @@ ns_get_user_problems_summary(
 
     if (start_time > 0 && cs->current_time >= start_time && cur_prob->disable_tab <= 0)
       pinfo[prob_id].status |= PROB_STATUS_TABABLE;
+
+    if (cs->upsolving_mode) {
+      pinfo[prob_id].status |= PROB_STATUS_VIEWABLE | PROB_STATUS_SUBMITTABLE | PROB_STATUS_TABABLE;
+    }
   }
 
   // clear submittable status for problems depending on 'provide_ok', if the source problem is submittable

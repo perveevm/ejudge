@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2008-2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2008-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -255,7 +255,7 @@ finish_func(struct common_plugin_data *data)
 
 static const unsigned char *charset_mappings[][2] =
 {
-  { "utf-8", "utf8" },
+  { "utf-8", "utf8mb4" },
   { "koi8-r", "koi8r" },
 
   { 0, 0 },
@@ -270,7 +270,15 @@ parse_passwd_file(
   const unsigned char *fname = __FUNCTION__;
   unsigned char buser[1024];
   unsigned char bpwd[1024];
+  unsigned char bdatabase[1024];
+  unsigned char bhost[1024];
+  unsigned char bport[1024];
+  int vport = 0;
   int len, c;
+
+  bdatabase[0] = 0;
+  bhost[0] = 0;
+  bport[0] = 0;
 
   if (!(f = fopen(path, "r"))) {
     err("%s: cannot open password file %s", fname, path);
@@ -284,8 +292,8 @@ parse_passwd_file(
     err("%s: user is too long in %s", fname, path);
     goto cleanup;
   }
-  while (len > 0 && isspace(buser[--len]));
-  buser[++len] = 0;
+  while (len > 0 && isspace(buser[len - 1])) { --len; }
+  buser[len] = 0;
 
   if (!fgets(bpwd, sizeof(bpwd), f)) {
     err("%s: cannot read the password line from %s", fname, path);
@@ -295,8 +303,44 @@ parse_passwd_file(
     err("%s: password is too long in %s", fname, path);
     goto cleanup;
   }
-  while (len > 0 && isspace(bpwd[--len]));
-  bpwd[++len] = 0;
+  while (len > 0 && isspace(bpwd[len - 1])) { --len; }
+  bpwd[len] = 0;
+  if (state->password_file_mode == 1) {
+    if (fgets(bdatabase, sizeof(bdatabase), f)) {
+      if ((len = strlen(bdatabase)) > sizeof(bdatabase) - 24) {
+        err("%s: database is too long in %s", fname, path);
+        goto cleanup;
+      }
+      while (len > 0 && isspace(bdatabase[len - 1])) { --len; }
+      bdatabase[len] = 0;
+      if (fgets(bhost, sizeof(bhost), f)) {
+        if ((len = strlen(bhost)) > sizeof(bhost) - 24) {
+          err("%s: host is too long in %s", fname, path);
+          goto cleanup;
+        }
+        while (len > 0 && isspace(bhost[len - 1])) { --len; }
+        bhost[len] = 0;
+        if (fgets(bport, sizeof(bport), f)) {
+          if ((len = strlen(bport)) > sizeof(bport) - 24) {
+            err("%s: port is too long in %s", fname, path);
+            goto cleanup;
+          }
+          while (len > 0 && isspace(bport[len - 1])) { --len; }
+          bport[len] = 0;
+          if (bport[0]) {
+            errno = 0;
+            char *eptr = NULL;
+            long v = strtol(bport, &eptr, 10);
+            if (errno || *eptr || (char*) bport == eptr || v < 0 || v >= 65536) {
+              err("%s: invalid port value in %s", fname, path);
+              goto cleanup;
+            }
+            vport = v;
+          }
+        }
+      }
+    }
+  }
   while ((c = getc(f)) && isspace(c));
   if (c != EOF) {
     err("%s: garbage in %s", fname, path);
@@ -305,6 +349,15 @@ parse_passwd_file(
   fclose(f); f = 0;
   state->user = xstrdup(buser);
   state->password = xstrdup(bpwd);
+  if (bdatabase[0]) {
+    state->database = xstrdup(bdatabase);
+  }
+  if (bhost[0]) {
+    state->host = xstrdup(bhost);
+  }
+  if (vport > 0) {
+    state->port = vport;
+  }
 
   // debug
   //fprintf(stderr, "login: %s\npassword: %s\n", state->user, state->password);
@@ -368,6 +421,12 @@ prepare_func(
       if (state->port > 0) return xml_err_elem_redefined(p);
       if (xml_parse_int(NULL, "", p->line, p->column, p->text,
                         &state->port) < 0) return -1;
+    } else if (!strcmp(p->name[0], "password_file_mode")) {
+      if (p->first) return xml_err_attrs(p);
+      if (p->first_down) return xml_err_nested_elems(p);
+      if (state->port > 0) return xml_err_elem_redefined(p);
+      if (xml_parse_int(NULL, "", p->line, p->column, p->text,
+                        &state->password_file_mode) < 0) return -1;
     } else if (!strcmp(p->name[0], "charset")) {
       if (xml_leaf_elem(p, &state->charset, 1, 0) < 0) return -1;
     } else if (!strcmp(p->name[0], "collation")) {
@@ -418,29 +477,34 @@ prepare_func(
 static int
 connect_func(struct common_mysql_state *state)
 {
-  unsigned char buf[1024];
-  int buflen;
-
   if (state->conn) return 0;
+
+  const char *charset = state->charset;
+  if (!charset || !*charset) {
+    charset = "utf8mb4";
+  }
+  static unsigned char names_buf[256];
+  snprintf(names_buf, sizeof(names_buf), "SET NAMES '%s' ;", charset);
 
   if (!(state->conn = mysql_init(0))) {
     err("mysql_init failed");
+    return -1;
+  }
+  if (mysql_options(state->conn, MYSQL_INIT_COMMAND, names_buf) < 0) {
+    err("mysql_options failed");
+    return -1;
+  }
+  //my_bool flag = 1;
+  char flag = 1;
+  if (mysql_options(state->conn, MYSQL_OPT_RECONNECT, &flag) < 0) {
+    err("mysql_options failed");
     return -1;
   }
   if (!mysql_real_connect(state->conn,
                           state->host, state->user, state->password,
                           state->database, state->port, state->socket, 0))
     return state->i->error(state);
-  if (state->charset) {
-    snprintf(buf, sizeof(buf), "SET NAMES '%s' ;", state->charset);
-    buflen = strlen(buf);
-    if (mysql_real_query(state->conn, buf, buflen))
-      db_error_fail(state);
-  }
   return 0;
-
- fail:
-  return -1;
 }
 
 static void

@@ -1,6 +1,7 @@
 # ejudge
-Ejudge programming contest management system
 
-Alexandex Chernov's ejudge with Perveev Mike's modifications.
+Ejudge is a programming contest management system.
 
-Updated to v3.9.1 at 30.08.2022
+[Documentation](https://ejudge.ru/wiki/index.php/Система_ejudge) (in Russian)
+
+[Telegram group](https://t.me/ejudgegeneral)

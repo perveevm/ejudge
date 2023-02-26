@@ -1,6 +1,6 @@
 /* -*- mode:c -*- */
 
-/* Copyright (C) 2004-2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2004-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -138,6 +138,8 @@ static int config_mysql_enable_for_contests;
 static unsigned char config_mysql_database[256];
 static unsigned char config_mysql_user[256];
 static unsigned char config_mysql_password[256];
+static unsigned char config_mysql_host[256];
+static unsigned char config_mysql_port[256];
 
 static int system_uid;
 static int system_gid;
@@ -149,8 +151,11 @@ static unsigned char system_group[256];
 static unsigned char config_workdisk_flag[64];
 static unsigned char config_workdisk_size[64];
 static unsigned char config_install_flag[64];
+static unsigned char config_slave_flag[64];
 
 static unsigned char tmp_work_dir[PATH_MAX];
+
+static int slave_mode_option = 0;
 
 static unsigned char const email_accept_chars[] =
 "@.%!+=_-0123456789?abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -235,6 +240,7 @@ enum
   SET_LINE_WORKDISK_FLAG,
   SET_LINE_WORKDISK_SIZE,
   SET_LINE_INSTALL_FLAG,
+  SET_LINE_SLAVE_FLAG,
   SET_LINE_LAST,
 };
 
@@ -1441,20 +1447,66 @@ static void
 initialize_mysql_vars(
         const unsigned char *mysql_database,
         const unsigned char *mysql_user,
-        const unsigned char *mysql_password)
+        const unsigned char *mysql_password,
+        const unsigned char *mysql_host,
+        const unsigned char *mysql_port)
 {
 #if CONF_HAS_MYSQL - 0 == 0
   return;
 #endif
 
+  const char *s = NULL;
+
   config_mysql_enable_for_users = 1;
   config_mysql_enable_for_contests = 1;
-  if (!mysql_database || !*mysql_database) mysql_database = "ejudge";
+
+  if (!mysql_database || !*mysql_database) {
+    if ((s = getenv("EJUDGE_MYSQL_DATABASE"))) {
+      mysql_database = s;
+    }
+  }
+  if (!mysql_database || !*mysql_database) {
+    mysql_database = "ejudge";
+  }
   snprintf(config_mysql_database, sizeof(config_mysql_database), "%s", mysql_database);
-  if (!mysql_user || !*mysql_user) mysql_user = "ejudge";
+
+  if (!mysql_user || !*mysql_user) {
+    if ((s = getenv("EJUDGE_MYSQL_USER"))) {
+      mysql_user = s;
+    }
+  }
+  if (!mysql_user || !*mysql_user) {
+    mysql_user = "ejudge";
+  }
   snprintf(config_mysql_user, sizeof(config_mysql_user), "%s", mysql_user);
-  if (!mysql_password || !*mysql_password) mysql_password = "ejudge";
+
+  if (!mysql_password || !*mysql_password) {
+    if ((s = getenv("EJUDGE_MYSQL_PASSWORD"))) {
+      mysql_password = s;
+    }
+  }
+  if (!mysql_password || !*mysql_password) {
+    mysql_password = "ejudge";
+  }
   snprintf(config_mysql_password, sizeof(config_mysql_password), "%s", mysql_password);
+
+  if (!mysql_host || !*mysql_host) {
+    if ((s = getenv("EJUDGE_MYSQL_HOST"))) {
+      mysql_password = s;
+    }
+  }
+  if (mysql_host && *mysql_host) {
+    snprintf(config_mysql_host, sizeof(config_mysql_host), "%s", mysql_host);
+  }
+
+  if (!mysql_port || !*mysql_port) {
+    if ((s = getenv("EJUDGE_MYSQL_PORT"))) {
+      mysql_password = s;
+    }
+  }
+  if (mysql_port && *mysql_port) {
+    snprintf(config_mysql_port, sizeof(config_mysql_port), "%s", mysql_port);
+  }
 }
 
 static int
@@ -1741,6 +1793,10 @@ static const struct path_edit_item set_edit_items[] =
   {
     "Install to cgi-bin?", 0, config_install_flag, sizeof(config_install_flag),
   },
+  [SET_LINE_SLAVE_FLAG] =
+  {
+    "Install in slave mode?", 0, config_slave_flag, sizeof(config_slave_flag),
+  },
 };
 
 static void
@@ -1834,6 +1890,10 @@ initialize_setting_var(int idx)
     snprintf(config_workdisk_size, sizeof(config_workdisk_size),
              "%d", 64);
     break;
+  case SET_LINE_SLAVE_FLAG:
+    snprintf(config_slave_flag, sizeof(config_slave_flag), "%s",
+             (slave_mode_option > 0)?"yes":"no");
+    break;
   default:
     SWERR(("initialize_setting_var: unhandled idx == %d", idx));
   }
@@ -1856,6 +1916,7 @@ is_valid_setting_var(int idx)
   case SET_LINE_WORKDISK_FLAG:
   case SET_LINE_WORKDISK_SIZE:
   case SET_LINE_INSTALL_FLAG:
+  case SET_LINE_SLAVE_FLAG:
     return 1;
   case SET_LINE_REG_EMAIL:
     if (!is_valid_email_address(set_edit_items[idx].buf)) return 0;
@@ -1937,6 +1998,7 @@ do_settings_menu(int *p_cur_item)
     case SET_LINE_SYSTEM_GID:
     case SET_LINE_WORKDISK_FLAG:
     case SET_LINE_INSTALL_FLAG:
+    case SET_LINE_SLAVE_FLAG:
       asprintf(&descs[menu_nitem], "%-20.20s %s: %-53.53s",
                set_edit_items[i].descr,
                valid_setting_str(i), set_edit_items[i].buf);
@@ -2080,6 +2142,15 @@ do_settings_menu(int *p_cur_item)
         j = ncurses_yesno(0, "\\begin{center}\nInstall symlinks to CGI tools to the web server cgi-bin directory?\n\\end{center}\n");
         if (j < 0) continue;
         snprintf(config_install_flag, sizeof(config_install_flag),
+                 "%s", j?"yes":"no");
+        cur_item = i;
+        ret_val = 1;
+        break;
+      }
+      if (i == SET_LINE_SLAVE_FLAG) {
+        j = ncurses_yesno(0, "\\begin{center}\nInstall in slave mode (only compile and run)?\n\\end{center}\n");
+        if (j < 0) continue;
+        snprintf(config_slave_flag, sizeof(config_slave_flag),
                  "%s", j?"yes":"no");
         cur_item = i;
         ret_val = 1;
@@ -2910,8 +2981,7 @@ generate_serve_cfg(FILE *f)
         "real_time_limit = 5\n"
         "check_cmd = \"check\"\n"
         "xml_file = \"statement.xml\"\n"
-        "max_vm_size = 64M\n"
-        "max_stack_size = 64M\n"
+        "max_vm_size = 128M\n"
         "max_file_size = 64M\n"
         "time_limit = 1\n"
         "test_sfx = \".dat\"\n"
@@ -3165,7 +3235,6 @@ generate_contest_xml(FILE *f)
   } else {
     fprintf(f, "<?xml version=\"1.0\" ?>\n");
   }
-  fprintf(f, "<!-- %cId%c -->\n", '$', '$');
   fprintf(f, "<!-- Generated by ejudge-setup, version %s -->\n",
           compile_version);
   fprintf(f, "<!-- Generation date: %s -->\n", date_buf);
@@ -3228,7 +3297,7 @@ generate_userlist_xml(FILE *f)
 }
 
 static void
-generate_ejudge_xml(FILE *f)
+generate_ejudge_xml(FILE *f, int container_mode)
 {
   const struct path_edit_item *cur;
   unsigned char date_buf[64];
@@ -3245,11 +3314,14 @@ generate_ejudge_xml(FILE *f)
           compile_version);
   fprintf(f, "<!-- Generation date: %s -->\n", date_buf);
 
+  fprintf(f, "<config");
 #if CONF_HAS_LIBINTL - 0 == 1
-  fprintf(f, "<config l10n=\"yes\">\n");
-#else
-  fprintf(f, "<config>\n");
+  fprintf(f, " l10n=\"yes\"");
 #endif /* CONF_HAS_LIBINTL */
+  if (container_mode > 0) {
+    fprintf(f, " enable_compile_container=\"yes\" force_container=\"yes\"");
+  }
+  fprintf(f, ">\n");
 
   cur = &path_edit_items[PATH_LINE_SOCKET_PATH];
   if (cur->default_value && !strcmp(cur->default_value, cur->buf)) {
@@ -3394,6 +3466,14 @@ generate_ejudge_xml(FILE *f)
             "mysql");
     fprintf(f, "  <default_rundb_plugin>%s</default_rundb_plugin>\n",
             "mysql");
+    fprintf(f, "  <default_xuser_plugin>%s</default_xuser_plugin>\n",
+            "mysql");
+    fprintf(f, "  <default_status_plugin>%s</default_status_plugin>\n",
+            "mysql");
+    fprintf(f, "  <default_variant_plugin>%s</default_variant_plugin>\n",
+            "mysql");
+    fprintf(f, "  <default_avatar_plugin>%s</default_avatar_plugin>\n",
+            "mysql");
   }
 
   // plugin configurations
@@ -3416,12 +3496,20 @@ generate_ejudge_xml(FILE *f)
     fprintf(f,
             "    <plugin type=\"common\" name=\"mysql\" load=\"yes\">\n"
             "      <config>\n"
+            "        <password_file_mode>1</password_file_mode>\n"
             "        <password_file>%s</password_file>\n"
-            "        <database>%s</database>\n"
-            "      </config>\n"
-            "    </plugin>\n",
+            "        <database>%s</database>\n",
             MYSQL_PASSWORD_FILE_NAME,
             config_mysql_database);
+    if (config_mysql_host[0]) {
+      fprintf(f, "        <host>%s</host>\n", config_mysql_host);
+    }
+    if (config_mysql_port[0]) {
+      fprintf(f, "        <port>%s</port>\n", config_mysql_port);
+    }
+    fprintf(f,
+            "      </config>\n"
+            "    </plugin>\n");
   }
   if (config_mysql_enable_for_users > 0) {
     fprintf(f,
@@ -3437,6 +3525,69 @@ generate_ejudge_xml(FILE *f)
             "    <plugin type=\"rldb\" name=\"mysql\" load=\"yes\">\n"
             "      <config/>\n"
             "    </plugin>\n");
+    fprintf(f,
+            "    <plugin type=\"status\" name=\"mysql\" load=\"yes\">\n"
+            "      <config/>\n"
+            "    </plugin>\n");
+    fprintf(f,
+            "    <plugin type=\"xuser\" name=\"mysql\" load=\"yes\">\n"
+            "      <config/>\n"
+            "    </plugin>\n");
+    fprintf(f,
+            "    <plugin type=\"avatar\" name=\"mysql\" load=\"yes\">\n"
+            "      <config/>\n"
+            "    </plugin>\n");
+    fprintf(f,
+            "    <plugin type=\"storage\" name=\"mysql\" load=\"yes\">\n"
+            "      <config/>\n"
+            "    </plugin>\n");
+    fprintf(f,
+            "    <plugin type=\"submit\" name=\"mysql\" load=\"yes\">\n"
+            "      <config/>\n"
+            "    </plugin>\n");
+    fprintf(f,
+            "    <plugin type=\"variant\" name=\"mysql\" load=\"yes\">\n"
+            "      <config/>\n"
+            "    </plugin>\n");
+    /*
+    fprintf(f,
+            "    <plugin type=\"sn\" name=\"telegram\" load=\"yes\">\n"
+            "      <config>\n"
+            "        <bots>\n"
+            "          <bot>TELEGRAM-BOT-SECRET-HERE</bot>\n"
+            "        </bots>\n"
+            "      </config>\n"
+            "    </plugin>\n");
+    fprintf(f,
+            "    <plugin type=\"auth\" name=\"base\" load=\"yes\">\n"
+            "      <config>\n"
+            "      </config>\n"
+            "    </plugin>\n");
+    fprintf(f,
+            "    <plugin type=\"auth\" name=\"google\" load=\"yes\">\n"
+            "      <config>\n"
+            "        <client_id></client_id>\n"
+            "        <client_secret></client_secret>\n"
+            "        <redirect_url></redirect_url>\n"
+            "      </config>\n"
+            "    </plugin>\n");
+    fprintf(f,
+            "    <plugin type=\"auth\" name=\"yandex\" load=\"yes\">\n"
+            "      <config>\n"
+            "        <client_id></client_id>\n"
+            "        <client_secret></client_secret>\n"
+            "        <redirect_url></redirect_url>\n"
+            "      </config>\n"
+            "    </plugin>\n");
+    fprintf(f,
+            "    <plugin type=\"auth\" name=\"vk\" load=\"yes\">\n"
+            "      <config>\n"
+            "        <client_id></client_id>\n"
+            "        <client_secret></client_secret>\n"
+            "        <redirect_url></redirect_url>\n"
+            "      </config>\n"
+            "    </plugin>\n");
+    */
   }
   fprintf(f, "  </plugins>\n\n");
 
@@ -3618,7 +3769,7 @@ do_preview_menu(void)
     case 1:
       snprintf(preview_header, sizeof(preview_header),
                "To be installed to %s", config_ejudge_xml_path);
-      generate_ejudge_xml(f);
+      generate_ejudge_xml(f, 0);
       break;
     case 2:
       snprintf(preview_header, sizeof(preview_header),
@@ -3780,7 +3931,7 @@ const unsigned char b64_contest1_tgz[] =
   ;
 
 static void
-generate_install_script(FILE *f)
+generate_install_script(FILE *f, int batch_install_script, int container_mode)
 {
   FILE *floc = 0, *ff = 0;
   char *txt_ptr = 0;
@@ -3820,15 +3971,19 @@ generate_install_script(FILE *f)
   fprintf(f, "# Generated by ejudge-setup, version %s\n", compile_version);
   fprintf(f, "# Generation date: %s\n\n", date_buf);
 
+  if (batch_install_script <= 0) {
+    fprintf(f,
+            "echo \"This script will ERASE the exising user database and contests!\"\n"
+            "echo \"Are you sure to proceed (yes/no)?\"\n"
+            "read confirm\n"
+            "if [ \"${confirm}\" != \"yes\" ];\n"
+            "then\n"
+            "  echo \"Operation is not confirmed\"\n"
+            "  exit 0\n"
+            "fi\n");
+  }
+
   fprintf(f,
-          "echo \"This script will ERASE the exising user database and contests!\"\n"
-          "echo \"Are you sure to proceed (yes/no)?\"\n"
-          "read confirm\n"
-          "if [ \"${confirm}\" != \"yes\" ];\n"
-          "then\n"
-          "  echo \"Operation is not confirmed\"\n"
-          "  exit 0\n"
-          "fi\n"
           "uid=`id -u`\n"
           "if [ \"${uid}\" != 0 ]\n"
           "then\n"
@@ -3897,7 +4052,7 @@ generate_install_script(FILE *f)
     generate_dir_creation(f, &created_dirs, 0, workdir_path);
   }
 
-  if (!strcmp(config_install_flag, "yes")
+  if (!strcmp(config_install_flag, "yes") && strcmp(config_slave_flag, "yes")
       && config_ejudge_cgi_bin_dir[0] && config_cgi_bin_dir[0]) {
     if (stat(config_ejudge_cgi_bin_dir, &sb1) >= 0
         && stat(config_cgi_bin_dir, &sb2) >= 0
@@ -3936,34 +4091,36 @@ generate_install_script(FILE *f)
     }
   }
 
-  if (!strcmp(config_install_flag, "yes") && config_htdocs_dir[0]) {
-    if (CONF_STYLE_PREFIX[0] != '/') {
-      gen_cmd_run(f, "echo 'NOTE: HTML style files are not linked to the HTTP server'");
-      gen_cmd_run(f, "echo 'directories because --enable-style-prefix specifies'");
-      gen_cmd_run(f, "echo 'prefix not starting with /'. You should symlink or copy'");
-      gen_cmd_run(f, "echo 'the style files manually'");
-    } else {
-      snprintf(style_prefix, sizeof(style_prefix), "%s%s", config_htdocs_dir,
-               CONF_STYLE_PREFIX);
-      style_len = strlen(style_prefix);
-      if (style_len > 0 && style_prefix[style_len - 1] != '/') {
-        os_rDirName(style_prefix, style_dir, sizeof(style_dir));
+  if (strcmp(config_slave_flag, "yes")) {
+    if (!strcmp(config_install_flag, "yes") && config_htdocs_dir[0]) {
+      if (CONF_STYLE_PREFIX[0] != '/') {
+        gen_cmd_run(f, "echo 'NOTE: HTML style files are not linked to the HTTP server'");
+        gen_cmd_run(f, "echo 'directories because --enable-style-prefix specifies'");
+        gen_cmd_run(f, "echo 'prefix not starting with /'. You should symlink or copy'");
+        gen_cmd_run(f, "echo 'the style files manually'");
       } else {
-        snprintf(style_dir, sizeof(style_dir), "%s", style_prefix);
+        snprintf(style_prefix, sizeof(style_prefix), "%s%s", config_htdocs_dir,
+                 CONF_STYLE_PREFIX);
+        style_len = strlen(style_prefix);
+        if (style_len > 0 && style_prefix[style_len - 1] != '/') {
+          os_rDirName(style_prefix, style_dir, sizeof(style_dir));
+        } else {
+          snprintf(style_dir, sizeof(style_dir), "%s", style_prefix);
+        }
+        generate_dir_creation(f, &created_dirs, 0, style_dir);
+        snprintf(style_src_dir, sizeof(style_src_dir),
+                 "%s/share/ejudge/style", EJUDGE_PREFIX_DIR);
+        gen_cmd_run(f, "ln -sf \"%s/logo.gif\" \"%slogo.gif\"",
+                    style_src_dir, style_prefix);
+        gen_cmd_run(f, "ln -sf \"%s/priv.css\" \"%spriv.css\"",
+                    style_src_dir, style_prefix);
+        gen_cmd_run(f, "ln -sf \"%s/priv.js\" \"%spriv.js\"",
+                    style_src_dir, style_prefix);
+        gen_cmd_run(f, "ln -sf \"%s/unpriv.css\" \"%sunpriv.css\"",
+                    style_src_dir, style_prefix);
+        gen_cmd_run(f, "ln -sf \"%s/unpriv.js\" \"%sunpriv.js\"",
+                    style_src_dir, style_prefix);
       }
-      generate_dir_creation(f, &created_dirs, 0, style_dir);
-      snprintf(style_src_dir, sizeof(style_src_dir),
-               "%s/share/ejudge/style", EJUDGE_PREFIX_DIR);
-      gen_cmd_run(f, "ln -sf \"%s/logo.gif\" \"%slogo.gif\"",
-                  style_src_dir, style_prefix);
-      gen_cmd_run(f, "ln -sf \"%s/priv.css\" \"%spriv.css\"",
-                  style_src_dir, style_prefix);
-      gen_cmd_run(f, "ln -sf \"%s/priv.js\" \"%spriv.js\"",
-                  style_src_dir, style_prefix);
-      gen_cmd_run(f, "ln -sf \"%s/unpriv.css\" \"%sunpriv.css\"",
-                  style_src_dir, style_prefix);
-      gen_cmd_run(f, "ln -sf \"%s/unpriv.js\" \"%sunpriv.js\"",
-                  style_src_dir, style_prefix);
     }
   }
 
@@ -3973,7 +4130,7 @@ generate_install_script(FILE *f)
           "echo \"%s already exists, not overwriting\" 1>&2\n"
           "else\n", config_ejudge_xml_path, config_ejudge_xml_path);
   floc = open_memstream(&txt_ptr, &txt_len);
-  generate_ejudge_xml(floc);
+  generate_ejudge_xml(floc, container_mode);
   close_memstream(floc); floc = 0;
   snprintf(fpath, sizeof(fpath), "%s", config_ejudge_xml_path);
   fprintf(f, "# copy ejudge.xml to its location\n");
@@ -4012,7 +4169,8 @@ generate_install_script(FILE *f)
     free(txt_ptr); txt_ptr = 0; txt_len = 0;
   }
 
-  if (config_mysql_enable_for_users > 0 && config_mysql_enable_for_contests) {
+  if (config_mysql_enable_for_users > 0 && config_mysql_enable_for_contests
+      && strcmp(config_slave_flag, "yes")) {
     // mysql_password
     unsigned char tmp[PATH_MAX];
     os_rDirName(config_ejudge_xml_path, tmp, sizeof(tmp));
@@ -4247,7 +4405,7 @@ generate_install_script(FILE *f)
   gen_cmd_run(f, "chown -R %s:%s \"%s\"",
               config_system_uid, config_system_gid, config_contest1_home_dir);
 
-  if (config_mysql_enable_for_users > 0) {
+  if (config_mysql_enable_for_users > 0 && strcmp(config_slave_flag, "yes")) {
     fprintf(f, "# Import initial user database to MySQL\n");
     gen_cmd_run(f, "%s/ej-users -u %s -g %s --convert --from-plugin xml --to-plugin mysql",
                 EJUDGE_SERVER_BIN_PATH, config_system_uid, config_system_gid);
@@ -4263,10 +4421,12 @@ generate_install_script(FILE *f)
               config_ejudge_serve_path, config_system_uid,
               config_system_gid, config_contest1_home_dir);
   */
-  fprintf(f, "# Create necessary files for `ej-contests'\n");
-  gen_cmd_run(f, "%s/ej-contests -u %s -g %s -C \"%s\" --create",
-              EJUDGE_SERVER_BIN_PATH, config_system_uid,
-              config_system_gid, config_ejudge_contests_home_dir);
+  if (strcmp(config_slave_flag, "yes")) {
+    fprintf(f, "# Create necessary files for `ej-contests'\n");
+    gen_cmd_run(f, "%s/ej-contests -u %s -g %s -C \"%s\" --create",
+                EJUDGE_SERVER_BIN_PATH, config_system_uid,
+                config_system_gid, config_ejudge_contests_home_dir);
+  }
 }
 
 static void
@@ -4299,14 +4459,18 @@ preview_install_script(void)
   if (check_install_script_validity() < 0) return;
 
   f = open_memstream(&txt_ptr, &txt_len);
-  generate_install_script(f);
+  generate_install_script(f, 0, 0);
   close_memstream(f); f = 0;
   ncurses_view_text("Setup script preview", txt_ptr);
   free(txt_ptr); txt_ptr = 0; txt_len = 0;
 }
 
 static void
-save_install_script(int batch_mode, const unsigned char *output_name)
+save_install_script(
+        int batch_mode,
+        const unsigned char *output_name,
+        int batch_install_script,
+        int container_mode)
 {
   FILE *f = 0;
   char *txt_ptr = 0, *p;
@@ -4331,7 +4495,7 @@ save_install_script(int batch_mode, const unsigned char *output_name)
   if (check_install_script_validity() < 0) return;
 
   f = open_memstream(&txt_ptr, &txt_len);
-  generate_install_script(f);
+  generate_install_script(f, batch_install_script, container_mode);
   close_memstream(f); f = 0;
 
   if (output_name && *output_name) {
@@ -4349,20 +4513,32 @@ save_install_script(int batch_mode, const unsigned char *output_name)
   }
 
   if ((fd = open(filepath, O_WRONLY | O_CREAT | O_TRUNC, 0770)) < 0) {
-    ncurses_errbox("\\begin{center}\nERROR!\n\nCannot create %s: %s!\n\\end{center}\n", filepath, os_ErrorString());
+    if (batch_mode) {
+      fprintf(stderr, "Cannot create %s: %s\n", filepath, os_ErrorString());
+    } else {
+      ncurses_errbox("\\begin{center}\nERROR!\n\nCannot create %s: %s!\n\\end{center}\n", filepath, os_ErrorString());
+    }
     goto cleanup;
   }
   r = txt_len; p = txt_ptr;
   while (r > 0) {
     if ((w = write(fd, p, r)) <= 0) {
-      ncurses_errbox("\\begin{center}\nERROR!\n\nWrite error on %s: %s!\n\\end{center}\n", filepath, os_ErrorString());
+      if (batch_mode) {
+        fprintf(stderr, "Write error on %s: %s!", filepath, os_ErrorString());
+      } else {
+        ncurses_errbox("\\begin{center}\nERROR!\n\nWrite error on %s: %s!\n\\end{center}\n", filepath, os_ErrorString());
+      }
       unlink(filepath);
       goto cleanup;
     }
     p += w, r -= w;
   }
   if (close(fd) < 0) {
-    ncurses_errbox("\\begin{center}\nERROR!\n\nWrite error on %s: %s!\n\\end{center}\n", filepath, os_ErrorString());
+    if (batch_mode) {
+      fprintf(stderr, "Write error on %s: %s!\n", filepath, os_ErrorString());
+    } else {
+      ncurses_errbox("\\begin{center}\nERROR!\n\nWrite error on %s: %s!\n\\end{center}\n", filepath, os_ErrorString());
+    }
     unlink(filepath);
     goto cleanup;
   }
@@ -4452,7 +4628,7 @@ do_main_menu(void)
       preview_install_script();
       break;
     case 7:
-      save_install_script(0, NULL);
+      save_install_script(0, NULL, 0, 0);
       break;
     }
   }
@@ -4578,6 +4754,8 @@ main(int argc, char **argv)
   int cur_arg = 1;
   const unsigned char *user = 0, *group = 0, *workdir = 0;
   int batch_mode = 0;
+  int batch_install_script = 0;
+  int container_mode = 0;
 
   while (cur_arg < argc) {
     if (!strcmp(argv[cur_arg], "-u")) {
@@ -4594,6 +4772,15 @@ main(int argc, char **argv)
       cur_arg += 2;
     } else if (!strcmp(argv[cur_arg], "-b")) {
       batch_mode = 1;
+      cur_arg += 1;
+    } else if (!strcmp(argv[cur_arg], "-B")) {
+      batch_install_script = 1;
+      cur_arg += 1;
+    } else if (!strcmp(argv[cur_arg], "-s")) {
+      container_mode = 1;
+      cur_arg += 1;
+    } else if (!strcmp(argv[cur_arg], "-S")) {
+      slave_mode_option = 1;
       cur_arg += 1;
     } else if (!strcmp(argv[cur_arg], "-i")) {
       if (cur_arg + 1 >= argc) arg_expected(argv[0]);
@@ -4620,13 +4807,15 @@ main(int argc, char **argv)
   get_system_identity();
   create_tmp_dir();
 
-  if (ncurses_init() < 0) return 1;
+  if (!batch_mode) {
+    if (ncurses_init() < 0) return 1;
+  }
 
   snprintf(uudecode_path, sizeof(uudecode_path), "%s/uudecode",
            EJUDGE_SERVER_BIN_PATH);
   initialize_config_vars();
   initialize_setting_vars();
-  initialize_mysql_vars(NULL, NULL, NULL);
+  initialize_mysql_vars(NULL, NULL, NULL, NULL, NULL);
 
   if (batch_mode) {
     snprintf(config_user_id, sizeof(config_user_id), "%d", 1);
@@ -4634,7 +4823,8 @@ main(int argc, char **argv)
     snprintf(config_email, sizeof(config_email), "%s", "ejudge@localhost");
     snprintf(config_name, sizeof(config_name), "%s", "ejudge administrator");
     make_sha1_passwd(config_password_sha1, "ejudge");
-    save_install_script(1, "ejudge-install.sh");
+    save_install_script(1, "ejudge-install.sh", batch_install_script,
+                        container_mode);
   } else {
     //answer = ncurses_yesno(0, initial_warning);
     make_sha1_passwd(config_password_sha1, "ejudge");

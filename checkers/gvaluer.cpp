@@ -130,6 +130,9 @@ class Group
     bool stat_to_judges = false;
     bool stat_to_users = false;
     bool test_all = false;
+
+    bool use_lowest_test_score = false; // treat lowest test score as group score
+
     int score = 0;
     int test_score = -1;
     int pass_if_count = -1;
@@ -140,6 +143,7 @@ class Group
     string comment;
 
     vector<set<int> > zero_sets;
+    vector<set<int> > zero_subsets;
     set<int> passed_set;
 
 public:
@@ -150,7 +154,7 @@ public:
 
     void set_range(int first, int last)
     {
-        this->first = first; 
+        this->first = first;
         this->last = last;
     }
     int get_first() const { return first; }
@@ -189,6 +193,9 @@ public:
     void set_test_all(bool value) { test_all = value; }
     bool get_test_all() const { return test_all; }
 
+    void set_use_lowest_test_score(bool value) { use_lowest_test_score = value; }
+    bool get_use_lowest_test_score() { return use_lowest_test_score; }
+
     void inc_passed_count() { ++passed_count; }
     int get_passed_count() const { return passed_count; }
     bool is_passed() const
@@ -202,10 +209,21 @@ public:
         passed_set.insert(test_num);
     }
 
-    bool is_zero_set() const
+    bool is_zero_score() const
     {
-        for (int i = 0; i < int(zero_sets.size()); ++i) {
-            if (passed_set == zero_sets[i])
+        for (const auto& zero_set : zero_sets) {
+            if (passed_set == zero_set)
+                return true;
+        }
+        for (const auto& zero_subset : zero_subsets) {
+            bool is_subset = true;
+            for (int test : passed_set) {
+                if (zero_subset.find(test) == zero_subset.end()) {
+                    is_subset = false;
+                    break;
+                }
+            }
+            if (is_subset)
                 return true;
         }
         return false;
@@ -226,11 +244,26 @@ public:
         zero_sets.emplace_back(zs);
     }
 
+    void add_zero_subset(set<int> &&zs)
+    {
+        zero_subsets.emplace_back(zs);
+    }
+
     bool meet_requirements(const ConfigParser &cfg, const Group *& grp) const;
 
     void add_total_score()
     {
-        if (test_score > 0) total_score += test_score;
+        if (test_score > 0 && !use_lowest_test_score) {
+            total_score += test_score;
+        }
+    }
+    void add_test_score(int score)
+    {
+        if (use_lowest_test_score) {
+            total_score = min(total_score, score);
+        } else {
+            total_score += score;
+        }
     }
     void set_total_score(int total_score)
     {
@@ -352,10 +385,6 @@ public:
             }
             return;
         }
-        /*
-        if (in_c == '\"') {
-        }
-        */
         if (in_c == ';' || in_c == '{' || in_c == '}' || in_c == '-' || in_c == ',') {
             t_line = c_line;
             t_pos = c_pos;
@@ -452,7 +481,8 @@ public:
                 }
                 if (t_type != ';') parse_error("';' expected");
                 next_token();
-            } else if (token == "0_if") {
+            } else if (token == "0_if" || token == "0_if_subset") {
+                string directive = token;
                 set<int> zs;
                 try {
                     next_token();
@@ -471,7 +501,11 @@ public:
                     parse_error("NUM expected");
                 }
                 if (t_type != ';') parse_error("';' expected");
-                g.add_zero_set(move(zs));
+                if (directive == "0_if") {
+                    g.add_zero_set(move(zs));
+                } else {
+                    g.add_zero_subset(move(zs));
+                }
                 next_token();
             } else if (token == "offline") {
                 next_token();
@@ -516,6 +550,11 @@ public:
                 if (t_type != ';') parse_error("';' expected");
                 next_token();
                 g.set_test_all(true);
+            } else if (token == "use_lowest_test_score") {
+                next_token();
+                if (t_type != ';') parse_error("';' expected");
+                next_token();
+                g.set_use_lowest_test_score(true);
             } else if (token == "score") {
                 next_token();
                 if (t_type != T_IDENT) parse_error("NUM expected");
@@ -621,6 +660,14 @@ public:
                 if (k > i) {
                     parse_error(string("no group ") + r[j] + " before group " + groups[i].get_group_id());
                 }
+            }
+        }
+        for (int i = 0; i < int(groups.size()); ++i) {
+            if (groups[i].get_use_lowest_test_score()) {
+                if (groups[i].get_test_score() == -1) {
+                    parse_error(string("use_lowest_test_score is defined, but test_score is not defined in group ") + groups[i].get_group_id());
+                }
+                groups[i].set_total_score(groups[i].get_test_score());
             }
         }
         int i;
@@ -803,10 +850,15 @@ main(int argc, char *argv[])
             g->add_total_score();
             g->add_passed_test(test_num);
             ++test_num;
-        } else if (g->get_test_score() >= 0) {
+        } else if (t_score > 0) {
+            g->inc_passed_count();
+            g->add_test_score(t_score);
+            g->add_passed_test(test_num);
+            ++test_num;
+        } else if (g->get_test_score() >= 0 && !g->get_use_lowest_test_score()) {
             // by-test score, just go on
             if (test_num == g->get_last()) {
-                if (g->is_zero_set()) {
+                if (g->is_zero_score()) {
                     char buf[1024];
                     if (locale_id == 1) {
                         snprintf(buf, sizeof(buf), "Группа тестов %s (%d-%d) оценена в 0 баллов, "
@@ -826,6 +878,9 @@ main(int argc, char *argv[])
             // test everything even if fail
             ++test_num;
         } else {
+            if (g->get_use_lowest_test_score()) {
+                g->set_total_score(0);
+            }
             if (test_num < g->get_last() && !g->get_offline()) {
                 char buf[1024];
                 if (locale_id == 1) {

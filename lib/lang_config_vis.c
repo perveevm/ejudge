@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2008-2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2008-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -633,7 +633,8 @@ reconfigure_language(
         unsigned char **keys,
         unsigned char **values,
         FILE *log_f,
-        WINDOW *win)
+        WINDOW *win,
+        int batch_mode)
 {
   path_t fullpath, cfgpath;
   struct lang_config_info *p = 0;
@@ -741,6 +742,9 @@ reconfigure_language(
           update_panels();
           doupdate();
         }
+        if (batch_mode) {
+          printf("%.*s", r, buf);
+        }
         if (log_f) {
           fprintf(log_f, "%.*s", r, buf);
         }
@@ -800,7 +804,8 @@ reconfigure_all_languages(
         unsigned char **keys,
         unsigned char **values,
         FILE *log_f,
-        WINDOW *win)
+        WINDOW *win,
+        int batch_mode)
 {
   path_t langbase;
   DIR *d = 0;
@@ -819,7 +824,7 @@ reconfigure_all_languages(
     if (strcmp(dd->d_name + len - 8, "-version") != 0) continue;
     snprintf(langbase, sizeof(langbase), "%.*s", len - 8, dd->d_name);
     reconfigure_language(langbase, script_dir, config_dir, working_dir, keys,
-                         values, log_f, win);
+                         values, log_f, win, batch_mode);
   }
   closedir(d); d = 0;
 
@@ -861,31 +866,33 @@ lang_configure_screen(
   if (lang_configured) return;
   lang_configured = 1;
 
-  out_win = newwin(LINES - 2, COLS, 1, 0);
-  in_win = newwin(LINES - 4, COLS - 2, 2, 1);
-  scrollok(in_win, TRUE);
-  idlok(in_win, TRUE);
-  wattrset(out_win, COLOR_PAIR(1));
-  wbkgdset(out_win, COLOR_PAIR(1));
-  wattrset(in_win, COLOR_PAIR(1));
-  wbkgdset(in_win, COLOR_PAIR(1));
-  wclear(in_win);
-  wclear(out_win);
-  box(out_win, 0, 0);
-  out_pan = new_panel(out_win);
-  in_pan = new_panel(in_win);
+  if (!batch_mode) {
+    out_win = newwin(LINES - 2, COLS, 1, 0);
+    in_win = newwin(LINES - 4, COLS - 2, 2, 1);
+    scrollok(in_win, TRUE);
+    idlok(in_win, TRUE);
+    wattrset(out_win, COLOR_PAIR(1));
+    wbkgdset(out_win, COLOR_PAIR(1));
+    wattrset(in_win, COLOR_PAIR(1));
+    wbkgdset(in_win, COLOR_PAIR(1));
+    wclear(in_win);
+    wclear(out_win);
+    box(out_win, 0, 0);
+    out_pan = new_panel(out_win);
+    in_pan = new_panel(in_win);
 
-  mvwprintw(stdscr, 0, 0, "%s > Compiler auto-configuration", header);
-  wclrtoeol(stdscr);
-  ncurses_print_help("");
-  show_panel(out_pan);
-  show_panel(in_pan);
-  update_panels();
-  doupdate();
+    mvwprintw(stdscr, 0, 0, "%s > Compiler auto-configuration", header);
+    wclrtoeol(stdscr);
+    ncurses_print_help("");
+    show_panel(out_pan);
+    show_panel(in_pan);
+    update_panels();
+    doupdate();
+  }
 
   reconfigure_all_languages(script_dir, script_in_dirs, config_dir,
                             working_dir, compile_home_dir, extra_lang_ids_file,
-                            keys, values, 0, in_win);
+                            keys, values, 0, in_win, batch_mode);
 
   if (!batch_mode) {
     ncurses_print_help("Press any key");
@@ -913,7 +920,7 @@ lang_configure_batch(
 {
   reconfigure_all_languages(script_dir, script_in_dirs, config_dir,
                             working_dir, compile_home_dir, extra_lang_ids_file,
-                            keys, values, log_f, 0);
+                            keys, values, log_f, 0, 0);
 }
 
 static int
@@ -1082,7 +1089,7 @@ lang_config_menu(
       xfree(langs[i]->config_arg); langs[i]->config_arg = 0;
       if (buf[0]) langs[i]->config_arg = xstrdup(buf);
       reconfigure_language(langs[i]->lang, script_dir, 0,
-                           working_dir, 0, 0, 0, 0);
+                           working_dir, 0, 0, 0, 0, 0);
       cur_item = i;
       ret_val = 1;
       break;
@@ -1098,7 +1105,7 @@ lang_config_menu(
       xfree(langs[i]->config_arg); langs[i]->config_arg = 0;
       if (buf[0]) langs[i]->config_arg = xstrdup(buf);
       reconfigure_language(langs[i]->lang, script_dir, 0,
-                           working_dir, 0, 0, 0, 0);
+                           working_dir, 0, 0, 0, 0, 0);
       cur_item = i;
       ret_val = 1;
       break;
@@ -1195,6 +1202,9 @@ lang_config_generate_compile_cfg(
     }
     if ((s = shellconfig_get(p->cfg, "insecure"))) {
       fprintf(f, "insecure\n");
+    }
+    if ((s = shellconfig_get(p->cfg, "enable_custom"))) {
+      fprintf(f, "enable_custom\n");
     }
     if ((s = shellconfig_get(p->cfg, "secure"))) {
       fprintf(f, "disable_security\n");

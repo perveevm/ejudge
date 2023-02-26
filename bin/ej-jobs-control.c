@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2006-2021 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2006-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -20,6 +20,7 @@
 #include "ejudge/ejudge_cfg.h"
 #include "ejudge/job_packet.h"
 #include "ejudge/startstop.h"
+#include "ejudge/logrotate.h"
 
 #include "ejudge/logger.h"
 #include "ejudge/osdeps.h"
@@ -30,11 +31,14 @@
 #include <string.h>
 #include <ctype.h>
 #include <unistd.h>
+#include <limits.h>
 
 /*
  * usage: ej-jobs-control COMMAND CONFIG
  *   COMMAND is one of `stop', `restart', `status'
  */
+
+#define WAIT_TIMEOUT_US 30000000LL // 30s
 
 static const unsigned char *program_name = "";
 
@@ -104,15 +108,23 @@ main(int argc, char *argv[])
   struct ejudge_cfg *config = 0;
   const unsigned char *signame = "";
   int signum = 0, pid;
+  int date_suffix_flag = 0;
 
   logger_set_level(-1, LOG_WARNING);
   program_name = os_GetBasename(argv[0]);
   if (argc < 2) startup_error("not enough parameters");
 
-  if (!strcmp(argv[i], "--help")) {
-    write_help();
-  } else if (!strcmp(argv[i], "--version")) {
-    write_version();
+  while (1) {
+    if (!strcmp(argv[i], "--help")) {
+      write_help();
+    } else if (!strcmp(argv[i], "--version")) {
+      write_version();
+    } else if (!strcmp(argv[i], "--date-suffix")) {
+      ++i;
+      date_suffix_flag = 1;
+    } else {
+      break;
+    }
   }
 
   command = argv[i];
@@ -136,9 +148,29 @@ main(int argc, char *argv[])
   if (!strcmp(command, "stop")) {
     signame = "TERM";
     signum = START_STOP;
+    return start_stop_and_wait(program_name, "ej-jobs", signame, signum, WAIT_TIMEOUT_US) < 0;
   } else if (!strcmp(command, "restart")) {
     signame = "HUP";
     signum = START_RESTART;
+  } else if (!strcmp(command, "rotate")) {
+    unsigned char lpd[PATH_MAX];
+    unsigned char lpf[PATH_MAX];
+    if (rotate_get_log_dir_and_file(lpd, sizeof(lpd),
+                                    lpf, sizeof(lpf),
+                                    config,
+                                    config->job_server_log,
+                                    "ej-jobs.log") < 0) {
+      startup_error("log file is not defined or invalid");
+    }
+
+    unsigned char *log_group = NULL;
+#if defined EJUDGE_PRIMARY_USER
+    log_group = EJUDGE_PRIMARY_USER;
+#endif
+    rotate_log_files(lpd, lpf, NULL, NULL, log_group, 0620, date_suffix_flag);
+
+    signame = "USR1";
+    signum = START_ROTATE;
   } else {
     startup_error("invalid command");
   }

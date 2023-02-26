@@ -1,6 +1,6 @@
 /* -*- c -*- */
 
-/* Copyright (C) 2000-2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2000-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -574,6 +574,8 @@ static const struct config_parse_info section_problem_params[] =
   PROBLEM_PARAM(compiler_env_pat, "S"),
   PROBLEM_PARAM(statement_env, "x"),
   PROBLEM_PARAM(container_options, "S"),
+  PROBLEM_PARAM(custom_compile_cmd, "S"),
+  PROBLEM_PARAM(custom_lang_name, "S"),
 
   { 0, 0, 0, 0 }
 };
@@ -605,6 +607,7 @@ static const struct config_parse_info section_language_params[] =
 
   LANGUAGE_PARAM(disable_auto_testing, "d"),
   LANGUAGE_PARAM(disable_testing, "d"),
+  LANGUAGE_PARAM(enable_custom, "d"),
   LANGUAGE_PARAM(max_vm_size, "E"),
   LANGUAGE_PARAM(max_stack_size, "E"),
   LANGUAGE_PARAM(max_file_size, "E"),
@@ -1491,6 +1494,8 @@ prepare_problem_free_func(struct generic_section_config *gp)
   xfree(p->uuid);
   xfree(p->long_name);
   xfree(p->xml_file_path);
+  xfree(p->custom_compile_cmd);
+  xfree(p->custom_lang_name);
 
   if (p->variant_num > 0 && p->xml.a) {
     for (i = 1; i <= p->variant_num; i++) {
@@ -6120,6 +6125,8 @@ prepare_copy_problem(const struct section_problem_data *in)
   xstrdup3(&out->stand_attr, in->stand_attr);
   xstrdup3(&out->source_header, in->source_header);
   xstrdup3(&out->source_footer, in->source_footer);
+  xstrdup3(&out->custom_compile_cmd, in->custom_compile_cmd);
+  xstrdup3(&out->custom_lang_name, in->custom_lang_name);
   out->valuer_sets_marked = in->valuer_sets_marked;
   out->ignore_unmarked = in->ignore_unmarked;
   out->interactor_time_limit = in->interactor_time_limit;

@@ -1,6 +1,6 @@
 /* -*- mode: c; c-basic-offset: 4 -*- */
 
-/* Copyright (C) 2006-2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2006-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -19,6 +19,7 @@
 #include "ejudge/ejudge_cfg.h"
 #include "ejudge/ej_process.h"
 #include "ejudge/osdeps.h"
+#include "ejudge/logrotate.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,6 +35,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <stdarg.h>
+#include <sys/time.h>
 
 #define EXIT_SYSTEM_ERROR 2
 #define EXIT_OPERATION_FAILED 1
@@ -48,6 +50,8 @@
 
 #define START_WAIT_COUNT 10
 
+#define WAIT_TIMEOUT_US 30000000 // 30s
+
 extern char **environ;
 
 static const unsigned char *program_name = "ej-compile-control";
@@ -59,7 +63,8 @@ enum
     OPERATION_KILL = 3,
     OPERATION_RESTART = 4,
     OPERATION_HARD_RESTART = 5,
-    OPERATION_STATUS = 6
+    OPERATION_STATUS = 6,
+    OPERATION_ROTATE = 7,
 };
 
 static void
@@ -73,7 +78,8 @@ write_help(void)
          "    start     start the ej-compile\n"
          "    stop      stop the ej-compile\n"
          "    restart   restart the ej-compile\n"
-         "    status    report the ej-compile status\n",
+         "    status    report the ej-compile status\n"
+         "    rotate    rotate log file\n",
          program_name, program_name);
 }
 
@@ -309,6 +315,9 @@ start_process(
     setsid(); // new session
     setpgid(0, 0); // new process group
 
+    // save old stderr
+    int saved_stderr = dup(STDERR_FILENO);
+
     // redirect standard streams
     int fd0 = open("/dev/null", O_RDONLY, 0);
     if (fd0 < 0) _exit(1);
@@ -330,6 +339,7 @@ start_process(
 
     char *args[64];
     char lbuf[64];
+    char ebuf[64];
     int argi = 0;
     args[argi++] = (char*) exepath;
     if (is_parallel) args[argi++] = "-p";
@@ -337,6 +347,11 @@ start_process(
         args[argi++] = "-l";
         snprintf(lbuf, sizeof(lbuf), "%d", ej_xml_fds[serial]);
         args[argi++] = lbuf;
+    }
+    if (saved_stderr >= 0) {
+        args[argi++] = "-e";
+        snprintf(ebuf, sizeof(ebuf), "%d", saved_stderr);
+        args[argi++] = ebuf;
     }
     if (agent && *agent) {
         args[argi++] = "--agent";
@@ -353,6 +368,7 @@ start_process(
     if (verbose_mode) {
         args[argi++] = "-v";
     }
+    args[argi++] = "-S";
     args[argi++] = "conf/compile.cfg";
     args[argi] = NULL;
 
@@ -373,21 +389,41 @@ start_process(
     _exit(1);
 }
 
-static void
-signal_and_wait(int signo)
+static int
+signal_and_wait(int signo, const unsigned char *signame, long long timeout_us)
 {
     struct PidVector pv = {};
     if (find_all(EJ_COMPILE_PROGRAM, EJ_COMPILE_PROGRAM_DELETED, &pv) < 0) {
         system_error("cannot enumerate processes");
     }
-    if (pv.u <= 0) return;
+    if (pv.u <= 0) return 0;
+
+    fprintf(stderr, "%s: %s is running as pids", program_name,
+            EJ_COMPILE_PROGRAM);
+    for (int i = 0; i < pv.u; ++i) {
+        fprintf(stderr, " %d", pv.v[i]);
+    }
+    fprintf(stderr, "\n");
+    fprintf(stderr, "%s: sending it the %s signal\n", program_name, signame);
+
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    long long t1 = tv.tv_sec * 1000000LL + tv.tv_usec;
 
     kill_all(signo, &pv);
     do {
         usleep(100000);
         pv_free(&pv);
+
+        gettimeofday(&tv, NULL);
+        long long t2 = tv.tv_sec * 1000000LL + tv.tv_usec;
+        if (timeout_us > 0 && t1 + timeout_us <= t2) {
+            fprintf(stderr, "%s: wait timed out\n", program_name);
+            return -1;
+        }
     } while (find_all(EJ_COMPILE_PROGRAM, EJ_COMPILE_PROGRAM_DELETED, &pv) >= 0 && pv.u > 0);
     pv_free(&pv);
+    return 0;
 }
 
 static void
@@ -396,7 +432,7 @@ emergency_stop(void)
     // wait some reasonable time - 0.5s
     usleep(500000);
 
-    signal_and_wait(SIGTERM);
+    signal_and_wait(SIGTERM, "TERM", WAIT_TIMEOUT_US);
 }
 
 static void
@@ -846,6 +882,9 @@ int main(int argc, char *argv[])
     const char *instance_id = NULL;
     const char *queue = NULL;
     int verbose_mode = 0;
+    int res;
+    long long timeout_us = -1;
+    int date_suffix_flag = 0;
 
     if (argc < 1) {
         system_error("no arguments");
@@ -886,9 +925,25 @@ int main(int argc, char *argv[])
                 }
                 queue = argv[aidx + 1];
                 aidx += 2;
+            } else if (!strcmp(argv[aidx], "--timeout")) {
+                if (aidx + 1 >= argc) {
+                    system_error("argument expected for --timeout");
+                }
+                const char *v = argv[aidx + 1];
+                aidx += 2;
+                char *eptr = NULL;
+                errno = 0;
+                long vv = strtol(v, &eptr, 10);
+                if (errno || *eptr || eptr == v || vv < 0 || vv > 3600) {
+                    system_error("invalid argument for --timeout");
+                }
+                timeout_us = vv * 1000000LL;
             } else if (!strcmp(argv[aidx], "-v")) {
                 verbose_mode = 1;
                 ++aidx;
+            } else if (!strcmp(argv[aidx], "--date-suffix")) {
+                ++aidx;
+                date_suffix_flag = 1;
             } else if (!strcmp(argv[aidx], "--")) {
                 ++aidx;
                 break;
@@ -919,8 +974,14 @@ int main(int argc, char *argv[])
         op = OPERATION_HARD_RESTART;
     } else if (!strcmp(operation, "status")) {
         op = OPERATION_STATUS;
+    } else if (!strcmp(operation, "rotate")) {
+        op = OPERATION_ROTATE;
     } else {
         system_error("invalid operation '%s'", operation);
+    }
+
+    if (timeout_us < 0) {
+        timeout_us = WAIT_TIMEOUT_US;
     }
 
     uid_t ruid = -1, euid = -1, suid = -1;
@@ -1057,6 +1118,36 @@ int main(int argc, char *argv[])
         system_error("invalid ej-compile path");
     }
 
+    if (op == OPERATION_ROTATE) {
+        unsigned char log_dir[PATH_MAX];
+        log_dir[0] = 0;
+#if defined EJUDGE_CONTESTS_HOME_DIR
+        if (!log_dir[0]) {
+            snprintf(log_dir, sizeof(log_dir), "%s/var", EJUDGE_CONTESTS_HOME_DIR);
+        }
+#endif
+        if (!log_dir[0] && config->var_dir && config->var_dir[0]) {
+            snprintf(log_dir, sizeof(log_dir), "%s", config->var_dir);
+        }
+        if (!log_dir[0] && config->contests_home_dir && config->contests_home_dir[0]) {
+            snprintf(log_dir, sizeof(log_dir), "%s/var", config->contests_home_dir);
+        }
+        if (!log_dir[0]) {
+            system_error("ej-compile log dir is undefined");
+        }
+        const unsigned char *log_group = NULL;
+        if (config->enable_compile_container > 0) {
+#if defined EJUDGE_PRIMARY_USER
+            log_group = EJUDGE_PRIMARY_USER;
+#endif
+        } else {
+#if defined EJUDGE_COMPILE_USER
+            log_group = EJUDGE_COMPILE_USER;
+#endif
+        }
+        rotate_log_files(log_dir, "ej-compile.log", NULL, NULL, log_group, 0620, date_suffix_flag);
+    }
+
     struct EnvVector ev = {};
     env_init(&ev);
     if (1 /*primary_uid != compile_uid*/) {
@@ -1134,7 +1225,10 @@ int main(int argc, char *argv[])
 
     switch (op) {
     case OPERATION_HARD_RESTART:
-        signal_and_wait(SIGTERM);
+        res = signal_and_wait(SIGTERM, "TERM", timeout_us);
+        if (res < 0) {
+            return EXIT_OPERATION_FAILED;
+        }
         // FALLTHROUGH
     case OPERATION_START:
         {
@@ -1177,10 +1271,16 @@ int main(int argc, char *argv[])
         }
         break;
     case OPERATION_STOP:
-        signal_and_wait(SIGTERM);
+        res = signal_and_wait(SIGTERM, "TERM", timeout_us);
+        if (res < 0) {
+            return EXIT_OPERATION_FAILED;
+        }
         break;
     case OPERATION_KILL:
-        signal_and_wait(SIGKILL);
+        res = signal_and_wait(SIGKILL, "KILL", timeout_us);
+        if (res < 0) {
+            return EXIT_OPERATION_FAILED;
+        }
         break;
     case OPERATION_RESTART:
         {
@@ -1213,6 +1313,27 @@ int main(int argc, char *argv[])
             }
         }
         break;
+    case OPERATION_ROTATE: {
+        struct PidVector pv = {};
+
+        if (find_all(EJ_COMPILE_PROGRAM, EJ_COMPILE_PROGRAM_DELETED, &pv) < 0) {
+            system_error("cannot enumerate processes");
+        }
+
+        if (pv.u > 0) {
+            fprintf(stderr, "%s: %s is running as pids", program_name,
+                    EJ_COMPILE_PROGRAM);
+            for (int i = 0; i < pv.u; ++i) {
+                fprintf(stderr, " %d", pv.v[i]);
+            }
+            fprintf(stderr, "\n");
+            fprintf(stderr, "%s: sending it the %s signal\n", program_name, "USR1");
+
+            kill_all(SIGUSR1, &pv);
+        }
+
+        break;
+    }
     default:
         system_error("unhandled operation %d", op);
     }

@@ -2,7 +2,7 @@
 #ifndef __PREPARE_H__
 #define __PREPARE_H__
 
-/* Copyright (C) 2000-2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2000-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -1111,6 +1111,10 @@ struct section_problem_data
   int interactor_time_limit;
   /** real time limit for the interactor */
   int interactor_real_time_limit;
+  /** custom compilation command (if enable_custom language enabled) */
+  unsigned char *custom_compile_cmd;
+  /** custom language name (if enable_custom language enabled) */
+  unsigned char *custom_lang_name;
 
   /** printf pattern for the test files */
   unsigned char *test_pat;
@@ -1346,6 +1350,8 @@ struct section_language_data
   ejintbool_t disable_auto_testing;
   /** do not test this language at all */
   ejintbool_t disable_testing;
+  /** enable custom compilation script */
+  ejintbool_t enable_custom;
 
   /** max virtual size limit  */
   ej_size64_t max_vm_size;

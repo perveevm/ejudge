@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2006-2015 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2006-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -21,6 +21,7 @@
 #include "ejudge/userlist_clnt.h"
 #include "ejudge/userlist_proto.h"
 #include "ejudge/startstop.h"
+#include "ejudge/logrotate.h"
 
 #include "ejudge/osdeps.h"
 
@@ -29,11 +30,14 @@
 #include <string.h>
 #include <stdarg.h>
 #include <ctype.h>
+#include <limits.h>
 
 /*
  * usage: ej-users-control COMMAND CONFIG
- *   COMMAND is one of `stop', `restart', `status'
+ *   COMMAND is one of `stop', `restart', `rotate'
  */
+
+#define WAIT_TIMEOUT_US 30000000LL // 30s
 
 static const unsigned char *program_name = "";
 
@@ -82,6 +86,7 @@ write_help(void)
          "  COMMAND:\n"
          "    stop      stop the ej-users\n"
          "    restart   restart the ej-users\n"
+         "    rotate    rotate the log file\n"
          /*"    status    report the ej-users status\n"*/,
          program_name, program_name);
   exit(0);
@@ -106,14 +111,22 @@ main(int argc, char *argv[])
   const unsigned char *signame = "";
   int signum = 0;
   int pid;
+  int date_suffix_flag = 0;
 
   program_name = os_GetBasename(argv[0]);
   if (argc < 2) startup_error("not enough parameters");
 
-  if (!strcmp(argv[i], "--help")) {
-    write_help();
-  } else if (!strcmp(argv[i], "--version")) {
-    write_version();
+  while (1) {
+    if (!strcmp(argv[i], "--help")) {
+      write_help();
+    } else if (!strcmp(argv[i], "--version")) {
+      write_version();
+    } else if (!strcmp(argv[i], "--date-suffix")) {
+      ++i;
+      date_suffix_flag = 1;
+    } else {
+      break;
+    }
   }
 
   command = argv[i];
@@ -138,10 +151,36 @@ main(int argc, char *argv[])
     cmd = ULS_STOP;
     signame = "TERM";
     signum = START_STOP;
+    return start_stop_and_wait(program_name, "ej-users", signame, signum, WAIT_TIMEOUT_US) < 0;
   } else if (!strcmp(command, "restart")) {
     cmd = ULS_RESTART;
     signame = "HUP";
     signum = START_RESTART;
+  } else if (!strcmp(command, "rotate")) {
+    unsigned char lpd[PATH_MAX];
+    unsigned char lpf[PATH_MAX];
+    if (rotate_get_log_dir_and_file(lpd, sizeof(lpd),
+                                    lpf, sizeof(lpf),
+                                    config,
+                                    config->userlist_log,
+                                    "ej-users.log") < 0) {
+      startup_error("log file is not defined or invalid");
+    }
+
+    unsigned char *log_group = NULL;
+#if defined EJUDGE_PRIMARY_USER
+    log_group = EJUDGE_PRIMARY_USER;
+#endif
+
+    rotate_log_files(lpd, lpf, NULL, NULL, log_group, 0620, date_suffix_flag);
+
+    if ((pid = start_find_process("ej-users", NULL)) > 0) {
+      fprintf(stderr, "%s: ej-users is running as pid %d\n", program_name, pid);
+      fprintf(stderr, "%s: sending it the %s signal\n", program_name, "USR1");
+      start_kill(pid, START_ROTATE);
+    }
+
+    return 0;
   } else {
     startup_error("invalid command");
   }

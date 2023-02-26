@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2006-2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2006-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -53,6 +53,7 @@
 #include "ejudge/test_count_cache.h"
 #include "ejudge/submit_plugin.h"
 #include "ejudge/storage_plugin.h"
+#include "ejudge/metrics_contest.h"
 
 #include "ejudge/xalloc.h"
 #include "ejudge/logger.h"
@@ -1340,15 +1341,11 @@ serve_compile_request(
         int run_id,
         int64_t submit_id,
         int user_id,
-        int lang_id,
         int variant,
         int locale_id,
         int output_only,
         unsigned char const *sfx,
-        char **compiler_env,
         int style_check_only,
-        const unsigned char *style_checker_cmd,
-        char **style_checker_env,
         int accepting_mode,
         int priority_adjustment,
         int notify_flag,
@@ -1389,6 +1386,20 @@ serve_compile_request(
   __attribute__((unused)) unsigned char compile_src_buf[PATH_MAX];
   __attribute__((unused)) unsigned char compile_queue_buf[PATH_MAX];
   ej_uuid_t judge_uuid;
+  const unsigned char *style_checker_cmd = NULL;
+  char **style_checker_env = NULL;
+  char **compiler_env = NULL;
+  int lang_id = 0;
+  unsigned char *custom_compile_cmd = NULL;
+
+  if (prob) {
+    style_checker_cmd = prob->style_checker_cmd;
+    style_checker_env = prob->style_checker_env;
+  }
+  if (lang) {
+    compiler_env = lang->compiler_env;
+    lang_id = lang->compile_id;
+  }
 
   memset(&sformat_extra, 0, sizeof(sformat_extra));
   if (!p_judge_uuid || ej_uuid_is_empty(*p_judge_uuid)) {
@@ -1586,6 +1597,31 @@ serve_compile_request(
     }
   }
 
+  if (lang && lang->enable_custom > 0 && prob && prob->custom_compile_cmd
+      && prob->custom_compile_cmd[0]) {
+    custom_compile_cmd = prepare_varsubst(state, prob->custom_compile_cmd, 0, prob, lang, NULL);
+    /*
+    sformat_message(tmp_path, sizeof(tmp_path), 0, style_checker_cmd,
+                    global, prob, lang, 0, 0, 0, 0, 0);
+     */
+    custom_compile_cmd = config_var_substitute_heap(custom_compile_cmd);
+    if (os_IsAbsolutePath(custom_compile_cmd)) {
+      // nothing
+    } else if (global->advanced_layout > 0) {
+      unsigned char tmp[PATH_MAX];
+      get_advanced_layout_path(tmp, sizeof(tmp),
+                               global, prob, custom_compile_cmd, variant);
+      free(custom_compile_cmd);
+      custom_compile_cmd = xstrdup(tmp);
+    } else {
+      char *tmp = NULL;
+      asprintf(&tmp, "%s/%s", global->checker_dir, custom_compile_cmd);
+      free(custom_compile_cmd);
+      custom_compile_cmd = tmp;
+    }
+    cp.compile_cmd = custom_compile_cmd;
+  }
+
   cp.vcs_mode = vcs_mode;
   if (vcs_mode > 0 && prob && prob->vcs_compile_cmd && prob->vcs_compile_cmd[0]) {
     cp.vcs_compile_cmd = prob->vcs_compile_cmd;
@@ -1739,6 +1775,7 @@ serve_compile_request(
   xfree(src_footer_text);
   xfree(src_text);
   xfree(src_out_text);
+  xfree(custom_compile_cmd);
   return 0;
 
  failed:
@@ -1752,6 +1789,7 @@ serve_compile_request(
   xfree(src_footer_text);
   xfree(src_text);
   xfree(src_out_text);
+  xfree(custom_compile_cmd);
   return errcode;
 }
 
@@ -3035,6 +3073,15 @@ read_compile_packet_input(
     goto done;
   }
 
+  // account compile time
+  if (metrics.data) {
+    long long ts2 = comp_pkt->ts2 * 1000LL + comp_pkt->ts2_us / 1000;
+    long long ts3 = comp_pkt->ts3 * 1000LL + comp_pkt->ts3_us / 1000;
+    if (ts3 > ts2) {
+      metrics.data->total_compile_time_ms += (ts3 - ts2);
+    }
+  }
+
   if (comp_pkt->status == RUN_COMPILE_ERR
       || comp_pkt->status == RUN_STYLE_ERR
       || comp_pkt->status == RUN_CHECK_FAILED) {
@@ -3278,6 +3325,15 @@ serve_read_compile_packet(
   if (re.status != RUN_COMPILING) {
     err("read_compile_packet: run %d is not compiling", comp_pkt->run_id);
     goto non_fatal_error;
+  }
+
+  // account compile time
+  if (metrics.data) {
+    long long ts2 = comp_pkt->ts2 * 1000LL + comp_pkt->ts2_us / 1000;
+    long long ts3 = comp_pkt->ts3 * 1000LL + comp_pkt->ts3_us / 1000;
+    if (ts3 > ts2) {
+      metrics.data->total_compile_time_ms += (ts3 - ts2);
+    }
   }
 
   if (re.prob_id >= 1 && re.prob_id <= state->max_prob) {
@@ -3886,6 +3942,16 @@ read_run_packet_input(
     err("read_run_packet_input: contest_id mismatch: read %d", se.contest_id);
     goto done;
   }
+
+  // account the testing time
+  if (metrics.data) {
+    long long ts5 = reply_pkt->ts5 * 1000LL + reply_pkt->ts5_us / 1000;
+    long long ts6 = reply_pkt->ts6 * 1000LL + reply_pkt->ts6_us / 1000;
+    if (ts6 > ts5) {
+      metrics.data->total_testing_time_ms += (ts6 - ts5);
+    }
+  }
+
   if (se.status != RUN_RUNNING) {
     err("read_compile_packet_input: submit_entry status not RUNNING");
     goto done;
@@ -4065,6 +4131,15 @@ serve_read_run_packet(
     if (memcmp(&re.run_uuid, &reply_pkt->uuid, sizeof(re.run_uuid)) != 0) {
       err("read_run_packet: UUID mismatch for run_id %d", reply_pkt->run_id);
       goto failed;
+    }
+  }
+
+  // account the testing time
+  if (metrics.data) {
+    long long ts5 = reply_pkt->ts5 * 1000LL + reply_pkt->ts5_us / 1000;
+    long long ts6 = reply_pkt->ts6 * 1000LL + reply_pkt->ts6_us / 1000;
+    if (ts6 > ts5) {
+      metrics.data->total_testing_time_ms += (ts6 - ts5);
     }
   }
 
@@ -4703,13 +4778,11 @@ serve_rejudge_run(
 
     if (prob->style_checker_cmd && prob->style_checker_cmd[0]) {
       r = serve_compile_request(config, state, 0 /* str*/, -1 /* len*/, cnts->id,
-                                run_id, 0 /* submit_id */, re.user_id, 0 /* lang_id */, re.variant,
+                                run_id, 0 /* submit_id */, re.user_id,
+                                re.variant,
                                 0 /* locale_id */, 1 /* output_only*/,
                                 mime_type_get_suffix(re.mime_type),
-                                NULL /* compiler_env */,
                                 1 /* style_check_only */,
-                                prob->style_checker_cmd,
-                                prob->style_checker_env,
                                 0 /* accepting_mode */,
                                 priority_adjustment,
                                 1 /* notify flag */,
@@ -4762,12 +4835,10 @@ serve_rejudge_run(
   }
 
   r = serve_compile_request(config, state, 0, -1, cnts->id, run_id, 0 /* submit_id */, re.user_id,
-                            lang->compile_id, re.variant, re.locale_id,
+                            re.variant, re.locale_id,
                             (prob->type > 0),
                             lang->src_sfx,
-                            lang->compiler_env,
-                            0, prob->style_checker_cmd,
-                            prob->style_checker_env,
+                            0,
                             accepting_mode, priority_adjustment, 1, prob, lang, 0,
                             &re.run_uuid,
                             NULL /* judge_uuid */,
@@ -6071,7 +6142,9 @@ serve_clear_by_mask(serve_state_t state,
   for (r = total_runs - 1; r >= 0; r--) {
     if ((mask[r / BITS_PER_LONG] & (1L << (r % BITS_PER_LONG)))
         && !run_is_readonly(state->runlog_state, r)) {
-      if (run_get_entry(state->runlog_state, r, &re) >= 0 && run_clear_entry(state->runlog_state, r) >= 0) {
+      if (run_get_entry(state->runlog_state, r, &re) >= 0
+          && re.status != RUN_EMPTY
+          && run_clear_entry(state->runlog_state, r) >= 0) {
         if (re.store_flags == STORE_FLAGS_UUID || re.store_flags == STORE_FLAGS_UUID_BSON) {
           uuid_archive_remove(state, &re.run_uuid, 0);
         } else {
@@ -6928,23 +7001,23 @@ get_compiler_option(
 
   if (!flags) {
     if (!strcmp(lang->short_name, "clang")) {
-      flags = "-Wall -O2 -std=gnu11";
+      flags = "-Wall -O2";
     } else if (!strcmp(lang->short_name, "clang-32")) {
-      flags = "-Wall -O2 -std=gnu11";
+      flags = "-Wall -O2";
     } else if (!strcmp(lang->short_name, "clang++")) {
       flags = "-Wall -O2";
     } else if (!strcmp(lang->short_name, "clang++-32")) {
       flags = "-Wall -O2";
     } else if (!strcmp(lang->short_name, "gcc")) {
-      flags = "-Wall -O2 -std=gnu11";
+      flags = "-Wall -O2";
     } else if (!strcmp(lang->short_name, "gcc-32")) {
-      flags = "-Wall -O2 -std=gnu11";
+      flags = "-Wall -O2";
     } else if (!strcmp(lang->short_name, "gcc-vg")) {
-      flags = "-g -O2 -std=gnu11";
+      flags = "-g -O2";
     } else if (!strcmp(lang->short_name, "g++")) {
-      flags = "-Wall -O2 -std=gnu++17";
+      flags = "-Wall -O2";
     } else if (!strcmp(lang->short_name, "g++-32")) {
-      flags = "-Wall -O2 -std=gnu++17";
+      flags = "-Wall -O2";
     } else if (!strcmp(lang->short_name, "g++-vg")) {
       flags = "-g -O2";
     } else if (!strcmp(lang->short_name, "g77")) {

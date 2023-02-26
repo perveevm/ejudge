@@ -1,6 +1,6 @@
 /* -*- c -*- */
 
-/* Copyright (C) 2010-2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2010-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -573,15 +573,11 @@ process_submit(
                             sb.run_id /* run_id */,
                             0 /* submit_id */,
                             1 /* user_id */,
-                            lang->compile_id,
                             0 /* variant */,
                             1 /* locale_id */,
                             0 /* output_only */,
                             lang->src_sfx /* sfx */,
-                            lang->compiler_env /* compiler_env */,
                             0 /* style_check_only */,
-                            0 /* style_checker_cmd*/,
-                            0 /* style_checker_env*/,
                             0 /* accepting_mode */,
                             0 /* priority_adjustment */,
                             0 /* notify_flag */,
