@@ -252,7 +252,7 @@ runpath_var=LD_RUN_PATH
 shlibpath_var=LD_LIBRARY_PATH
 
 # Is shlibpath searched before the hard-coded library search path?
-shlibpath_overrides_runpath=no
+shlibpath_overrides_runpath=yes
 
 # Format of library name prefix.
 libname_spec="lib\$name"
@@ -11792,7 +11792,7 @@ pic_flag=" -fPIC -DPIC"
 wl="-Wl,"
 
 # Compiler flag to prevent dynamic linking.
-link_static_flag=""
+link_static_flag="-static"
 
 # Does compiler simultaneously support -c and -o options?
 compiler_c_o="yes"

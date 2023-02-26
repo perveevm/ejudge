@@ -4,6 +4,22 @@
 <link rel="stylesheet" href="<s:config name="style-prefix" />jquery-ui.css">
 <script src="<s:config name="style-prefix" />jquery-3.6.0.js"></script>
 <script src="<s:config name="style-prefix" />jquery-ui.js"></script>
+<link rel="stylesheet" href="https://ejudge.strategy48.ru/katex.min.css">
+<script src="https://ejudge.strategy48.ru/katex.min.js"></script>
+<script src="https://ejudge.strategy48.ru/auto-render.min.js"></script>
+<script>
+    document.addEventListener("DOMContentLoaded", function() {
+        renderMathInElement(document.body, {
+          delimiters: [
+              {left: '$$', right: '$$', display: true},
+              {left: '$', right: '$', display: false},
+              {left: '\\(', right: '\\)', display: false},
+              {left: '\\[', right: '\\]', display: true}
+          ],
+          throwOnError : false
+        });
+    });
+</script>
 <script type="text/javascript" src="<s:config name="style-prefix" />unpriv.js"></script>
 <script type="text/javascript">
   var SID="<s:v value="phr->session_id" />";
