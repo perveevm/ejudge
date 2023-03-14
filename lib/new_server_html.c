@@ -3109,6 +3109,7 @@ priv_submit_run(
   ej_ip_t sender_ip;
   int not_ok_is_cf = 0;
   int rejudge_flag = 0;
+  int priority_adjustment = 0;
 
   if (opcaps_check(phr->caps, OPCAP_SUBMIT_RUN) < 0) {
     FAIL(NEW_SRV_ERR_PERMISSION_DENIED);
@@ -3145,6 +3146,10 @@ priv_submit_run(
 
   hr_cgi_param_int_opt(phr, "not_ok_is_cf", &not_ok_is_cf, 0);
   hr_cgi_param_int_opt(phr, "rejudge_flag", &rejudge_flag, 0);
+
+  if (rejudge_flag > 0) {
+    priority_adjustment = 3;
+  }
 
   if (hr_cgi_param(phr, "problem_uuid", &s) > 0) {
     for (prob_id = 1; prob_id <= cs->max_prob; ++prob_id) {
@@ -3561,10 +3566,14 @@ priv_submit_run(
       if ((r = serve_compile_request(phr->config, cs, run_text, run_size, cnts->id,
                                      run_id, 0 /* submit_id */, sender_user_id,
                                      variant,
-                                     phr->locale_id, 0,
+                                     phr->locale_id,
+                                     0 /* output_only */,
                                      lang->src_sfx,
-                                     0,
-                                     -1, 0, 0, prob, lang, 0, &run_uuid,
+                                     0 /* style_check_only */,
+                                     -1 /* accepting_mode */,
+                                     priority_adjustment,
+                                     0 /* notify_flag */,
+                                     prob, lang, 0, &run_uuid,
                                      NULL /* judge_uuid */,
                                      store_flags, rejudge_flag,
                                      phr->is_job,
@@ -3591,7 +3600,7 @@ priv_submit_run(
                                   mime_type_get_suffix(mime_type),
                                   1 /* style_check_only */,
                                   0 /* accepting_mode */,
-                                  0 /* priority_adjustment */,
+                                  priority_adjustment,
                                   0 /* notify flag */,
                                   prob, NULL /* lang */,
                                   0 /* no_db_flag */,
@@ -3642,7 +3651,7 @@ priv_submit_run(
                                   mime_type_get_suffix(mime_type),
                                   1 /* style_check_only */,
                                   0 /* accepting_mode */,
-                                  0 /* priority_adjustment */,
+                                  priority_adjustment,
                                   0 /* notify flag */,
                                   prob, NULL /* lang */,
                                   0 /* no_db_flag */,
@@ -4114,7 +4123,8 @@ priv_submit_run_comment(
                         re.saved_score,   /* has_user_score -> is_saved */
                         user_status,      /* user_status -> saved_status */
                         re.saved_test,    /* user_tests_passed -> saved_test */
-                        user_score);      /* user_score -> saved_score */
+                        user_score,       /* user_score -> saved_score */
+                        re.verdict_bits);
   }
 
   const unsigned char *audit_cmd = NULL;
@@ -7584,7 +7594,9 @@ priv_get_file(
     FAIL(NEW_SRV_ERR_INV_FILE_NAME);
 
   fprintf(fout, "Content-type: %s\n", content_type);
-  fprintf(fout, "Content-Disposition: attachment; filename=\"%s\"\n", s);
+  if (mime_type != MIME_TYPE_TEXT_HTML) {
+    fprintf(fout, "Content-Disposition: attachment; filename=\"%s\"\n", s);
+  }
   fprintf(fout, "\n");
   fwrite(file_bytes, 1, file_size, fout);
 
@@ -8847,6 +8859,11 @@ priv_list_runs_json(
           }
           if (pe->token_count) {
             fprintf(fout, ",\n%s\"token_count\": %d", indent, pe->token_count);
+          }
+        }
+        if (run_fields & (1 << RUN_VIEW_VERDICT_BITS)) {
+          if (pe->verdict_bits) {
+            fprintf(fout, ",\n%s\"verdict_bits\": %u", indent, pe->verdict_bits);
           }
         }
 
@@ -10901,7 +10918,8 @@ ns_submit_run(
                               phr->locale_id, 0 /* output_only */,
                               lang->src_sfx,
                               0 /* style_check_only */,
-                              -1 /* accepting_mode */, 0 /* priority_adjustment */,
+                              -1 /* accepting_mode */,
+                              0 /* priority_adjustment */,
                               1 /* notify_flag */, prob, lang,
                               0 /* no_db_flag */, &run_uuid,
                               NULL /* judge_uuid */,
@@ -11097,6 +11115,8 @@ unpriv_submit_run(
   int utf8_len = 0;
   int eoln_type = 0;
   int retval = 0;
+  int rejudge_flag = 0;
+  int priority_adjustment = 0;
 
   l10n_setlocale(phr->locale_id);
 
@@ -11382,6 +11402,13 @@ unpriv_submit_run(
     }
   }
 
+  int testing_count = run_count_all_attempts_3(cs->runlog_state, phr->user_id, prob_id);
+  if (prob->enable_dynamic_priority > 0 && testing_count > 0) {
+    //rejudge_flag = 1;
+    priority_adjustment = (testing_count - 1) / 2 + 3;
+    if (priority_adjustment > 12) priority_adjustment = 12;
+  }
+
   /* check for disabled languages */
   if (lang_id > 0) {
     if (lang->disabled || (prob->enable_container <= 0 && lang->insecure > 0 && global->secure_run)) {
@@ -11581,11 +11608,16 @@ unpriv_submit_run(
                                      variant,
                                      phr->locale_id, 0,
                                      lang->src_sfx,
-                                     0,
-                                     -1, 0, 1, prob, lang, 0, &run_uuid,
+                                     0 /* style_check_only */,
+                                     -1 /* accepting_mode */,
+                                     priority_adjustment,
+                                     1 /* notify_flag */,
+                                     prob, lang,
+                                     0 /* no_db_flag*/ ,
+                                     &run_uuid,
                                      NULL /* judge_uuid */,
                                      store_flags,
-                                     0 /* rejudge_flag */,
+                                     rejudge_flag,
                                      phr->is_job,
                                      0 /* not_ok_is_cf */,
                                      user)) < 0) {
@@ -11610,13 +11642,13 @@ unpriv_submit_run(
                                   mime_type_get_suffix(mime_type),
                                   1 /* style_check_only */,
                                   0 /* accepting_mode */,
-                                  0 /* priority_adjustment */,
+                                  priority_adjustment,
                                   0 /* notify flag */,
                                   prob, NULL /* lang */,
                                   0 /* no_db_flag */, &run_uuid,
                                   NULL /* judge_uuid */,
                                   store_flags,
-                                  0 /* rejudge_flag */,
+                                  rejudge_flag,
                                   phr->is_job,
                                   0 /* not_ok_is_cf */,
                                   user);
@@ -11632,7 +11664,7 @@ unpriv_submit_run(
                               NULL, /* judge_uuid */
                               -1, 1,
                               mime_type, 0, phr->locale_id, 0, 0, 0, &run_uuid,
-                              0 /* rejudge_flag */, 0 /* zip_mode */,
+                              rejudge_flag, 0 /* zip_mode */,
                               store_flags,
                               0 /* not_ok_is_cf */,
                               NULL, 0) < 0) {
@@ -11681,13 +11713,13 @@ unpriv_submit_run(
                                   mime_type_get_suffix(mime_type),
                                   1 /* style_check_only */,
                                   0 /* accepting_mode */,
-                                  0 /* priority_adjustment */,
+                                  priority_adjustment,
                                   0 /* notify flag */,
                                   prob, NULL /* lang */,
                                   0 /* no_db_flag */, &run_uuid,
                                   NULL /* judge_uuid */,
                                   store_flags,
-                                  0 /* rejudge_flag */,
+                                  rejudge_flag,
                                   phr->is_job,
                                   0 /* not_ok_is_cf */,
                                   user);
@@ -11706,7 +11738,7 @@ unpriv_submit_run(
                               NULL, /* judge_uuid */
                               -1, 1,
                               mime_type, 0, phr->locale_id, 0, 0, 0, &run_uuid,
-                              0 /* rejudge_flag */, 0 /* zip_mode */,
+                              rejudge_flag, 0 /* zip_mode */,
                               store_flags,
                               0 /* not_ok_is_cf */,
                               NULL, 0) < 0) {
@@ -13420,7 +13452,7 @@ ns_unparse_statement(
     fprintf(fout, "<h3>");
     problem_xml_unparse_node(fout, pp->title, vars, vals);
     fprintf(fout, "</h3>");
-  } else {
+  } else if (prob->enable_iframe_statement <= 0) {
     fprintf(fout, "<h3>");
     fprintf(fout, "%s %s", _("Problem"), ARMOR(prob->short_name));
     if (prob->long_name && prob->long_name[0]) {
@@ -13978,7 +14010,9 @@ unpriv_get_file(
     FAIL(NEW_SRV_ERR_INV_FILE_NAME);
 
   fprintf(fout, "Content-type: %s\n", content_type);
-  fprintf(fout, "Content-Disposition: attachment; filename=\"%s\"\n", s);
+  if (mime_type != MIME_TYPE_TEXT_HTML) {
+    fprintf(fout, "Content-Disposition: attachment; filename=\"%s\"\n", s);
+  }
   fprintf(fout, "\n");
 
   fwrite(file_bytes, 1, file_size, fout);
@@ -17641,7 +17675,6 @@ ns_handle_http_request(
   path_t self_url;
   path_t context_url;
   int r, n;
-  unsigned char *rest_args = NULL;
   unsigned char *rest_action = NULL;
 
   (void) forced_linking;
@@ -17679,56 +17712,76 @@ ns_handle_http_request(
 #if defined EJUDGE_REST_PREFIX
   if (!strncmp(script_name, EJUDGE_REST_PREFIX, EJUDGE_REST_PREFIX_LEN)) {
     // extract second part
-    s = script_name + EJUDGE_REST_PREFIX_LEN;
-    while (*s && *s != '/') ++s;
-    n = (int)(s - script_name - EJUDGE_REST_PREFIX_LEN);
-    if (n > (int)sizeof(phr->role_name) - 1) n = (int)sizeof(phr->role_name) - 1;
-    *(char*) mempcpy(phr->role_name, script_name + EJUDGE_REST_PREFIX_LEN, n) = 0;
 
-    int nlen = strlen(script_name);
-    rest_args = alloca(nlen + 1);
-    rest_args[0] = 0;
-    if (*s == '/') {
-      memcpy(rest_args, s + 1, nlen - (n + EJUDGE_REST_PREFIX_LEN));
+    s = script_name + EJUDGE_REST_PREFIX_LEN;
+    int args_count = 1;
+    while (*s) {
+      args_count += (*s++ == '/');
     }
-    if (rest_args[0]) {
-      unsigned char *ss = strchr(rest_args, '/');
-      if (ss) {
-        rest_action = rest_args;
-        rest_args = alloca(nlen + 1);
-        strcpy(rest_args, ss + 1);
-        *ss = 0;
-      } else {
-        rest_action = rest_args;
-        rest_args = NULL;
+    phr->rest_count = args_count;
+    phr->rest_args = alloca(sizeof(phr->rest_args[0]) * (args_count + 1));
+    memset(phr->rest_args, 0, sizeof(phr->rest_args[0]) * (args_count + 1));
+
+    {
+      s = script_name + EJUDGE_REST_PREFIX_LEN;
+      int args_i = 0;
+      while (*s) {
+        const unsigned char *p = s;
+        while (*p && *p != '/') ++p;
+        int len = (int) (p - s);
+        unsigned char *q = alloca(len + 1);
+        phr->rest_args[args_i++] = q;
+        memcpy(q, s, len);
+        q[len] = 0;
+        s = p;
+        if (*s == '/') {
+          // trim the new script_name
+          if (args_i == 1) {
+            int len = (int) (s - script_name);
+            unsigned char *tmp = alloca(len + 1);
+            memcpy(tmp, script_name, len);
+            tmp[len] = 0;
+            script_name = tmp;
+          }
+          ++s;
+        }
       }
     }
 
-    // update script_name
-    unsigned char *tmp = alloca(nlen + 1);
-    memcpy(tmp, script_name, nlen);
-    tmp[n + EJUDGE_REST_PREFIX_LEN] = 0;
-    script_name = tmp;
+    /*
+    fprintf(stderr, "Rest Args:");
+    for (int i = 0; i < phr->rest_count; ++i) {
+      fprintf(stderr, " %s", phr->rest_args[i]);
+    }
+    fprintf(stderr, "\n");
+    */
 
-    if (rest_args && rest_args[0] == 'S') {
+    if (phr->rest_count > 0) {
+      n = strlen(phr->rest_args[0]);
+      if (n >= (int) sizeof(phr->role_name)) {
+        phr->rest_args[0][sizeof(phr->role_name) - 1] = 0;
+      }
+      strcpy(phr->role_name, phr->rest_args[0]);
+    }
+
+    if (phr->rest_count > 1) {
+      rest_action = phr->rest_args[1];
+    }
+
+    if (phr->rest_count > 2 && phr->rest_args[2][0] == 'S') {
       // SID
-      unsigned char *ss = strchr(rest_args, '/');
-      if (ss) *ss = 0;
       unsigned long long v1 = 0, v2 = 0;
-      if (xml_parse_full_cookie(rest_args + 1, &v1, &v2) >= 0) {
+      if (xml_parse_full_cookie(phr->rest_args[2] + 1, &v1, &v2) >= 0) {
         phr->session_id = v1;
         phr->client_key = v2;
       }
-      if (ss) rest_args = ss + 1;
-      else rest_args = NULL;
     }
 
     phr->rest_mode = 1;
 
     /*
-    fprintf(stderr, "role_name: %s\n", role_name);
+    fprintf(stderr, "role_name: %s\n", phr->role_name);
     fprintf(stderr, "rest_action: %s\n", rest_action);
-    fprintf(stderr, "rest_args: %s\n", rest_args);
     fprintf(stderr, "script_name: %s\n", script_name);
     */
   }

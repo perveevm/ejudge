@@ -182,7 +182,7 @@ prepare_func(
 
 #include "tables.inc.c"
 
-#define RUN_DB_VERSION 24
+#define RUN_DB_VERSION 25
 
 static int
 do_create(struct rldb_mysql_state *state)
@@ -401,6 +401,10 @@ do_open(struct rldb_mysql_state *state)
       break;
     case 23:
       if (mi->simple_fquery(md, "ALTER TABLE %sruns MODIFY COLUMN ip VARCHAR(64) DEFAULT NULL, MODIFY COLUMN hash VARCHAR (128) DEFAULT NULL, MODIFY COLUMN run_uuid CHAR(40) DEFAULT NULL, MODIFY COLUMN mime_type VARCHAR(64) DEFAULT NULL, MODIFY COLUMN prob_uuid VARCHAR(40) DEFAULT NULL, MODIFY COLUMN judge_uuid VARCHAR(40) DEFAULT NULL ;", md->table_prefix) < 0)
+        return -1;
+      break;
+    case 24:
+      if (mi->simple_fquery(md, "ALTER TABLE %sruns ADD COLUMN verdict_bits INT NOT NULL DEFAULT 0 AFTER is_vcs", md->table_prefix) < 0)
         return -1;
       break;
     case RUN_DB_VERSION:
@@ -818,6 +822,7 @@ load_runs(struct rldb_mysql_cnts *cs)
     re->token_count = ri.token_count;
     re->is_checked = ri.is_checked;
     re->is_vcs = ri.is_vcs;
+    re->verdict_bits = ri.verdict_bits;
   }
   return 1;
 
@@ -1373,6 +1378,10 @@ generate_update_entry_clause(
     fprintf(f, "%sis_vcs = %d", sep, re->is_vcs);
     sep = comma;
   }
+  if ((mask & RE_VERDICT_BITS)) {
+    fprintf(f, "%sverdict_bits = %u", sep, re->verdict_bits);
+    sep = comma;
+  }
 
   gettimeofday(&curtime, 0);
   fprintf(f, "%slast_change_time = ", sep);
@@ -1489,6 +1498,9 @@ update_entry(
   if ((mask & RE_IS_VCS)) {
     dst->is_vcs = src->is_vcs;
   }
+  if ((mask & RE_VERDICT_BITS)) {
+    dst->verdict_bits = src->verdict_bits;
+  }
 }
 
 static int
@@ -1581,11 +1593,12 @@ change_status_func(
         int new_passed_mode,
         int new_score,
         int new_judge_id,
-        const ej_uuid_t *judge_uuid)
+        const ej_uuid_t *judge_uuid,
+        unsigned int verdict_bits)
 {
   struct rldb_mysql_cnts *cs = (struct rldb_mysql_cnts *) cdata;
   struct run_entry te;
-  uint64_t mask = RE_STATUS | RE_TEST | RE_SCORE | RE_PASSED_MODE;
+  uint64_t mask = RE_STATUS | RE_TEST | RE_SCORE | RE_PASSED_MODE | RE_VERDICT_BITS;
 
   memset(&te, 0, sizeof(te));
   te.status = new_status;
@@ -1600,6 +1613,7 @@ change_status_func(
     te.j.judge_id = new_judge_id;
     mask |= RE_JUDGE_ID;
   }
+  te.verdict_bits = verdict_bits;
 
   return do_update_entry(cs, run_id, &te, mask);
 }
@@ -1977,6 +1991,7 @@ put_entry_func(
   ri.token_count = re->token_count;
   ri.is_checked = re->is_checked;
   ri.is_vcs = re->is_vcs;
+  ri.verdict_bits = re->verdict_bits;
 
   cmd_f = open_memstream(&cmd_t, &cmd_z);
   fprintf(cmd_f, "INSERT INTO %sruns VALUES ( ", state->md->table_prefix);
@@ -2034,7 +2049,8 @@ change_status_3_func(
         int has_user_score,
         int user_status,
         int user_tests_passed,
-        int user_score)
+        int user_score,
+        unsigned int verdict_bits)
 {
   struct rldb_mysql_cnts *cs = (struct rldb_mysql_cnts *) cdata;
   struct run_entry te;
@@ -2050,10 +2066,11 @@ change_status_3_func(
   te.saved_status = user_status;
   te.saved_test = user_tests_passed;
   te.saved_score = user_score;
+  te.verdict_bits = verdict_bits;
 
   return do_update_entry(cs, run_id, &te,
                          RE_STATUS | RE_TEST | RE_SCORE | RE_JUDGE_ID | RE_IS_MARKED
-                         | RE_IS_SAVED | RE_SAVED_STATUS | RE_SAVED_TEST | RE_SAVED_SCORE | RE_PASSED_MODE);
+                         | RE_IS_SAVED | RE_SAVED_STATUS | RE_SAVED_TEST | RE_SAVED_SCORE | RE_PASSED_MODE | RE_VERDICT_BITS);
 }
 
 static int
@@ -2464,6 +2481,9 @@ append_run_func(
   if ((mask & RE_IS_VCS)) {
     fputs(",is_vcs", cmd_f);
   }
+  if ((mask & RE_VERDICT_BITS)) {
+    fputs(",verdict_bits", cmd_f);
+  }
   fprintf(cmd_f, ") VALUES (%d, %d, NOW(6), MICROSECOND(NOW(6)) * 1000, '%s', NOW(), MICROSECOND(NOW(6)) * 1000",
           run_id,
           cs->contest_id,
@@ -2584,6 +2604,9 @@ append_run_func(
   }
   if ((mask & RE_IS_VCS)) {
     fprintf(cmd_f, ",%d", !!in_re->is_vcs);
+  }
+  if ((mask & RE_VERDICT_BITS)) {
+    fprintf(cmd_f, ",%u", in_re->verdict_bits);
   }
   fprintf(cmd_f, ") ;");
   fclose(cmd_f); cmd_f = NULL;
@@ -2734,6 +2757,9 @@ append_run_func(
   }
   if ((mask & RE_IS_VCS)) {
     new_re->is_vcs = in_re->is_vcs;
+  }
+  if ((mask & RE_VERDICT_BITS)) {
+    new_re->verdict_bits = in_re->verdict_bits;
   }
 
   if (p_tv) *p_tv = ri.create_time;

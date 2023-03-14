@@ -20,6 +20,7 @@
 #include "ejudge/ej_process.h"
 #include "ejudge/osdeps.h"
 #include "ejudge/logrotate.h"
+#include "ejudge/startstop.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -176,8 +177,16 @@ static int
 find_all(
         const unsigned char *process_name,
         const unsigned char *process_name_deleted,
+        const unsigned char *ns,
         struct PidVector *pv)
 {
+    unsigned char pidns[PATH_MAX];
+    unsigned char curns[PATH_MAX];
+    if (!ns) {
+        start_get_pid_namespace(curns, sizeof(curns), 0);
+        ns = curns;
+    }
+
     DIR *d = opendir(PROC_DIRECTORY);
     if (!d) {
         fprintf(stderr, "%s: cannot open %s: %s\n", program_name, PROC_DIRECTORY, strerror(errno));
@@ -189,6 +198,11 @@ find_all(
         errno = 0;
         long val = strtol(dd->d_name, &ep, 10);
         if (errno || *ep || (int) val != val || val <= 0) continue;
+
+        start_get_pid_namespace(pidns, sizeof(pidns), val);
+        if (strcmp(ns, pidns) != 0)
+            continue;
+
         unsigned char entry_path[PATH_MAX];
         if (snprintf(entry_path, sizeof(entry_path), "%s/%s/%s", PROC_DIRECTORY, dd->d_name, EXE_LINK) >= sizeof(entry_path)) {
             continue;
@@ -291,7 +305,8 @@ start_process(
         const char *agent,
         const char *instance_id,
         const char *queue,
-        int verbose_mode)
+        int verbose_mode,
+        const char *ip_address)
 {
     int pid = fork();
     if (pid < 0) {
@@ -361,6 +376,10 @@ start_process(
         args[argi++] = "--instance-id";
         args[argi++] = (char*) instance_id;
     }
+    if (ip_address && *ip_address) {
+        args[argi++] = "--ip";
+        args[argi++] = (char*) ip_address;
+    }
     if (queue && *queue) {
         args[argi++] = "-I";
         args[argi++] = (char*) queue;
@@ -393,7 +412,7 @@ static int
 signal_and_wait(int signo, const unsigned char *signame, long long timeout_us)
 {
     struct PidVector pv = {};
-    if (find_all(EJ_COMPILE_PROGRAM, EJ_COMPILE_PROGRAM_DELETED, &pv) < 0) {
+    if (find_all(EJ_COMPILE_PROGRAM, EJ_COMPILE_PROGRAM_DELETED, NULL, &pv) < 0) {
         system_error("cannot enumerate processes");
     }
     if (pv.u <= 0) return 0;
@@ -421,7 +440,7 @@ signal_and_wait(int signo, const unsigned char *signame, long long timeout_us)
             fprintf(stderr, "%s: wait timed out\n", program_name);
             return -1;
         }
-    } while (find_all(EJ_COMPILE_PROGRAM, EJ_COMPILE_PROGRAM_DELETED, &pv) >= 0 && pv.u > 0);
+    } while (find_all(EJ_COMPILE_PROGRAM, EJ_COMPILE_PROGRAM_DELETED, NULL, &pv) >= 0 && pv.u > 0);
     pv_free(&pv);
     return 0;
 }
@@ -885,6 +904,7 @@ int main(int argc, char *argv[])
     int res;
     long long timeout_us = -1;
     int date_suffix_flag = 0;
+    const char *ip_address = NULL;
 
     if (argc < 1) {
         system_error("no arguments");
@@ -924,6 +944,12 @@ int main(int argc, char *argv[])
                     system_error("argument expected for --queue");
                 }
                 queue = argv[aidx + 1];
+                aidx += 2;
+            } else if (!strcmp(argv[aidx], "--ip")) {
+                if (aidx + 1 >= argc) {
+                    system_error("argument expected for --ip");
+                }
+                ip_address = argv[aidx + 1];
                 aidx += 2;
             } else if (!strcmp(argv[aidx], "--timeout")) {
                 if (aidx + 1 >= argc) {
@@ -1234,7 +1260,7 @@ int main(int argc, char *argv[])
         {
             struct PidVector pv = {};
 
-            if (find_all(EJ_COMPILE_PROGRAM, EJ_COMPILE_PROGRAM_DELETED, &pv) < 0) {
+            if (find_all(EJ_COMPILE_PROGRAM, EJ_COMPILE_PROGRAM_DELETED, NULL, &pv) < 0) {
                 system_error("cannot enumerate processes");
             }
             if (pv.u > 0) {
@@ -1247,7 +1273,7 @@ int main(int argc, char *argv[])
             }
 
             for (int i = 0; i < compile_parallelism; ++i) {
-                int ret = start_process(config, EJ_COMPILE_PROGRAM, log_fd, workdir, &ev, ej_compile_path, compile_parallelism > 1, 1 /* FIXME */, ejudge_xml_fds, compile_parallelism, i, agent, instance_id, queue, verbose_mode);
+                int ret = start_process(config, EJ_COMPILE_PROGRAM, log_fd, workdir, &ev, ej_compile_path, compile_parallelism > 1, 1 /* FIXME */, ejudge_xml_fds, compile_parallelism, i, agent, instance_id, queue, verbose_mode, ip_address);
                 if (ret < 0) {
                     emergency_stop();
                     return EXIT_SYSTEM_ERROR;
@@ -1259,7 +1285,7 @@ int main(int argc, char *argv[])
             while (sleep_count < START_WAIT_COUNT) {
                 pv_free(&pv);
                 usleep(100000);
-                if (find_all(EJ_COMPILE_PROGRAM, EJ_COMPILE_PROGRAM_DELETED, &pv) < 0) {
+                if (find_all(EJ_COMPILE_PROGRAM, EJ_COMPILE_PROGRAM_DELETED, NULL, &pv) < 0) {
                     system_error("cannot enumerate processes");
                 }
                 if (pv.u == compile_parallelism) break;
@@ -1286,7 +1312,7 @@ int main(int argc, char *argv[])
         {
             struct PidVector pv = {};
 
-            if (find_all(EJ_COMPILE_PROGRAM, EJ_COMPILE_PROGRAM_DELETED, &pv) < 0) {
+            if (find_all(EJ_COMPILE_PROGRAM, EJ_COMPILE_PROGRAM_DELETED, NULL, &pv) < 0) {
                 system_error("cannot enumerate processes");
             }
             if (pv.u <= 0) {
@@ -1299,7 +1325,7 @@ int main(int argc, char *argv[])
         {
             struct PidVector pv = {};
 
-            if (find_all(EJ_COMPILE_PROGRAM, EJ_COMPILE_PROGRAM_DELETED, &pv) < 0) {
+            if (find_all(EJ_COMPILE_PROGRAM, EJ_COMPILE_PROGRAM_DELETED, NULL, &pv) < 0) {
                 system_error("cannot enumerate processes");
             }
             if (pv.u > 0) {
@@ -1316,7 +1342,7 @@ int main(int argc, char *argv[])
     case OPERATION_ROTATE: {
         struct PidVector pv = {};
 
-        if (find_all(EJ_COMPILE_PROGRAM, EJ_COMPILE_PROGRAM_DELETED, &pv) < 0) {
+        if (find_all(EJ_COMPILE_PROGRAM, EJ_COMPILE_PROGRAM_DELETED, NULL, &pv) < 0) {
             system_error("cannot enumerate processes");
         }
 

@@ -159,7 +159,7 @@ main(int argc, char *argv[])
     cmd = NEW_SRV_CMD_STOP;
     signum = START_STOP;
     signame = "TERM";
-    return start_stop_and_wait(program_name, "ej-contests", signame, signum, WAIT_TIMEOUT_US) < 0;
+    return start_stop_and_wait(program_name, "ej-contests", NULL, signame, signum, WAIT_TIMEOUT_US) < 0;
   } else if (!strcmp(command, "restart")) {
     cmd = NEW_SRV_CMD_RESTART;
     signum = START_RESTART;
@@ -182,7 +182,7 @@ main(int argc, char *argv[])
 
     rotate_log_files(lpd, lpf, NULL, NULL, log_group, 0620, date_suffix_flag);
 
-    if ((pid = start_find_process("ej-contests", NULL)) > 0) {
+    if ((pid = start_find_process("ej-contests", NULL, NULL)) > 0) {
       fprintf(stderr, "%s: ej-contests is running as pid %d\n", program_name, pid);
       fprintf(stderr, "%s: sending it the %s signal\n", program_name, "USR1");
       start_kill(pid, START_ROTATE);
@@ -196,7 +196,7 @@ main(int argc, char *argv[])
   (void) signame;
   (void) signum;
 
-  if (!(pid = start_find_process("ej-contests", 0))) {
+  if (!(pid = start_find_process("ej-contests", NULL, 0))) {
     op_error("ej-contests is not running");
   } else if (pid > 0) {
     /*

@@ -957,6 +957,8 @@ struct section_problem_data
   ejbyteflag_t enable_suid_run;
   /** enable container for this problem */
   ejbyteflag_t enable_container;
+  /** adjust testing priority depending on the testing queue state */
+  ejbyteflag_t enable_dynamic_priority;
 
   /** if the valuer also sets the marked flag */
   ejbyteflag_t valuer_sets_marked;
@@ -994,6 +996,8 @@ struct section_problem_data
   ejbyteflag_t enable_user_input;
 
   ejbyteflag_t enable_vcs;
+
+  ejbyteflag_t enable_iframe_statement;
 
   // padding to 8-byte boundary
   //unsigned char _pad1[1];

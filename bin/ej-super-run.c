@@ -87,6 +87,7 @@ static unsigned char *agent_instance_id = NULL;
 static struct AgentClient *agent;
 static int verbose_mode;
 static int daemon_mode;
+static unsigned char *ip_address = NULL;
 
 static int ignored_archs_count = 0;
 static int ignored_problems_count = 0;
@@ -594,7 +595,11 @@ do_super_run_status_init(struct super_run_status *prs)
   if (instance_id) prs->inst_id_idx = super_run_status_add_str(prs, instance_id);
   if (local_ip) prs->local_ip_idx = super_run_status_add_str(prs, local_ip);
   if (local_hostname) prs->local_host_idx = super_run_status_add_str(prs, local_hostname);
-  if (public_ip) prs->public_ip_idx = super_run_status_add_str(prs, public_ip);
+  if (ip_address && *ip_address) {
+    prs->public_ip_idx = super_run_status_add_str(prs, ip_address);
+  } else if (public_ip) {
+    prs->public_ip_idx = super_run_status_add_str(prs, public_ip);
+  }
   if (public_hostname) prs->public_host_idx = super_run_status_add_str(prs, public_hostname);
   if (queue_name) prs->queue_idx = super_run_status_add_str(prs, queue_name);
   prs->ej_ver_idx = super_run_status_add_str(prs, compile_version);
@@ -649,7 +654,7 @@ do_loop(
       agent = agent_client_ssh_create();
       if (agent->ops->init(agent, agent_instance_id,
                            agent_name + 4, run_server_id,
-                           PREPARE_RUN, verbose_mode) < 0) {
+                           PREPARE_RUN, verbose_mode, ip_address) < 0) {
         err("failed to initalize agent");
         return -1;
       }
@@ -1489,6 +1494,13 @@ main(int argc, char *argv[])
       argv_restart[argc_restart++] = argv[cur_arg];
       argv_restart[argc_restart++] = argv[cur_arg + 1];
       cur_arg += 2;
+    } else if (!strcmp(argv[cur_arg], "--ip")) {
+      if (cur_arg + 1 >= argc) fatal("argument expected for --ip");
+      xfree(ip_address);
+      ip_address = xstrdup(argv[cur_arg + 1]);
+      argv_restart[argc_restart++] = argv[cur_arg];
+      argv_restart[argc_restart++] = argv[cur_arg + 1];
+      cur_arg += 2;
     } else if (!strcmp(argv[cur_arg], "-x")) {
       if (cur_arg + 1 >= argc) fatal("argument expected for -x");
       errno = 0;
@@ -1579,7 +1591,7 @@ main(int argc, char *argv[])
     fatal("invalid value of parallelism host option");
   }
 
-  if ((pid_count = start_find_all_processes("ej-super-run", &pids)) < 0) {
+  if ((pid_count = start_find_all_processes("ej-super-run", NULL, &pids)) < 0) {
     fatal("cannot get the list of processes");
   }
   if (pid_count >= parallelism) {

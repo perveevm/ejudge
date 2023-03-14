@@ -1,6 +1,6 @@
 /* -*- c -*- */
 
-/* Copyright (C) 2012-2020 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2012-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -26,6 +26,7 @@
 #include "ejudge/html_parse.h"
 #include "ejudge/sha512utils.h"
 #include "ejudge/cJSON.h"
+#include "ejudge/fileutl.h"
 
 #include "ejudge/osdeps.h"
 #include "ejudge/xalloc.h"
@@ -74,6 +75,7 @@ enum UpdateState
     STATE_UNCOMMITTED,
     STATE_TIMEOUT,
     STATE_NOT_AVAILABLE,
+    STATE_PERMISSION_DENIED,
 
     STATE_LAST,
 };
@@ -114,6 +116,7 @@ struct ProblemInfo
     unsigned char *test_checker_cmd;
     unsigned char *solution_cmd;
     unsigned char *interactor_cmd;
+    unsigned char *html_statement_path;
 };
 
 struct RevisionInfo
@@ -1270,6 +1273,7 @@ const unsigned char * update_statuses[] =
     [STATE_UNCOMMITTED] = "UNCOMMITTED",
     [STATE_TIMEOUT] = "TIMEOUT",
     [STATE_NOT_AVAILABLE] = "NOT_AVAILABLE",
+    [STATE_PERMISSION_DENIED] = "PERMISSION_DENIED",
 
     [STATE_LAST] = NULL,
 };
@@ -1315,6 +1319,7 @@ free_problem_infos(struct ProblemSet *probset)
         xfree(pi->test_checker_cmd);
         xfree(pi->solution_cmd);
         xfree(pi->interactor_cmd);
+        xfree(pi->html_statement_path);
     }
     xfree(probset->infos);
     probset->count = 0;
@@ -2407,7 +2412,8 @@ process_polygon_zip(
         const struct polygon_packet *pkt,
         const struct ZipInterface *zif,
         const unsigned char *zip_path,
-        struct ProblemInfo *pi)
+        struct ProblemInfo *pi,
+        int fill_info_mode)
 {
     struct ZipData *zid = NULL;
     unsigned char *data = NULL;
@@ -2418,6 +2424,7 @@ process_polygon_zip(
     char *cfg_text = NULL;
     size_t cfg_size = 0;
     FILE *cfg_file = NULL;
+    unsigned char *problem_url = NULL;
 
     if (!(zid = zif->open(log_f, zip_path))) {
         fprintf(log_f, "Failed to open zip file '%s'\n", zip_path);
@@ -2426,6 +2433,11 @@ process_polygon_zip(
 
     if (zif->read_file(zid, pkt->problem_xml_name, &data, &size) <= 0) {
         goto zip_error;
+    }
+
+    if (pkt->verbose > 0) {
+        fprintf(log_f, "Problem XML:\n");
+        fprintf(log_f, "%s\n", data);
     }
 
     tree = xml_build_tree_str(log_f, data, &generic_xml_parse_spec);
@@ -2439,7 +2451,11 @@ process_polygon_zip(
         goto zip_error;
     }
     for (a = tree->first; a; a = a->next) {
-        if (!strcmp(a->name[0], "name")) {
+        if (!strcmp(a->name[0], "short-name")) {
+            if (fill_info_mode > 0) {
+                pi->problem_name = xstrdup(a->text);
+            }
+        } else if (!strcmp(a->name[0], "name")) {
             if (strcmp(pi->problem_name, a->text)) {
                 fprintf(log_f, "problem name mismatch: db == '%s', xml attr == '%s'\n", pi->problem_name, a->text);
                 goto zip_error;
@@ -2450,9 +2466,22 @@ process_polygon_zip(
                 fprintf(log_f, "failed to parse revision attribute\n");
                 goto zip_error;
             }
-            if (pi->package_rev != revision && pkt->fetch_latest_available <= 0) {
+            if (fill_info_mode > 0) {
+                pi->package_rev = revision;
+            } else if (pi->package_rev != revision && pkt->fetch_latest_available <= 0) {
                 fprintf(log_f, "package revision mismatch: db == %d, xml attr == %d\n", pi->package_rev, revision);
                 goto zip_error;
+            }
+        } else if (!strcmp(a->name[0], "url")) {
+            const char *p = a->text;
+            if (!strncasecmp(p, "http://", 7)) {
+                p += 7;
+            } else if (!strncasecmp(p, "https://", 8)) {
+                p += 8;
+            }
+            const char *q = strchr(p, '/');
+            if (q) {
+                problem_url = xstrdup(q + 1);
             }
         }
     }
@@ -2548,6 +2577,34 @@ process_polygon_zip(
             }
         } else if (!strcmp(t1->name[0], "files")) {
         } else if (!strcmp(t1->name[0], "assets")) {
+        } else if (!strcmp(t1->name[0], "statements")) {
+            for (struct xml_tree *t2 = t1->first_down; t2; t2 = t2->right) {
+                if (!strcmp(t2->name[0], "statement")) {
+                    const unsigned char *cur_charset = NULL;
+                    const unsigned char *cur_language = NULL;
+                    int cur_mathjax = 0;
+                    const unsigned char *cur_path = NULL;
+                    const unsigned char *cur_type = NULL;
+                    for (a = t2->first; a; a = a->next) {
+                        if (!strcmp(a->name[0], "charset")) {
+                            cur_charset = a->text;
+                        } else if (!strcmp(a->name[0], "language")) {
+                            cur_language = a->text;
+                        } else if (!strcmp(a->name[0], "mathjax")) {
+                            xml_attr_bool(a, &cur_mathjax);
+                        } else if (!strcmp(a->name[0], "path")) {
+                            cur_path = a->text;
+                        } else if (!strcmp(a->name[0], "type")) {
+                            cur_type = a->text;
+                        }
+                    }
+                    if (!strcasecmp(cur_type, "text/html")
+                        && !strcasecmp(cur_language, "russian")
+                        && !strcasecmp(cur_charset, "utf-8")) {
+                        pi->html_statement_path = xstrdup(cur_path);
+                    }
+                }
+            }
         }
     }
 
@@ -2842,6 +2899,44 @@ process_polygon_zip(
             }
         }
     }
+    if (pi->html_statement_path && pkt->enable_iframe_statement > 0) {
+        unsigned char attachments_path[PATH_MAX];
+        snprintf(attachments_path, sizeof(attachments_path),
+                 "%s/attachments", problem_path);
+        if (os_MakeDirPath2(attachments_path, pkt->dir_mode, pkt->dir_group) < 0) {
+            fprintf(log_f, "failed to create directory '%s'\n", attachments_path);
+            goto zip_error;
+        }
+        unsigned char statement_path[PATH_MAX];
+        snprintf(statement_path, sizeof(statement_path),
+                 "%s/statement.html", attachments_path);
+        if (copy_from_zip(log_f, pkt, zif, zid, zip_path, pi->html_statement_path, statement_path)) goto zip_error;
+
+        unsigned char html_statement_dir[PATH_MAX];
+        unsigned char css_src_path[PATH_MAX];
+        unsigned char css_dst_path[PATH_MAX];
+        const unsigned char *p = strrchr(pi->html_statement_path, '/');
+        if (p) {
+            snprintf(html_statement_dir, sizeof(html_statement_dir),
+                     "%.*s", (int) (p - pi->html_statement_path),
+                     pi->html_statement_path);
+            snprintf(css_src_path, sizeof(css_src_path),
+                     "%s/problem-statement.css", html_statement_dir);
+            snprintf(css_dst_path, sizeof(css_dst_path),
+                     "%s/problem-statement.css", attachments_path);
+            if (copy_from_zip(log_f, pkt, zif, zid, zip_path, css_src_path, css_dst_path)) goto zip_error;
+        }
+
+        unsigned char statement_xml_path[PATH_MAX];
+        snprintf(statement_xml_path, sizeof(statement_xml_path),
+                 "%s/statement.xml", problem_path);
+        FILE *f = fopen(statement_xml_path, "w");
+        if (f) {
+            fputs("<?xml version=\"1.0\" encoding=\"utf-8\" ?>\n"
+                  "<problem><statement language=\"ru_RU\"><description><div id=\"polygon_iframe\"><iframe src=\"${getfile}=statement.html\" title=\"statement\" style=\"border:none;\" width=\"80%\" height=\"700px\" > </iframe></div></description></statement></problem>\n", f);
+            fclose(f);
+        }
+    }
 
     fprintf(log_f, "    standard_checker: %s\n", pi->standard_checker);
     fprintf(log_f, "    checker_env: %s\n", pi->checker_env);
@@ -2849,6 +2944,7 @@ process_polygon_zip(
     fprintf(log_f, "    test_checker_cmd: %s\n", pi->test_checker_cmd);
     fprintf(log_f, "    solution_cmd: %s\n", pi->solution_cmd);
     fprintf(log_f, "    interactor_cmd: %s\n", pi->interactor_cmd);
+    fprintf(log_f, "    html_statement: %s\n", pi->html_statement_path);
 
     unsigned char buf[1024];
 
@@ -2860,8 +2956,13 @@ process_polygon_zip(
         prob_cfg->short_name = xstrdup(pi->ejudge_short_name);
     }
     prob_cfg->internal_name = xstrdup(pi->problem_name);
-    snprintf(buf, sizeof(buf), "polygon:%d", pi->problem_id);
-    prob_cfg->extid = xstrdup(buf);
+    if (problem_url && problem_url[0]) {
+        snprintf(buf, sizeof(buf), "polygon:%s", problem_url);
+        prob_cfg->extid = xstrdup(buf);
+    } else if (pi->problem_id > 0) {
+        snprintf(buf, sizeof(buf), "polygon:%d", pi->problem_id);
+        prob_cfg->extid = xstrdup(buf);
+    }
     snprintf(buf, sizeof(buf), "%d", pi->package_rev);
     prob_cfg->revision = xstrdup(buf);
     if (pi->time_limit_ms > 0 && pi->time_limit_ms % 1000 == 0) {
@@ -2927,6 +3028,13 @@ process_polygon_zip(
         prob_cfg->solution_cmd = xstrdup(pi->solution_cmd);
     }
     prob_cfg->enable_testlib_mode = 1;
+    if (pkt->binary_input > 0) {
+        prob_cfg->binary_input = 1;
+    }
+    if (pi->html_statement_path && pi->html_statement_path[0] && pkt->enable_iframe_statement > 0) {
+        prob_cfg->iframe_statement = xstrdup("statement.html");
+        prob_cfg->enable_iframe_statement = 1;
+    }
 
     cfg_file = open_memstream(&cfg_text, &cfg_size);
     problem_config_section_unparse_cfg(cfg_file, prob_cfg);
@@ -2936,6 +3044,11 @@ process_polygon_zip(
     if (save_file(log_f, cfg_path, cfg_text, cfg_size, pkt->file_mode, pkt->file_group, NULL)) goto zip_error;
     pi->state = STATE_UPDATED;
 
+    if (pkt->verbose) {
+        fprintf(log_f, "config file: \n");
+        fprintf(log_f, "%s\n", cfg_text);
+    }
+
 cleanup:
     zid = zif->close(zid);
     xfree(data);
@@ -2943,6 +3056,7 @@ cleanup:
     xfree(cfg_text);
     xml_tree_free(tree, &generic_xml_parse_spec);
     problem_config_section_free((struct generic_section_config *) prob_cfg);
+    free(problem_url);
     return;
 
 zip_error:
@@ -3148,7 +3262,7 @@ check_problem_status(
     //file_downloaded:
 
     pi->state = STATE_DOWNLOADED;
-    process_polygon_zip(log_f, pkt, zif, zip_path, pi);
+    process_polygon_zip(log_f, pkt, zif, zip_path, pi, 0);
 
 cleanup:
     free_revision_info(&rinfo);
@@ -3243,6 +3357,7 @@ done:
 static int
 process_problems_json(
         FILE *log_f,
+        const struct polygon_packet *pkt,
         struct PolygonState *ps,
         struct DownloadData *ddata,
         struct ProblemSet *probset)
@@ -3250,9 +3365,6 @@ process_problems_json(
     int retval = 0;
     cJSON *root = NULL;
     const unsigned char *text = ddata->iface->get_page_text(ddata);
-    //size_t size = ddata->iface->get_page_size(ddata);
-
-    //fprintf(log_f, "=== %zu ===\n%s\n===\n", size, text);
 
     root = cJSON_Parse(text);
     if (!root) {
@@ -3265,6 +3377,13 @@ process_problems_json(
         retval = 1;
         goto done;
     }
+
+    if (pkt->verbose) {
+        char *s = cJSON_Print(root);
+        fprintf(log_f, "=== problems.json ===\n%s\n===\n", s);
+        free(s);
+    }
+
     cJSON *jstatus = cJSON_GetObjectItem(root, "status");
     if (!jstatus || jstatus->type != cJSON_String || strcmp(jstatus->valuestring, "OK")) {
         fprintf(log_f, "invalid json: invalid or missing 'status'\n");
@@ -3307,6 +3426,24 @@ process_problems_json(
             }
         }
         if (!pi) continue;
+
+        cJSON *jaccessType = cJSON_GetObjectItem(jitem, "accessType");
+        if (!jaccessType || jaccessType->type != cJSON_String) {
+            fprintf(log_f, "invalid json: accessType must be string\n");
+            retval = 1;
+            goto done;
+        }
+        if (strcasecmp(jaccessType->valuestring, "WRITE") != 0) {
+            if (pi->key_id > 0) {
+                fprintf(log_f, "WRITE access is required for problem %d\n",
+                        pi->key_id);
+            } else if (pi->key_name) {
+                fprintf(log_f, "WRITE access is required for problem '%s'\n",
+                        pi->key_name);
+            }
+            pi->state = STATE_PERMISSION_DENIED;
+            continue;
+        }
 
         pi->problem_id = jid->valueint;
         pi->problem_name = xstrdup(jname->valuestring);
@@ -3355,35 +3492,14 @@ done:
 static int
 process_problem_info_json(
         FILE *log_f,
+        const struct polygon_packet *pkt,
         struct PolygonState *ps,
         struct DownloadData *ddata,
         struct ProblemInfo *pi)
 {
-    int retval = 0;
-    //cJSON *root = NULL;
-    const unsigned char *text = ddata->iface->get_page_text(ddata);
-    size_t size = ddata->iface->get_page_size(ddata);
-
-    fprintf(log_f, "=== %zu ===\n%s\n===\n", size, text);
-
-    return retval;
-}
-
-static int
-process_problem_packages_json(
-        FILE *log_f,
-        struct PolygonState *ps,
-        struct DownloadData *ddata,
-        struct ProblemInfo *pi,
-        int revision,
-        struct RevisionInfo *rinfo)
-{
-    int retval = 0;
+    int retval = 1;
     cJSON *root = NULL;
     const unsigned char *text = ddata->iface->get_page_text(ddata);
-    size_t size = ddata->iface->get_page_size(ddata);
-
-    fprintf(log_f, "=== %zu ===\n%s\n===\n", size, text);
 
     root = cJSON_Parse(text);
     if (!root) {
@@ -3398,6 +3514,53 @@ process_problem_packages_json(
         pi->state = STATE_FAILED;
         goto done;
     }
+
+    if (pkt->verbose) {
+        char *s = cJSON_Print(root);
+        fprintf(log_f, "=== problem_info.json ===\n%s\n===\n", s);
+        free(s);
+    }
+
+    retval = 0;
+
+done:;
+    if (root) cJSON_Delete(root);
+    return retval;
+}
+
+static int
+process_problem_packages_json(
+        FILE *log_f,
+        const struct polygon_packet *pkt,
+        struct PolygonState *ps,
+        struct DownloadData *ddata,
+        struct ProblemInfo *pi,
+        int revision,
+        struct RevisionInfo *rinfo)
+{
+    int retval = 0;
+    cJSON *root = NULL;
+    const unsigned char *text = ddata->iface->get_page_text(ddata);
+
+    root = cJSON_Parse(text);
+    if (!root) {
+        fprintf(log_f, "JSON parse failed\n");
+        retval = 1;
+        pi->state = STATE_FAILED;
+        goto done;
+    }
+    if (root->type != cJSON_Object) {
+        fprintf(log_f, "invalid contests json, root document expected\n");
+        retval = 1;
+        pi->state = STATE_FAILED;
+        goto done;
+    }
+    if (pkt->verbose) {
+        char *s = cJSON_Print(root);
+        fprintf(log_f, "=== problem_packages.json ===\n%s\n===\n", s);
+        free(s);
+    }
+
     cJSON *jstatus = cJSON_GetObjectItem(root, "status");
     if (!jstatus || jstatus->type != cJSON_String || strcmp(jstatus->valuestring, "OK")) {
         fprintf(log_f, "invalid json: invalid or missing 'status'\n");
@@ -3548,7 +3711,7 @@ check_problem_status_api(
         pi->state = STATE_FAILED;
         goto cleanup;
     }
-    if (process_problem_info_json(log_f, ps, ddata, pi)) {
+    if (process_problem_info_json(log_f, pkt, ps, ddata, pi)) {
         pi->state = STATE_FAILED;
         goto cleanup;
     }
@@ -3558,7 +3721,7 @@ check_problem_status_api(
         pi->state = STATE_FAILED;
         goto cleanup;
     }
-    if (process_problem_packages_json(log_f, ps, ddata, pi, package_rev, &rinfo)) {
+    if (process_problem_packages_json(log_f, pkt, ps, ddata, pi, package_rev, &rinfo)) {
         goto cleanup;
     }
 
@@ -3597,7 +3760,7 @@ check_problem_status_api(
     //file_downloaded:
 
     pi->state = STATE_DOWNLOADED;
-    process_polygon_zip(log_f, pkt, zif, zip_path, pi);
+    process_polygon_zip(log_f, pkt, zif, zip_path, pi, 0);
 
 cleanup:
     free_revision_info(&rinfo);
@@ -3694,7 +3857,7 @@ do_work_api(
         retval = 1;
         goto done;
     }
-    if (process_problems_json(log_f, ps, ddata, probset)) {
+    if (process_problems_json(log_f, pkt, ps, ddata, probset)) {
         retval = 1;
         goto done;
     }
@@ -3845,6 +4008,54 @@ done:;
     return retval;
 }
 
+static int
+do_work_file(
+        FILE *log_f,
+        struct polygon_packet *pkt,
+        struct ProblemSet *probset)
+{
+    const struct ZipInterface *zif = NULL;
+    int retval = 1;
+
+#if CONF_HAS_LIBZIP - 0 == 0
+    fprintf(log_f, "libzip library was missing during the complation, functionality is not available\n");
+    retval = 1;
+    goto done;
+#else
+    zif = get_zip_interface(log_f, pkt);
+#endif
+
+    if (!zif) {
+        fprintf(log_f, "zip interface is not available\n");
+        retval = 1;
+        goto done;
+    }
+
+    probset->count = 1;
+    XCALLOC(probset->infos, probset->count);
+
+    if (pkt->ejudge_short_name && pkt->ejudge_short_name[0] && pkt->ejudge_short_name[0][0]) {
+        probset->infos[0].ejudge_short_name = xstrdup(pkt->ejudge_short_name[0]);
+    }
+
+    process_polygon_zip(log_f, pkt, zif, pkt->package_file, &probset->infos[0], 1);
+
+    // copy zip file to download directory
+    if (pkt->download_dir && pkt->download_dir[0]) {
+        unsigned char target_name[PATH_MAX];
+        snprintf(target_name, sizeof(target_name),
+                 "%s-%d", probset->infos[0].problem_name,
+                 probset->infos[0].package_rev);
+        generic_copy_file(0, NULL, pkt->package_file, NULL,
+                          0, pkt->download_dir, target_name, ".zip");
+    }
+
+    retval = 0;
+
+done:;
+    return retval;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -3976,7 +4187,9 @@ main(int argc, char **argv)
     } else {
         log_f = stderr;
     }
-    if (pkt->secret && *pkt->secret) {
+    if (pkt->package_file) {
+        retval = do_work_file(log_f, pkt, &problem_set);
+    } else if (pkt->secret && *pkt->secret) {
         retval = do_work_api(log_f, pkt, rand, &problem_set);
     } else {
         retval = do_work(log_f, pkt, &problem_set);

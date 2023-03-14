@@ -39,6 +39,7 @@
 #include "ejudge/prepare.h"
 #include "ejudge/ej_process.h"
 #include "ejudge/problem_config.h"
+#include "ejudge/mime_type.h"
 
 #include "ejudge/xalloc.h"
 #include "ejudge/osdeps.h"
@@ -4317,37 +4318,49 @@ cleanup:
   return retval;
 }
 
+static char *
+trim_fgets(unsigned char *buf, size_t size, FILE *f)
+{
+  if (!fgets(buf, size, f)) return NULL;
+  size_t len = strlen(buf);
+  while (len > 0 && isspace((unsigned char) buf[len - 1])) --len;
+  buf[len] = 0;
+  return buf;
+}
+
 int
 ss_get_saved_auth(
         const unsigned char *ej_login,
         unsigned char **p_poly_login,
         unsigned char **p_poly_password,
-        unsigned char **p_poly_url)
+        unsigned char **p_poly_url,
+        unsigned char **p_poly_key,
+        unsigned char **p_poly_secret)
 {
   unsigned char path[PATH_MAX];
   FILE *f = NULL;
-  unsigned char lb[1024], pb[1024], ub[1024];
+  unsigned char lb[1024], pb[1024], ub[1024], kb[1024], sb[1024];
 
   lb[0] = 0;
   pb[0] = 0;
   ub[0] = 0;
+  kb[0] = 0;
+  sb[0] = 0;
   snprintf(path, sizeof(path), "%s/db/%s", EJUDGE_CONF_DIR, ej_login);
   if (!(f = fopen(path, "r"))) return -1;
-  (void) (fgets(lb, sizeof(lb), f) && fgets(pb, sizeof(pb), f) && fgets(ub, sizeof(ub), f));
-  fclose(f); f = NULL;
-  int ll = strlen(lb);
-  while (ll > 0 && isspace(lb[ll - 1])) --ll;
-  lb[ll] = 0;
-  ll = strlen(pb);
-  while (ll > 0 && isspace(pb[ll - 1])) --ll;
-  pb[ll] = 0;
-  ll = strlen(ub);
-  while (ll > 0 && isspace(ub[ll - 1])) --ll;
-  ub[ll] = 0;
+
+  (void) (trim_fgets(lb, sizeof(lb), f)
+          && trim_fgets(pb, sizeof(pb), f)
+          && trim_fgets(ub, sizeof(ub), f)
+          && trim_fgets(kb, sizeof(kb), f)
+          && trim_fgets(sb, sizeof(sb), f));
 
   *p_poly_login = xstrdup(lb);
   *p_poly_password = xstrdup(pb);
   *p_poly_url = xstrdup(ub);
+  if (p_poly_key) *p_poly_key = xstrdup(kb);
+  if (p_poly_secret) *p_poly_secret = xstrdup(sb);
+
   return 1;
 }
 
@@ -4356,7 +4369,9 @@ save_auth(
         const unsigned char *ej_login,
         const unsigned char *poly_login,
         const unsigned char *poly_password,
-        const unsigned char *poly_url)
+        const unsigned char *poly_url,
+        const unsigned char *poly_key,
+        const unsigned char *poly_secret)
 {
   unsigned char path[PATH_MAX];
   FILE *f = NULL;
@@ -4364,12 +4379,15 @@ save_auth(
   if (!poly_login) poly_login = "";
   if (!poly_password) poly_password = "";
   if (!poly_url) poly_url = "";
+  if (!poly_key) poly_key = "";
+  if (!poly_secret) poly_secret = "";
 
   snprintf(path, sizeof(path), "%s/db/%s", EJUDGE_CONF_DIR, ej_login);
   if (!(f = fopen(path, "w"))) {
     return;
   }
-  fprintf(f, "%s\n%s\n%s\n", poly_login, poly_password, poly_url);
+  fprintf(f, "%s\n%s\n%s\n%s\n%s\n", poly_login, poly_password, poly_url,
+          poly_key, poly_secret);
   fflush(f);
   if (ferror(f)) {
     fclose(f); unlink(path);
@@ -4396,6 +4414,31 @@ ss_find_free_prob_id(const struct sid_state *ss)
 }
 
 int
+ss_find_free_prob_id_and_name(
+        const struct sid_state *ss,
+        unsigned char *prob_buf,
+        size_t buf_size)
+{
+  int prob_id = ss_find_free_prob_id(ss);
+  unsigned char name_buf[128];
+  int short_id = prob_id;
+
+  int found = 0;
+  do {
+    problem_id_to_short_name(short_id, name_buf);
+    for (int i = 0; i < ss->prob_a; ++i) {
+      if (ss->probs[i] && !strcmp(ss->probs[i]->short_name, name_buf)) {
+        found = 1;
+        break;
+      }
+    }
+  } while (found);
+
+  snprintf(prob_buf, buf_size, "%s", name_buf);
+  return prob_id;
+}
+
+int
 super_serve_op_IMPORT_FROM_POLYGON_ACTION(
         FILE *log_f,
         FILE *out_f,
@@ -4412,6 +4455,8 @@ super_serve_op_IMPORT_FROM_POLYGON_ACTION(
   unsigned char *polygon_password = NULL;
   unsigned char *polygon_id = NULL;
   unsigned char *polygon_url = NULL;
+  unsigned char *polygon_key = NULL;
+  unsigned char *polygon_secret = NULL;
   const unsigned char *language_priority = NULL;
   int save_auth_flag = 0;
   int max_stack_size_flag = 0;
@@ -4423,6 +4468,13 @@ super_serve_op_IMPORT_FROM_POLYGON_ACTION(
   FILE *f = NULL;
   int contest_mode = 0;
   unsigned char *polygon_contest_id = NULL;
+  int upload_mode = 0;
+  const unsigned char *package_file_data = NULL;
+  size_t package_file_size = 0;
+  int binary_input_flag = 0;
+  int enable_iframe_statement_flag = 0;
+  int enable_api_flag = 0;
+  int verbose_flag = 0;
 
   if (!ss->edited_cnts || !ss->global) {
     FAIL(SSERV_ERR_NO_EDITED_CNTS);
@@ -4445,6 +4497,8 @@ super_serve_op_IMPORT_FROM_POLYGON_ACTION(
     fprintf(log_f, "advanced_layout must be set\n");
     FAIL(SSERV_ERR_INV_OPER);
   }
+
+  if (hr_cgi_param(phr, "verbose", &s) > 0) verbose_flag = 1;
 
   hr_cgi_param_int_opt(phr, "contest_mode", &contest_mode, 0);
   contest_mode = !!contest_mode;
@@ -4480,68 +4534,102 @@ super_serve_op_IMPORT_FROM_POLYGON_ACTION(
   // FIXME: check for valid characters
   }
 
-  if ((r = hr_cgi_param(phr, "polygon_login", &s)) < 0) {
-    fprintf(log_f, "polygon login is invalid\n");
-    FAIL(SSERV_ERR_INV_OPER);
-  }
-  if (!r || !s || !*s) {
-    fprintf(log_f, "polygon login is undefined\n");
-    FAIL(SSERV_ERR_INV_OPER);
-  }
-  polygon_login = xstrdup(s);
-
-  if ((r = hr_cgi_param(phr, "polygon_password", &s)) < 0) {
-    fprintf(log_f, "polygon password is invalid\n");
-    FAIL(SSERV_ERR_INV_OPER);
-  }
-  if (!r || !s || !*s) {
-    fprintf(log_f, "polygon password is undefined\n");
-    FAIL(SSERV_ERR_INV_OPER);
-  }
-  polygon_password = xstrdup(s);
-
-  if (hr_cgi_param(phr, "save_auth", &s) > 0) save_auth_flag = 1;
-
-  if (contest_mode) {
-    if ((r = hr_cgi_param(phr, "polygon_contest_id", &s)) < 0) {
-      fprintf(log_f, "polygon contest id/name is invalid\n");
-      FAIL(SSERV_ERR_INV_OPER);
-    }
-    if (!r) {
-      fprintf(log_f, "polygon contest id/name is undefined\n");
-      FAIL(SSERV_ERR_INV_OPER);
-    }
-    polygon_contest_id = fix_string_2(s);
-    if (!polygon_contest_id) {
-      fprintf(log_f, "polygon contest id/name is undefined\n");
-      FAIL(SSERV_ERR_INV_OPER);
-    }
-  } else {
-    if ((r = hr_cgi_param(phr, "polygon_id", &s)) < 0) {
-      fprintf(log_f, "polygon problem id/name is invalid\n");
-      FAIL(SSERV_ERR_INV_OPER);
-    }
-    if (!r) {
-      fprintf(log_f, "polygon problem id/name is undefined\n");
-      FAIL(SSERV_ERR_INV_OPER);
-    }
-    polygon_id = fix_string_2(s);
-    if (!polygon_id) {
-      fprintf(log_f, "polygon problem id/name is undefined\n");
-      FAIL(SSERV_ERR_INV_OPER);
-    }
+  if (hr_cgi_param_bin(phr, "package_file", &package_file_data, &package_file_size) > 0 && package_file_size > 0) {
+    upload_mode = 1;
   }
 
-  if ((r = hr_cgi_param(phr, "polygon_url", &s)) < 0) {
-    fprintf(log_f, "polygon url is invalid\n");
-    FAIL(SSERV_ERR_INV_OPER);
-  } else if (r > 0) {
-    polygon_url = fix_string_2(s);
+  if (!upload_mode) {
+    if (hr_cgi_param(phr, "enable_api", &s) > 0) enable_api_flag = 1;
+
+    if (!enable_api_flag) {
+      if ((r = hr_cgi_param(phr, "polygon_login", &s)) < 0) {
+        fprintf(log_f, "polygon login is invalid\n");
+        FAIL(SSERV_ERR_INV_OPER);
+      }
+      if (!r || !s || !*s) {
+        fprintf(log_f, "polygon login is undefined\n");
+        FAIL(SSERV_ERR_INV_OPER);
+      }
+      polygon_login = xstrdup(s);
+
+      if ((r = hr_cgi_param(phr, "polygon_password", &s)) < 0) {
+        fprintf(log_f, "polygon password is invalid\n");
+        FAIL(SSERV_ERR_INV_OPER);
+      }
+      if (!r || !s || !*s) {
+        fprintf(log_f, "polygon password is undefined\n");
+        FAIL(SSERV_ERR_INV_OPER);
+      }
+      polygon_password = xstrdup(s);
+    }
+
+    if (hr_cgi_param(phr, "save_auth", &s) > 0) save_auth_flag = 1;
+
+    if (enable_api_flag) {
+      if ((r = hr_cgi_param(phr, "polygon_key", &s)) < 0) {
+        fprintf(log_f, "polygon key is invalid\n");
+        FAIL(SSERV_ERR_INV_OPER);
+      }
+      if (!r || !s || !*s) {
+        fprintf(log_f, "polygon key is undefined\n");
+        FAIL(SSERV_ERR_INV_OPER);
+      }
+      polygon_key = xstrdup(s);
+
+      if ((r = hr_cgi_param(phr, "polygon_secret", &s)) < 0) {
+        fprintf(log_f, "polygon secret is invalid\n");
+        FAIL(SSERV_ERR_INV_OPER);
+      }
+      if (!r || !s || !*s) {
+        fprintf(log_f, "polygon secret is undefined\n");
+        FAIL(SSERV_ERR_INV_OPER);
+      }
+      polygon_secret = xstrdup(s);
+    }
+
+    if (contest_mode) {
+      if ((r = hr_cgi_param(phr, "polygon_contest_id", &s)) < 0) {
+        fprintf(log_f, "polygon contest id/name is invalid\n");
+        FAIL(SSERV_ERR_INV_OPER);
+      }
+      if (!r) {
+        fprintf(log_f, "polygon contest id/name is undefined\n");
+        FAIL(SSERV_ERR_INV_OPER);
+      }
+      polygon_contest_id = fix_string_2(s);
+      if (!polygon_contest_id) {
+        fprintf(log_f, "polygon contest id/name is undefined\n");
+        FAIL(SSERV_ERR_INV_OPER);
+      }
+    } else {
+      if ((r = hr_cgi_param(phr, "polygon_id", &s)) < 0) {
+        fprintf(log_f, "polygon problem id/name is invalid\n");
+        FAIL(SSERV_ERR_INV_OPER);
+      }
+      if (!r) {
+        fprintf(log_f, "polygon problem id/name is undefined\n");
+        FAIL(SSERV_ERR_INV_OPER);
+      }
+      polygon_id = fix_string_2(s);
+      if (!polygon_id) {
+        fprintf(log_f, "polygon problem id/name is undefined\n");
+        FAIL(SSERV_ERR_INV_OPER);
+      }
+    }
+
+    if ((r = hr_cgi_param(phr, "polygon_url", &s)) < 0) {
+      fprintf(log_f, "polygon url is invalid\n");
+      FAIL(SSERV_ERR_INV_OPER);
+    } else if (r > 0) {
+      polygon_url = fix_string_2(s);
+    }
   }
 
   if (hr_cgi_param(phr, "max_stack_size", &s) > 0) max_stack_size_flag = 1;
   if (hr_cgi_param(phr, "ignore_solutions", &s) > 0) ignore_solutions_flag = 1;
   if (hr_cgi_param(phr, "fetch_latest_available", &s) > 0) fetch_latest_available_flag = 1;
+  if (hr_cgi_param(phr, "binary_input", &s) > 0) binary_input_flag = 1;
+  if (hr_cgi_param(phr, "enable_iframe_statement", &s) > 0) enable_iframe_statement_flag = 1;
 
   if (hr_cgi_param(phr, "language_priority", &s) > 0 && *s) {
     if (!strcmp(s, "ru,en")
@@ -4550,8 +4638,10 @@ super_serve_op_IMPORT_FROM_POLYGON_ACTION(
     }
   }
 
-  if (save_auth_flag) {
-    save_auth(phr->login, polygon_login, polygon_password, polygon_url);
+  if (!upload_mode) {
+    if (save_auth_flag) {
+      save_auth(phr->login, polygon_login, polygon_password, polygon_url, polygon_key, polygon_secret);
+    }
   }
 
   s = getenv("TMPDIR");
@@ -4587,6 +4677,28 @@ super_serve_op_IMPORT_FROM_POLYGON_ACTION(
     }
   }
 
+  unsigned char package_path[PATH_MAX];
+  package_path[0] = 0;
+  if (upload_mode > 0) {
+    snprintf(package_path, sizeof(package_path), "%s/pkg_%s", working_dir, rand_base);
+    int r = generic_write_file(package_file_data, package_file_size, 0,
+                               NULL, package_path, NULL);
+    if (r < 0) {
+      FAIL(SSERV_ERR_OPERATION_FAILED);
+    }
+    r = mime_type_guess_file(package_path, 0);
+    if (r < 0) {
+      FAIL(SSERV_ERR_OPERATION_FAILED);
+    }
+    if (r != MIME_TYPE_APPL_ZIP) {
+      FAIL(SSERV_ERR_OPERATION_FAILED);
+    }
+    unsigned char tmp_pkg_path[PATH_MAX];
+    snprintf(tmp_pkg_path, sizeof(tmp_pkg_path), "%s.zip", package_path);
+    rename(package_path, tmp_pkg_path);
+    snprintf(package_path, sizeof(package_path), "%s", tmp_pkg_path);
+  }
+
   unsigned char conf_path[PATH_MAX];
   unsigned char log_path[PATH_MAX];
   unsigned char pid_path[PATH_MAX];
@@ -4606,11 +4718,21 @@ super_serve_op_IMPORT_FROM_POLYGON_ACTION(
   pp = polygon_packet_alloc();
   pp->enable_max_stack_size = max_stack_size_flag;
   pp->ignore_solutions = ignore_solutions_flag;
-  pp->fetch_latest_available = fetch_latest_available_flag;
+  pp->binary_input = binary_input_flag;
+  pp->enable_iframe_statement = enable_iframe_statement_flag;
+  pp->verbose = verbose_flag;
   pp->create_mode = 1;
-  pp->polygon_url = polygon_url; polygon_url = NULL;
-  pp->login = polygon_login; polygon_login = NULL;
-  pp->password = polygon_password; polygon_password = NULL;
+  if (upload_mode <= 0) {
+    pp->fetch_latest_available = fetch_latest_available_flag;
+    pp->polygon_url = polygon_url; polygon_url = NULL;
+    pp->login = polygon_login; polygon_login = NULL;
+    pp->password = polygon_password; polygon_password = NULL;
+    if (enable_api_flag) {
+      pp->enable_api = 1;
+      pp->key = polygon_key; polygon_key = NULL;
+      pp->secret = polygon_secret; polygon_secret = NULL;
+    }
+  }
   pp->language_priority = xstrdup2(language_priority);
   pp->working_dir = xstrdup(working_dir);
   pp->log_file = xstrdup(log_path);
@@ -4637,6 +4759,9 @@ super_serve_op_IMPORT_FROM_POLYGON_ACTION(
       XCALLOC(pp->ejudge_short_name, 2);
       pp->ejudge_short_name[0] = ej_short_name; ej_short_name = NULL;
     }
+  }
+  if (package_path[0]) {
+    pp->package_file = xstrdup(package_path);
   }
 
   if (!(f = fopen(conf_path, "w"))) {
@@ -4999,6 +5124,12 @@ do_import_problem(
   if (cfg->enable_testlib_mode > 0) {
     prob->enable_testlib_mode = 1;
   }
+  if (cfg->binary_input > 0) {
+    prob->binary_input = 1;
+  }
+  if (cfg->enable_iframe_statement > 0) {
+    prob->enable_iframe_statement = 1;
+  }
   if (cfg->max_vm_size != (size_t) -1L && cfg->max_vm_size) {
     prob->max_vm_size = cfg->max_vm_size;
   }
@@ -5231,7 +5362,7 @@ super_serve_op_UPDATE_FROM_POLYGON_ACTION(
   }
 
   if (save_auth_flag) {
-    save_auth(phr->login, polygon_login, polygon_password, polygon_url);
+    save_auth(phr->login, polygon_login, polygon_password, polygon_url, NULL, NULL);
   }
 
   s = getenv("TMPDIR");

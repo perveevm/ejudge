@@ -532,7 +532,8 @@ run_change_status(
         int newpassedmode,
         int newscore,
         int judge_id,
-        const ej_uuid_t *judge_uuid)
+        const ej_uuid_t *judge_uuid,
+        unsigned int verdict_bits)
 {
   if (runid < state->run_f || runid >= state->run_u) ERR_R("bad runid: %d", runid);
 
@@ -559,7 +560,7 @@ run_change_status(
 
   return state->iface->change_status(state->cnts, runid, newstatus, newtest,
                                      newpassedmode, newscore, judge_id,
-                                     judge_uuid);
+                                     judge_uuid, verdict_bits);
 }
 
 int
@@ -574,7 +575,8 @@ run_change_status_3(
         int has_user_score,
         int user_status,
         int user_tests_passed,
-        int user_score)
+        int user_score,
+        unsigned int verdict_bits)
 {
   if (runid < state->run_f || runid >= state->run_u) ERR_R("bad runid: %d", runid);
 
@@ -607,7 +609,8 @@ run_change_status_3(
                                        has_user_score, /* has_user_score */
                                        user_status,    /* user_status */
                                        user_tests_passed, /* user_tests_passed */
-                                       user_score);       /* user_score */
+                                       user_score,       /* user_score */
+                                       verdict_bits);
 }
 
 int
@@ -938,6 +941,30 @@ run_count_all_attempts_2(runlog_state_t state, int user_id, int prob_id, int ign
     if (prob_id <= 0 || re->prob_id == prob_id) {
       ++count;
     }
+  }
+  ASSERT(i == -1);
+
+  return count;
+}
+
+int
+run_count_all_attempts_3(runlog_state_t state, int user_id, int prob_id)
+{
+  int i, count = 0;
+
+  struct user_run_header_info *urh = run_get_user_run_header(state, user_id, NULL);
+  ASSERT(urh);
+  if (!urh->run_id_valid) {
+    run_rebuild_user_run_index(state, user_id);
+  }
+
+  for (i = urh->run_id_first; i >= state->run_f; i = state->run_extras[i - state->run_extra_f].next_user_id) {
+    ASSERT(i < state->run_u);
+    const struct run_entry *re = &state->runs[i - state->run_f];
+    ASSERT(re->user_id == user_id);
+    if (re->prob_id == prob_id
+        && re->status >= RUN_TRANSIENT_FIRST && re->status <= RUN_TRANSIENT_LAST)
+      ++count;
   }
   ASSERT(i == -1);
 
@@ -1437,6 +1464,10 @@ run_set_entry(
   }
   if ((mask & RE_IS_CHECKED) && te.is_checked != in->is_checked) {
     te.is_checked = in->is_checked;
+    f = 1;
+  }
+  if ((mask & RE_VERDICT_BITS) && te.verdict_bits != in->verdict_bits) {
+    te.verdict_bits = in->verdict_bits;
     f = 1;
   }
 

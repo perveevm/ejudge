@@ -2,7 +2,7 @@
 #ifndef __POLYGON_PACKET_H__
 #define __POLYGON_PACKET_H__
 
-/* Copyright (C) 2012-2020 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2012-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or
@@ -40,6 +40,10 @@ struct polygon_packet
     ejintbool_t ignore_solutions;
     int retry_count;
     ejintbool_t fetch_latest_available;
+    ejintbool_t binary_input;
+    ejintbool_t enable_iframe_statement;
+    ejintbool_t enable_api;
+    ejintbool_t verbose;
 
     unsigned char *polygon_url;
     unsigned char *login;
@@ -62,6 +66,7 @@ struct polygon_packet
     unsigned char *polygon_contest_id;
     unsigned char *key;
     unsigned char *secret;
+    unsigned char *package_file;
 
     char **id;
     char **ejudge_id;

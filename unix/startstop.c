@@ -35,6 +35,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <sys/time.h>
+#include <sys/stat.h>
 
 static path_t self_exe;
 static char **self_argv;
@@ -153,7 +154,10 @@ get_process_name(unsigned char *buf, size_t size, int pid)
 }
 
 int
-start_find_process(const unsigned char *name, int *p_uid)
+start_find_process(
+        const unsigned char *name,
+        const unsigned char *ns,
+        int *p_uid)
 {
   DIR *d = 0;
   struct dirent *dd;
@@ -161,6 +165,13 @@ start_find_process(const unsigned char *name, int *p_uid)
   int pid, mypid;
   int retval = -1;
   unsigned char cmdname[PATH_MAX];
+  unsigned char curns[PATH_MAX];
+  unsigned char pidns[PATH_MAX];
+
+  if (!ns) {
+    start_get_pid_namespace(curns, sizeof(curns), 0);
+    ns = curns;
+  }
 
   mypid = getpid();
 
@@ -172,6 +183,9 @@ start_find_process(const unsigned char *name, int *p_uid)
     if (errno || *eptr || eptr == dd->d_name || pid <= 0 || pid == mypid)
       continue;
     if (get_process_name(cmdname, sizeof(cmdname), pid) <= 0)
+      continue;
+    start_get_pid_namespace(pidns, sizeof(pidns), pid);
+    if (strcmp(ns, pidns) != 0)
       continue;
     if (!strcmp(name, cmdname)) {
       retval = pid;
@@ -188,7 +202,10 @@ start_find_process(const unsigned char *name, int *p_uid)
 }
 
 int
-start_find_all_processes(const unsigned char *name, int **p_pids)
+start_find_all_processes(
+        const unsigned char *name,
+        const unsigned char *ns,
+        int **p_pids)
 {
   DIR *d = 0;
   struct dirent *dd;
@@ -197,6 +214,13 @@ start_find_all_processes(const unsigned char *name, int **p_pids)
   int a = 0, u = 0;
   int *pids = NULL;
   unsigned char cmdname[PATH_MAX];
+  unsigned char curns[PATH_MAX];
+  unsigned char pidns[PATH_MAX];
+
+  if (!ns) {
+    start_get_pid_namespace(curns, sizeof(curns), 0);
+    ns = curns;
+  }
 
   mypid = getpid();
 
@@ -207,6 +231,9 @@ start_find_all_processes(const unsigned char *name, int **p_pids)
     if (errno || *eptr || eptr == dd->d_name || pid <= 0 || pid == mypid)
       continue;
     if (get_process_name(cmdname, sizeof(cmdname), pid) <= 0)
+      continue;
+    start_get_pid_namespace(pidns, sizeof(pidns), pid);
+    if (strcmp(ns, pidns) != 0)
       continue;
     if (!strcmp(name, cmdname)) {
       if (u >= a) {
@@ -279,6 +306,7 @@ int
 start_stop_and_wait(
         const unsigned char *program_name,
         const unsigned char *process_name,
+        const unsigned char *ns,
         const unsigned char *signame,
         int signum,
         long long timeout_us)
@@ -289,7 +317,7 @@ start_stop_and_wait(
   int signals_sent = 0;
   while (1) {
     int *pids = NULL;
-    int pid_count = start_find_all_processes(process_name, &pids);
+    int pid_count = start_find_all_processes(process_name, ns, &pids);
     if (pid_count < 0) {
       fprintf(stderr, "%s: cannot get the list of processes from /proc\n",
               program_name);
@@ -322,3 +350,43 @@ start_stop_and_wait(
   return 0;
 }
 
+int
+start_get_pid_namespace(
+        unsigned char *buf,
+        size_t size,
+        int pid)
+{
+  unsigned char path[PATH_MAX];
+  int r;
+  unsigned char ns[PATH_MAX];
+
+  if (size > 0) {
+    buf[0] = 0;
+  }
+  if (pid > 0) {
+    r = snprintf(path, sizeof(path), "/proc/%d/ns/pid", pid);
+  } else {
+    r = snprintf(path, sizeof(path), "/proc/self/ns/pid");
+  }
+  if (r >= (int) sizeof(path)) {
+    return -1;
+  }
+
+  struct stat stb;
+  if (lstat(path, &stb) < 0) {
+    return -1;
+  }
+  if (!S_ISLNK(stb.st_mode)) {
+    return -1;
+  }
+  r = readlink(path, ns, sizeof(ns));
+  if (r <= 0 || r >= (int) sizeof(ns)) {
+    return -1;
+  }
+  ns[r] = 0;
+
+  if (snprintf(buf, size, "%s", ns) >= (int) size) {
+    return -1;
+  }
+  return 0;
+}

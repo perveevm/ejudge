@@ -17,6 +17,8 @@
  * GNU General Public License for more details.
  */
 
+#include <stdlib.h>
+
 enum
 {
   START_RESTART = 1,
@@ -33,9 +35,16 @@ int start_prepare(const unsigned char *user, const unsigned char *group,
 void start_restart(void);
 
 int
-start_find_process(const unsigned char *name, int *p_uid);
+start_find_process(
+        const unsigned char *name,
+        const unsigned char *ns,
+        int *p_uid);
+
 int
-start_find_all_processes(const unsigned char *name, int **p_pids);
+start_find_all_processes(
+        const unsigned char *name,
+        const unsigned char *ns,
+        int **p_pids);
 
 int start_kill(int pid, int op);
 int start_daemon(const unsigned char *log_path);
@@ -47,8 +56,15 @@ int
 start_stop_and_wait(
         const unsigned char *program_name,
         const unsigned char *process_name,
+        const unsigned char *ns,
         const unsigned char *signame,
         int signum,
         long long timeout_us);
+
+int
+start_get_pid_namespace(
+        unsigned char *buf,
+        size_t size,
+        int pid);
 
 #endif /* __STARTSTOP_H__ */

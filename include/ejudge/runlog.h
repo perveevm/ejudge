@@ -2,7 +2,7 @@
 #ifndef __RUNLOG_H__
 #define __RUNLOG_H__
 
-/* Copyright (C) 2000-2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2000-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -70,6 +70,22 @@ enum
   RUN_STATUS_SIZE      = 100
 };
 
+/* bits for verdict bitset */
+enum
+{
+  RUN_OK_BIT                  = 1,
+  RUN_RUN_TIME_ERR_BIT        = 2,
+  RUN_TIME_LIMIT_ERR_BIT      = 4,
+  RUN_PRESENTATION_ERR_BIT    = 8,
+  RUN_WRONG_ANSWER_ERR_BIT    = 0x10,
+  RUN_CHECK_FAILED_BIT        = 0x20,
+  RUN_MEM_LIMIT_ERR_BIT       = 0x40,
+  RUN_SECURITY_ERR_BIT        = 0x80,
+  RUN_WALL_TIME_LIMIT_ERR_BIT = 0x100,
+  RUN_SKIPPED_BIT             = 0x200,
+  RUN_SYNC_ERR_BIT            = 0x400,
+};
+
 enum { RUN_LOG_CREATE = 1, RUN_LOG_READONLY = 2, RUN_LOG_NOINDEX = 4, RUN_LOG_UUID_INDEX = 8 };
 
 enum
@@ -131,7 +147,8 @@ run_change_status(
         int newpassedmode,
         int newscore,
         int judge_id,
-        const ej_uuid_t *judge_uuid);
+        const ej_uuid_t *judge_uuid,
+        unsigned int verdict_bits);
 int
 run_change_status_3(
         runlog_state_t state,
@@ -144,7 +161,8 @@ run_change_status_3(
         int has_user_score,
         int user_status,
         int user_tests_passed,
-        int user_score);
+        int user_score,
+        unsigned int verdict_bits);
 int
 run_change_status_4(
         runlog_state_t state,
@@ -175,6 +193,8 @@ void run_get_team_usage(runlog_state_t, int, int *, size_t*);
 int  run_get_attempts(runlog_state_t, int, int *, int *, int *, time_t *, int, int);
 int run_count_all_attempts(runlog_state_t state, int user_id, int prob_id);
 int run_count_all_attempts_2(runlog_state_t state, int user_id, int prob_id, int ignored_set);
+int run_count_all_attempts_3(runlog_state_t state, int user_id, int prob_id);
+
 char *run_status_str(int, char *, int, int, int);
 const unsigned char * run_status_short_str(int status);
 
@@ -254,7 +274,8 @@ enum
     RE_PROB_UUID     = 0x80000000,
     RE_JUDGE_UUID    = 0x100000000ULL,
     RE_IS_VCS        = 0x200000000ULL,
-    RE_ALL           = 0x3FFFFFFFFULL,
+    RE_VERDICT_BITS  = 0x400000000ULL,
+    RE_ALL           = 0x7FFFFFFFFULL,
   };
 
 struct run_entry
@@ -312,7 +333,9 @@ struct run_entry
   rint16_t       mime_type;     /* 2 */
   int64_t        serial_id;     /* 8 */
   unsigned char  pages;         /* 1 */
-  char _pad[87];
+  char _pad0[3];
+  ruint32_t      verdict_bits;  /* 4 */
+  char _pad[80];
   /* total is 256 bytes */
 };
 

@@ -148,7 +148,7 @@ main(int argc, char *argv[])
   if (!strcmp(command, "stop")) {
     signame = "TERM";
     signum = START_STOP;
-    return start_stop_and_wait(program_name, "ej-jobs", signame, signum, WAIT_TIMEOUT_US) < 0;
+    return start_stop_and_wait(program_name, "ej-jobs", NULL, signame, signum, WAIT_TIMEOUT_US) < 0;
   } else if (!strcmp(command, "restart")) {
     signame = "HUP";
     signum = START_RESTART;
@@ -175,7 +175,7 @@ main(int argc, char *argv[])
     startup_error("invalid command");
   }
 
-  if (!(pid = start_find_process("ej-jobs", 0))) {
+  if (!(pid = start_find_process("ej-jobs", NULL, 0))) {
     op_error("ej-jobs is not running");
   } else if (pid > 0) {
     // FIXME: also analyze the uid
