@@ -2644,6 +2644,8 @@ invoke_checker(
     }
     if (cur_info->score == test_max_score) {
       status = RUN_OK;
+    } else {
+      status = RUN_PARTIAL;
     }
     if (user_score_mode) {
       if (user_score < 0) user_score = cur_info->score;
@@ -4355,7 +4357,6 @@ check_output_only(
     } else {
       reply_pkt->failed_test = 1;
       reply_pkt->tests_passed = 0;
-      status = RUN_PARTIAL;
     }
     // if (srpp->variable_full_score > 0) {
     //   reply_pkt->score = cur_info->score;
