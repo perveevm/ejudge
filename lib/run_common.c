@@ -4348,13 +4348,21 @@ check_output_only(
 
   // FIXME: scoring checker
   if (status == RUN_OK) {
-    if (srpp->variable_full_score > 0) {
-      reply_pkt->score = cur_info->score;
+    reply_pkt->score = cur_info->score;
+    if (cur_info->score == srpp->full_score) {
+      reply_pkt->failed_test = 2;
+      reply_pkt->tests_passed = 1;
     } else {
-      reply_pkt->score = srpp->full_score;
+      reply_pkt->failed_test = 1;
+      reply_pkt->tests_passed = 0;
     }
-    reply_pkt->failed_test = 2;
-    reply_pkt->tests_passed = 1;
+    // if (srpp->variable_full_score > 0) {
+    //   reply_pkt->score = cur_info->score;
+    // } else {
+    //   reply_pkt->score = srpp->full_score;
+    // }
+    // reply_pkt->failed_test = 2;
+    // reply_pkt->tests_passed = 1;
   } else {
     reply_pkt->score = cur_info->score;
     reply_pkt->failed_test = 1;
