@@ -2644,8 +2644,6 @@ invoke_checker(
     }
     if (cur_info->score == test_max_score) {
       status = RUN_OK;
-    } else {
-      status = RUN_PARTIAL;
     }
     if (user_score_mode) {
       if (user_score < 0) user_score = cur_info->score;
