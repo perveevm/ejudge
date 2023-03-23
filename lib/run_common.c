@@ -4355,6 +4355,7 @@ check_output_only(
     } else {
       reply_pkt->failed_test = 1;
       reply_pkt->tests_passed = 0;
+      status = RUN_PARTIAL;
     }
     // if (srpp->variable_full_score > 0) {
     //   reply_pkt->score = cur_info->score;
