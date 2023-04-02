@@ -204,8 +204,6 @@ $(function() {
       enable_virtual_start = 0;
     } else if (cnts->close_time > 0 && cs->current_time >= cnts->close_time) {
       enable_virtual_start = 0;
-    } else if (cs->upsolving_mode) {
-      enable_virtual_start = 0;
     }
     if (enable_virtual_start) {
 %><s:form><%

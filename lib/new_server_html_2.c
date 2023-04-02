@@ -5715,7 +5715,7 @@ ns_get_user_problems_summary(
   xfree(user_flag);
 
   // nothing before contest start
-  if (start_time <= 0 && !cs->upsolving_mode) return;
+  if (start_time <= 0) return;
 
   for (int prob_id = 1; prob_id <= cs->max_prob; prob_id++) {
     if (!(cur_prob = cs->probs[prob_id])) continue;
@@ -5800,10 +5800,6 @@ ns_get_user_problems_summary(
 
     if (start_time > 0 && cs->current_time >= start_time && cur_prob->disable_tab <= 0)
       pinfo[prob_id].status |= PROB_STATUS_TABABLE;
-
-    if (cs->upsolving_mode) {
-      pinfo[prob_id].status |= PROB_STATUS_VIEWABLE | PROB_STATUS_SUBMITTABLE | PROB_STATUS_TABABLE;
-    }
   }
 
   // clear submittable status for problems depending on 'provide_ok', if the source problem is submittable
