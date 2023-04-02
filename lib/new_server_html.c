@@ -12846,9 +12846,9 @@ unpriv_command(
     if (cnts->close_time > 0 && cs->current_time >= cnts->close_time) {
       FAIL2(NEW_SRV_ERR_PERMISSION_DENIED);
     }
-    if (hdr.stop_time >= 0) {
-      FAIL2(NEW_SRV_ERR_PERMISSION_DENIED);
-    }
+    //if (hdr.stop_time >= 0) {
+    //  FAIL2(NEW_SRV_ERR_PERMISSION_DENIED);
+    //}
     start_time = run_get_virtual_start_time(cs->runlog_state, phr->user_id);
     if (start_time > 0) {
       FAIL2(NEW_SRV_ERR_CONTEST_ALREADY_STARTED);
