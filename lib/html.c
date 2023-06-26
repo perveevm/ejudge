@@ -279,7 +279,7 @@ write_json_run_status(
         int ce_attempts,
         int prev_successes,
         int disable_failed,
-        int run_fields,
+        long long run_fields,
         time_t effective_time,
         const unsigned char *indent)
 {
@@ -469,7 +469,7 @@ write_html_run_status(
         const unsigned char *td_class,
         int disable_failed,
         int enable_js_status_menu,
-        int run_fields,
+        long long run_fields,
         time_t effective_time,
 	int cur_test)
 {
