@@ -2,7 +2,7 @@
 #ifndef __AGENT_CLIENT_H__
 #define __AGENT_CLIENT_H__
 
-/* Copyright (C) 2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2022-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -40,7 +40,10 @@ struct AgentClientOps
         struct AgentClient *ac,
         unsigned char *pkt_name,
         size_t pkt_len,
-        int random_mode);
+        int random_mode,
+        int enable_file,
+        char **p_data,
+        size_t *p_size);
 
     int (*get_packet)(
         struct AgentClient *ac,
@@ -84,15 +87,21 @@ struct AgentClientOps
         struct AgentClient *ac,
         int notify_signal,
         int random_mode,
+        int enable_file,
         unsigned char *pkt_name,
         size_t pkt_len,
-        struct Future **p_future);
+        struct Future **p_future,
+        long long timeout_ms,
+        char **p_data,
+        size_t *p_size);
 
     int (*async_wait_complete)(
         struct AgentClient *ac,
         struct Future **p_future,
         unsigned char *pkt_name,
-        size_t pkt_len);
+        size_t pkt_len,
+        char **p_data,
+        size_t *p_size);
 
     int (*add_ignored)(
         struct AgentClient *ac,
@@ -119,7 +128,8 @@ struct AgentClientOps
         size_t size,
         long long *p_last_saved_time_ms,
         unsigned char *p_stop_flag,
-        unsigned char *p_down_flag);
+        unsigned char *p_down_flag,
+        unsigned char *p_reboot_flag);
 
     int (*delete_heartbeat)(
         struct AgentClient *ac,

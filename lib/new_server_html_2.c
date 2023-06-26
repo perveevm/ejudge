@@ -51,6 +51,10 @@
 #include "ejudge/new_server_pi.h"
 #include "ejudge/xuser_plugin.h"
 #include "ejudge/super_run_status.h"
+#include "ejudge/compile_heartbeat.h"
+#include "ejudge/mixed_id.h"
+
+#include "flatbuf-gen/compile_heartbeat_reader.h"
 
 #include "ejudge/xalloc.h"
 #include "ejudge/logger.h"
@@ -137,7 +141,7 @@ ns_write_priv_all_runs(
   unsigned char cl[128];
   int prob_type = 0;
   int enable_js_status_menu = 0;
-  int run_fields;
+  long long run_fields;
 
   time_t effective_time, *p_eff_time;
 
@@ -206,7 +210,10 @@ ns_write_priv_all_runs(
     env.rbegin = run_get_first(cs->runlog_state);
     env.rtotal = run_get_total(cs->runlog_state);
     run_get_header(cs->runlog_state, &env.rhead);
-    env.cur_time = time(0);
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    env.cur_time = tv.tv_sec;
+    env.cur_time_us = tv.tv_sec * 1000000LL + tv.tv_usec;
     env.rentries = run_get_entries_ptr(cs->runlog_state);
 
     XCALLOC(match_idx, env.rtotal + 1 - env.rbegin);
@@ -456,6 +463,15 @@ ns_write_priv_all_runs(
     if (run_fields & (1 << RUN_VIEW_VERDICT_BITS)) {
       fprintf(f, "<th%s>%s</th>", cl, "Verdict bits");
     }
+    if (run_fields & (1 << RUN_VIEW_LAST_CHANGE_US)) {
+      fprintf(f, "<th%s>%s</th>", cl, "Last Change");
+    }
+    if (run_fields & (1 << RUN_VIEW_EXT_USER)) {
+      fprintf(f, "<th%s>%s</th>", cl, "External User");
+    }
+    if (run_fields & (1 << RUN_VIEW_NOTIFY)) {
+      fprintf(f, "<th%s>%s</th>", cl, "Notify Info");
+    }
     /*
     if (phr->role == USER_ROLE_ADMIN) {
       fprintf(f, "<th%s>%s</th>", cl, _("New result"));
@@ -468,7 +484,7 @@ ns_write_priv_all_runs(
 
      */
 
-    fprintf(f, "<th%s>%s</th><th%s>%s&nbsp;<a href=\"javascript:ej_field_popup(%d)\">&gt;&gt;</a><div class=\"ej_dd\" id=\"ej_field_popup\"></div></th></tr>\n",
+    fprintf(f, "<th%s>%s</th><th%s>%s&nbsp;<a href=\"javascript:ej_field_popup(%lld)\">&gt;&gt;</a><div class=\"ej_dd\" id=\"ej_field_popup\"></div></th></tr>\n",
             cl, "Source", cl, "Report", run_fields);
     if (phr->role == USER_ROLE_ADMIN) {
       //snprintf(endrow, sizeof(endrow), "</tr></form>\n");
@@ -593,6 +609,15 @@ ns_write_priv_all_runs(
         if (run_fields & (1 << RUN_VIEW_VERDICT_BITS)) {
           fprintf(f, "<td%s>&nbsp;</td>", cl);
         }
+        if (run_fields & (1 << RUN_VIEW_LAST_CHANGE_US)) {
+          fprintf(f, "<td%s>&nbsp;</td>", cl);
+        }
+        if (run_fields & (1 << RUN_VIEW_EXT_USER)) {
+          fprintf(f, "<td%s>&nbsp;</td>", cl);
+        }
+        if (run_fields & (1 << RUN_VIEW_NOTIFY)) {
+          fprintf(f, "<td%s>&nbsp;</td>", cl);
+        }
         fprintf(f, "<td%s>&nbsp;</td>", cl);
         fprintf(f, "<td%s>&nbsp;</td>", cl);
         /*
@@ -701,6 +726,15 @@ ns_write_priv_all_runs(
           fprintf(f, "<td%s>&nbsp;</td>", cl);
         }
         if (run_fields & (1 << RUN_VIEW_VERDICT_BITS)) {
+          fprintf(f, "<td%s>&nbsp;</td>", cl);
+        }
+        if (run_fields & (1 << RUN_VIEW_LAST_CHANGE_US)) {
+          fprintf(f, "<td%s>&nbsp;</td>", cl);
+        }
+        if (run_fields & (1 << RUN_VIEW_EXT_USER)) {
+          fprintf(f, "<td%s>&nbsp;</td>", cl);
+        }
+        if (run_fields & (1 << RUN_VIEW_NOTIFY)) {
           fprintf(f, "<td%s>&nbsp;</td>", cl);
         }
 
@@ -927,6 +961,29 @@ ns_write_priv_all_runs(
       if (run_fields & (1 << RUN_VIEW_VERDICT_BITS)) {
         if (pe->verdict_bits) {
           fprintf(f, "<td%s>%u</td>", cl, pe->verdict_bits);
+        } else {
+          fprintf(f, "<td%s>&nbsp;</td>", cl);
+        }
+      }
+      if (run_fields & (1 << RUN_VIEW_LAST_CHANGE_US)) {
+        fprintf(f, "<td%s>%lld</td>", cl, (long long) pe->last_change_us);
+      }
+      if (run_fields & (1 << RUN_VIEW_EXT_USER)) {
+        if (pe->ext_user_kind > 0 && pe->ext_user_kind < MIXED_ID_LAST) {
+          fprintf(f, "<td%s>%s</td>", cl,
+                  ARMOR(mixed_id_marshall(durstr, pe->ext_user_kind,
+                                          &pe->ext_user)));
+        } else {
+          fprintf(f, "<td%s>&nbsp;</td>", cl);
+        }
+      }
+      if (run_fields & (1 << RUN_VIEW_NOTIFY)) {
+        if (pe->notify_driver > 0
+            && pe->notify_kind > 0 && pe->notify_kind < MIXED_ID_LAST) {
+          fprintf(f, "<td%s>%d:%s</td>", cl,
+                  pe->notify_driver,
+                  ARMOR(mixed_id_marshall(durstr, pe->notify_kind,
+                                          &pe->notify_queue)));
         } else {
           fprintf(f, "<td%s>&nbsp;</td>", cl);
         }
@@ -1736,8 +1793,9 @@ ns_priv_edit_run_action(
   if (info.is_readonly > 0 && !new_is_readonly) {
     new_info.is_readonly = 0;
     mask |= RE_IS_READONLY;
-    if (run_set_entry(cs->runlog_state, run_id, mask, &new_info) < 0)
+    if (run_set_entry(cs->runlog_state, run_id, mask, &new_info, &new_info) < 0)
       FAIL(NEW_SRV_ERR_RUNLOG_UPDATE_FAILED);
+    serve_notify_run_update(phr->config, cs, &new_info);
     goto cleanup;
   }
   if (info.is_readonly != new_is_readonly) {
@@ -2308,8 +2366,9 @@ ns_priv_edit_run_action(
   }
 
   if (!mask) goto cleanup;
-  if (run_set_entry(cs->runlog_state, run_id, mask, &new_info) < 0)
+  if (run_set_entry(cs->runlog_state, run_id, mask, &new_info, &new_info) < 0)
     FAIL(NEW_SRV_ERR_RUNLOG_UPDATE_FAILED);
+  serve_notify_run_update(phr->config, cs, &new_info);
 
   serve_audit_log(cs, run_id, &info, phr->user_id, &phr->ip, phr->ssl_flag,
                   "edit-run", "ok", -1,
@@ -3398,7 +3457,13 @@ do_add_row(
                           re->variant, re->is_hidden, re->mime_type,
                           prob_uuid,
                           store_flags,
-                          0 /* is_vcs */);
+                          0 /* is_vcs */,
+                          0 /* ext_user_kind */,
+                          NULL /* ext_user */,
+                          0 /* notify_driver */,
+                          0 /* notify_kind */,
+                          NULL /* notify_queue */,
+                          NULL /* ure */);
   if (run_id < 0) {
     fprintf(log_f, _("Failed to add row %d to runlog\n"), row);
     return -1;
@@ -3425,7 +3490,8 @@ do_add_row(
     fprintf(log_f, _("Cannot write run row %d\n"), row);
     return -1;
   }
-  run_set_entry(cs->runlog_state, run_id, RE_STATUS | RE_TEST | RE_SCORE, re);
+  run_set_entry(cs->runlog_state, run_id, RE_STATUS | RE_TEST | RE_SCORE,
+                re, NULL);
 
   serve_audit_log(cs, run_id, NULL, phr->user_id, &phr->ip, phr->ssl_flag,
                   "priv-new-run", "ok", re->status, NULL);
@@ -4068,7 +4134,7 @@ ns_upload_csv_results(
     }
     run_set_entry(cs->runlog_state, runs[row].run_id,
                   RE_STATUS | RE_TEST | RE_SCORE | RE_PASSED_MODE,
-                  &runs[row]);
+                  &runs[row], NULL);
   }
 
   retval = 0;
@@ -4231,7 +4297,7 @@ get_source(
       if (n <= 0 || n > px->ans_num) goto inv_answer_n;
       i = problem_xml_find_language(0, px->tr_num, px->tr_names);
       tmp_f = open_memstream(&tmp_txt, &tmp_len);
-      problem_xml_unparse_node(tmp_f, px->answers[n - 1][i], 0, 0);
+      problem_xml_unparse_node(tmp_f, px->answers[n - 1][i], 0, 0, NULL);
       close_memstream(tmp_f); tmp_f = 0;
       val = tmp_txt; tmp_txt = 0;
     } else if (prob->alternative) {
@@ -6092,6 +6158,39 @@ ns_examiners_page(
   return 0;
 }
 
+static int
+compile_heartbeat_sort_func(const void *v1, const void *v2)
+{
+  const struct compile_heartbeat_vector_item *p1 = *((struct compile_heartbeat_vector_item**) v1);
+  const struct compile_heartbeat_vector_item *p2 = *((struct compile_heartbeat_vector_item**) v2);
+
+  ej_compile_Heartbeat_table_t h1 = ej_compile_Heartbeat_as_root(p1->data);
+  ej_compile_Heartbeat_table_t h2 = ej_compile_Heartbeat_as_root(p2->data);
+
+  const unsigned char *id1 = ej_compile_Heartbeat_instance_id_get(h1);
+  const unsigned char *id2 = ej_compile_Heartbeat_instance_id_get(h2);
+  if (!id1 && !id2) return 0;
+  if (!id1) return -1;
+  if (!id2) return 1;
+  return strcmp(id1, id2);
+}
+
+void
+ns_scan_compile_heartbeat_dirs(
+        serve_state_t cs,
+        struct compile_heartbeat_vector *vec)
+{
+  memset(vec, 0, sizeof(*vec));
+  for (int i = 0; i < cs->compile_queues_u; ++i) {
+    if (cs->compile_queues[i].heartbeat_dir) {
+      compile_heartbeat_scan(cs->compile_queues[i].id,
+                             cs->compile_queues[i].heartbeat_dir,
+                             vec);
+    }
+  }
+  qsort(vec->v, vec->u, sizeof(vec->v[0]), compile_heartbeat_sort_func);
+}
+
 TestingQueueArray *
 testing_queue_array_free(TestingQueueArray *parr, int free_struct_flag)
 {
@@ -6224,6 +6323,88 @@ ns_scan_run_queue(
   }
 
   qsort(vec->v, vec->u, sizeof(vec->v[0]), scan_run_sort_func);
+}
+
+struct compile_queues_info *
+compile_queues_info_free(
+        struct compile_queues_info *info,
+        int free_struct_flag)
+{
+  for (int i = 0; i < info->su; ++i) {
+    free(info->s[i].queue_id);
+  }
+  free(info->s);
+  if (free_struct_flag) {
+    free(info);
+  }
+  return NULL;
+}
+
+static int
+compile_queue_stat_sort_func(const void *v1, const void *v2)
+{
+  const struct compile_queue_stat *s1 = (const struct compile_queue_stat *) v1;
+  const struct compile_queue_stat *s2 = (const struct compile_queue_stat *) v2;
+
+  if (!s1->queue_id && !s2->queue_id) return 0;
+  if (!s1->queue_id) return -1;
+  if (!s2->queue_id) return 1;
+  return strcmp(s1->queue_id, s2->queue_id);
+}
+
+static void
+ns_scan_one_compile_queue(
+        serve_state_t cs,
+        const unsigned char *queue_id,
+        const unsigned char *queue_dir,
+        struct compile_queues_info *info)
+{
+  unsigned char dirdir[PATH_MAX];
+  unsigned char path[PATH_MAX];
+  __attribute__((unused)) int r;
+  DIR *d;
+  int count = 0;
+  time_t mtime = 0;
+
+  r = snprintf(dirdir, sizeof(dirdir), "%s/dir", queue_dir);
+  d = opendir(dirdir);
+  if (!d) return;
+
+  struct dirent *dd;
+  while ((dd = readdir(d))) {
+    if (!strcmp(dd->d_name, ".") || !strcmp(dd->d_name, "..")) continue;
+    r = snprintf(path, sizeof(path), "%s/%s", dirdir, dd->d_name);
+    struct stat stb;
+    if (lstat(path, &stb) < 0) continue;
+    if (!S_ISREG(stb.st_mode)) continue;
+
+    ++count;
+    if (!mtime || stb.st_mtime < mtime) {
+      mtime = stb.st_mtime;
+    }
+  }
+
+  if (info->sa == info->su) {
+    if (!(info->sa *= 2)) info->sa = 16;
+    XREALLOC(info->s, info->sa);
+  }
+  struct compile_queue_stat *stat = &info->s[info->su++];
+  stat->queue_id = xstrdup(queue_id);
+  stat->count = count;
+  stat->oldest_timestamp = mtime;
+}
+
+void
+ns_scan_compile_queue(
+        serve_state_t cs,
+        struct compile_queues_info *info)
+{
+  memset(info, 0, sizeof(*info));
+  for (int i = 0; i < cs->compile_queues_u; ++i) {
+    ns_scan_one_compile_queue(cs, cs->compile_queues[i].id,
+                              cs->compile_queues[i].queue_dir, info);
+  }
+  qsort(info->s, info->su, sizeof(info->s[0]), compile_queue_stat_sort_func);
 }
 
 static int
@@ -6537,10 +6718,11 @@ fill_user_run_info(
       ri->is_with_variants = 1;
       if (gen_strings_flag > 0) {
         char *p = NULL;
+        __attribute__((unused)) int _;
         if (variant > 0) {
-          asprintf(&p, "%s-%d", cur_prob->short_name, variant);
+          _ = asprintf(&p, "%s-%d", cur_prob->short_name, variant);
         } else {
-          asprintf(&p, "%s-?", cur_prob->short_name);
+          _ = asprintf(&p, "%s-?", cur_prob->short_name);
         }
         ri->prob_str = p;
       }

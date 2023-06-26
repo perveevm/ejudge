@@ -1,6 +1,6 @@
 /* -*- mode: c; c-basic-offset: 4 -*- */
 
-/* Copyright (C) 2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2022-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -127,7 +127,7 @@ process_contest(
     state->current_time = time(NULL);
     state->load_time = state->current_time;
 
-    if (prepare(cnts, state, state->config_path, 0, PREPARE_SERVE, "", 1, 0, 0) < 0)
+    if (prepare(ejudge_config, cnts, state, state->config_path, 0, PREPARE_SERVE, "", 1, 0, 0) < 0)
         goto done;
     if (prepare_serve_defaults(cnts, state, NULL) < 0) goto done;
     global = state->global;
@@ -208,7 +208,7 @@ process_contest(
             }
         }
         if (te->run_fields) {
-            if (new_xuser_state->vt->set_run_fields(new_xuser_state, user_id, te->status) < 0) {
+            if (new_xuser_state->vt->set_run_fields(new_xuser_state, user_id, te->run_fields) < 0) {
                 fprintf(stderr, "contest %d user %d set_run_fields failed\n",
                         contest_id, user_id);
                 continue;

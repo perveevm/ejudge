@@ -2,7 +2,7 @@
 #ifndef __SUBMIT_PLUGIN_H__
 #define __SUBMIT_PLUGIN_H__
 
-/* Copyright (C) 2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2022-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -18,6 +18,7 @@
 
 #include "ejudge/common_plugin.h"
 #include "ejudge/ej_uuid.h"
+#include "ejudge/mixed_id.h"
 
 #include <stdio.h>
 
@@ -28,6 +29,8 @@ struct submit_entry
     ej_uuid_t     uuid;         /* submit own uuid */
     ej_uuid_t     prob_uuid;    /* problem uuid */
     ej_uuid_t     judge_uuid;   /* judge uuid */
+    ej_mixed_id_t ext_user;     /* external user ID */
+    ej_mixed_id_t notify_queue; /* notification queue ID */
     int64_t       serial_id;
     int64_t       source_id;
     int64_t       input_id;
@@ -46,6 +49,9 @@ struct submit_entry
     signed char   locale_id;
     unsigned char ssl_flag;
     signed char   eoln_type;
+    unsigned char ext_user_kind;
+    unsigned char notify_driver;
+    unsigned char notify_kind;
 };
 
 struct submit_totals
@@ -103,7 +109,8 @@ struct submit_plugin_iface
         unsigned mask,
         int status,
         int64_t protocol_id,
-        ej_uuid_t *p_judge_uuid);
+        const ej_uuid_t *p_judge_uuid,
+        struct submit_entry *p_se);
     int (*fetch)(
         struct submit_cnts_plugin_data *data,
         int64_t submit_id,

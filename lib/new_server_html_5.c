@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2007-2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2007-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -37,6 +37,7 @@
 #include "ejudge/avatar_plugin.h"
 #include "ejudge/content_plugin.h"
 #include "ejudge/errlog.h"
+#include "ejudge/session_cache.h"
 
 #include "ejudge/xalloc.h"
 #include "ejudge/logger.h"
@@ -383,7 +384,6 @@ cmd_login(
     }
 
     curl(urlbuf, sizeof(urlbuf), cnts, phr, 1, "&", 0, NULL);
-    ns_get_session(phr->session_id, phr->client_key, 0);
     ns_refresh_page_2(fout, phr->client_key, urlbuf);
   } else if (cnts->force_registration) {
     // register for the contest anyway, but do not redirect to new-client
@@ -870,7 +870,7 @@ ns_reg_main_page_view_info(
   const struct userlist_user_info *ui = 0;
   const struct userlist_members *mmm = 0;
 
-  u = phr->session_extra->user_info;
+  u = phr->user_info;
   if (u) ui = userlist_get_cnts0(u);
   if (ui) mmm = ui->members;
 
@@ -939,7 +939,7 @@ ns_reg_main_page_view_info(
 
   if (phr->action == NEW_SRV_ACTION_REG_VIEW_GENERAL) {
     fprintf(fout, "<h2>%s", _("General information"));
-    if (!u->read_only && (!ui || !ui->cnts_read_only) && !(phr->reg_flags & USERLIST_UC_REG_READONLY)) {
+    if (u && !u->read_only && (!ui || !ui->cnts_read_only) && !(phr->reg_flags & USERLIST_UC_REG_READONLY)) {
       fprintf(fout, " [%s%s</a>]",
               ns_aref(ub, sizeof(ub), phr, NEW_SRV_ACTION_REG_EDIT_GENERAL_PAGE, 0), _("Edit"));
     }
@@ -1933,7 +1933,7 @@ submit_member_editing(
   size_t log_z = 0;
   int r, ff;
   int role = 0, member = 0;
-  const struct userlist_user *u = phr->session_extra->user_info;
+  const struct userlist_user *u = NULL;
   const struct userlist_member *m = 0;
   unsigned char vbuf[1024];
   int deleted_ids[USERLIST_NM_LAST], edited_ids[USERLIST_NM_LAST];
@@ -1946,6 +1946,8 @@ submit_member_editing(
     ns_refresh_page(fout, phr, NEW_SRV_ACTION_REG_VIEW_GENERAL, 0);
     return;
   }
+
+  u = phr->user_info;
 
   // role, member, param_%d
   if (hr_cgi_param_int(phr, "role", &role) < 0
@@ -2004,8 +2006,8 @@ submit_member_editing(
   }
 
   // force reloading the user info
-  userlist_free(&phr->session_extra->user_info->b);
-  phr->session_extra->user_info = 0;
+  ns_invalidate_session(phr->session_id, phr->client_key);
+  phr->nsi = NULL;
 
  done:;
   if (log_f) close_memstream(log_f);
@@ -2150,8 +2152,8 @@ submit_general_editing(
   }
 
   // force reloading the user info
-  userlist_free(&phr->session_extra->user_info->b);
-  phr->session_extra->user_info = 0;
+  ns_invalidate_session(phr->session_id, phr->client_key);
+  phr->nsi = NULL;
 
  done:;
   if (log_f) close_memstream(log_f);
@@ -2179,13 +2181,15 @@ add_member(
   char *log_t = 0;
   size_t log_z = 0;
   int r, role = 0;
-  struct userlist_user *u = phr->session_extra->user_info;
+  struct userlist_user *u = NULL;
 
   if (cnts->personal) {
     // they kidding us...
     ns_refresh_page(fout, phr, NEW_SRV_ACTION_REG_VIEW_GENERAL, 0);
     return;
   }
+
+  u = phr->user_info;
 
   // role
   if (hr_cgi_param_int(phr, "role", &role) < 0
@@ -2216,8 +2220,8 @@ add_member(
   }
 
   // force reloading the user info
-  userlist_free(&phr->session_extra->user_info->b);
-  phr->session_extra->user_info = 0;
+  ns_invalidate_session(phr->session_id, phr->client_key);
+  phr->nsi = NULL;
 
  done:;
   if (log_f) close_memstream(log_f);
@@ -2244,7 +2248,7 @@ remove_member(
   char *log_t = 0;
   size_t log_z = 0;
   int r, role = 0, member = 0;
-  const struct userlist_user *u = phr->session_extra->user_info;
+  const struct userlist_user *u = NULL;
   const struct userlist_member *m = 0;
 
   if (cnts->personal) {
@@ -2252,6 +2256,8 @@ remove_member(
     ns_refresh_page(fout, phr, NEW_SRV_ACTION_REG_VIEW_GENERAL, 0);
     return;
   }
+
+  u = phr->user_info;
 
   // role
   if (hr_cgi_param_int(phr, "role", &role) < 0
@@ -2285,8 +2291,8 @@ remove_member(
   }
 
   // force reloading the user info
-  userlist_free(&phr->session_extra->user_info->b);
-  phr->session_extra->user_info = 0;
+  ns_invalidate_session(phr->session_id, phr->client_key);
+  phr->nsi = NULL;
 
  done:;
   if (log_f) close_memstream(log_f);
@@ -2313,7 +2319,7 @@ move_member(
   char *log_t = 0;
   size_t log_z = 0;
   int r, role = 0, member = 0, new_role = 0;;
-  const struct userlist_user *u = phr->session_extra->user_info;
+  const struct userlist_user *u = NULL;
   const struct userlist_member *m = 0;
 
   if (cnts->personal) {
@@ -2321,6 +2327,8 @@ move_member(
     ns_refresh_page(fout, phr, NEW_SRV_ACTION_REG_VIEW_GENERAL, 0);
     return;
   }
+
+  u = phr->user_info;
 
   // role
   if (hr_cgi_param_int(phr, "role", &role) < 0
@@ -2377,8 +2385,8 @@ move_member(
   }
 
   // force reloading the user info
-  userlist_free(&phr->session_extra->user_info->b);
-  phr->session_extra->user_info = 0;
+  ns_invalidate_session(phr->session_id, phr->client_key);
+  phr->nsi = NULL;
 
  done:;
   if (log_f) close_memstream(log_f);
@@ -2408,7 +2416,6 @@ logout(
   userlist_clnt_delete_cookie(ul_conn, phr->user_id, phr->contest_id,
                               phr->session_id,
                               phr->client_key);
-  ns_remove_session(phr->session_id);
   if (phr->json_reply) {
     fprintf(fout, "{\n  \"ok\": true\n}\n");
   } else {
@@ -3702,19 +3709,15 @@ ns_register_pages(FILE *fout, struct http_request_info *phr)
     return error_page(fout, phr, NEW_SRV_ERR_PERMISSION_DENIED);
   }
 
-  // check for local userlist_user structure and fetch it from the
-  // server
-  phr->session_extra = ns_get_session(phr->session_id, phr->client_key, cur_time);
-
-  if (!phr->session_extra->user_info) {
+  if (!phr->user_info) {
     if (userlist_clnt_get_info(ul_conn, ULS_PRIV_GET_USER_INFO,
                                phr->user_id, phr->contest_id,
                                &user_info_xml) < 0) {
       // FIXME: need better error reporting
       return error_page(fout, phr, NEW_SRV_ERR_USERLIST_SERVER_DOWN);
     }
-    phr->session_extra->user_info = userlist_parse_user_str(user_info_xml);
-    if (!phr->session_extra->user_info) {
+    phr->user_info = userlist_parse_user_str(user_info_xml);
+    if (!phr->user_info) {
       // FIXME: need better error reporting
       return error_page(fout, phr, NEW_SRV_ERR_USERLIST_SERVER_DOWN);
     }

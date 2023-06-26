@@ -39,6 +39,9 @@
 #include "ejudge/sha256utils.h"
 #include "ejudge/metrics_contest.h"
 #include "ejudge/teamdb.h"
+#include "ejudge/session_cache.h"
+#include "ejudge/server_info.h"
+#include "ejudge/mixed_id.h"
 
 #include "ejudge/xalloc.h"
 #include "ejudge/osdeps.h"
@@ -92,8 +95,8 @@ struct userlist_clnt *ul_conn;
 int ul_uid;
 unsigned char *ul_login;
 
-struct session_info *session_first, *session_last;
-//time_t server_start_time;
+// global session cache
+extern struct id_cache main_id_cache;
 
 // plugin information
 struct nsdb_loaded_plugin
@@ -167,90 +170,6 @@ int
 nsdb_get_examiner_count(int contest_id, int prob_id)
 {
   return nsdb_default->iface->get_examiner_count(nsdb_default->data, contest_id, prob_id);
-}
-
-struct session_info *
-ns_get_session(
-        ej_cookie_t session_id,
-        ej_cookie_t client_key,
-        time_t cur_time)
-{
-  struct session_info *p;
-
-  if (!cur_time) cur_time = time(0);
-  for (p = session_first; p; p = p->next) {
-    if (p->_session_id == session_id && p->_client_key == client_key) break;
-  }
-  if (!p) {
-    XCALLOC(p, 1);
-    p->_session_id = session_id;
-    p->_client_key = client_key;
-    p->expire_time = cur_time + 60*60*24;
-    if (session_first) {
-      session_first->prev = p;
-      p->next = session_first;
-      session_first = p;
-    } else {
-      session_first = session_last = p;
-    }
-  } else if (p != session_first) {
-    // move the session to the head of the list
-    p->prev->next = p->next;
-    if (!p->next) {
-      session_last = p->prev;
-    } else {
-      p->next->prev = p->prev;
-    }
-    p->prev = 0;
-    session_first->prev = p;
-    p->next = session_first;
-    session_first = p;
-  }
-  return p;
-}
-
-static void
-do_remove_session(struct session_info *p)
-{
-  if (!p) return;
-
-  if (!p->prev) {
-    session_first = p->next;
-  } else {
-    p->prev->next = p->next;
-  }
-  if (!p->next) {
-    session_last = p->prev;
-  } else {
-    p->next->prev = p->prev;
-  }
-  // cleanup p
-  userlist_free(&p->user_info->b);
-  xfree(p);
-}
-
-void
-ns_remove_session(ej_cookie_t session_id)
-{
-  struct session_info *p;
-
-  for (p = session_first; p; p = p->next) {
-    if (p->_session_id == session_id) break;
-  }
-  do_remove_session(p);
-}
-
-void
-new_server_remove_expired_sessions(time_t cur_time)
-{
-  struct session_info *p, *q;
-
-  if (!cur_time) cur_time = time(0);
-  for (p = session_first; p; p = q) {
-    q = p->next;
-    if (p->expire_time < cur_time)
-      do_remove_session(p);
-  }
 }
 
 static void
@@ -345,6 +264,7 @@ cmd_http_request(
   hr.fw_state = state;
   gettimeofday(&hr.timestamp1, 0);
   hr.current_time = hr.timestamp1.tv_sec;
+  hr.current_time_us = hr.timestamp1.tv_sec * 1000000LL + hr.timestamp1.tv_usec;
   hr.locale_id = -1;
 
   if (pkt_size < sizeof(*pkt))
@@ -438,40 +358,42 @@ cmd_http_request(
   ns_handle_http_request(state, hr.out_f, &hr);
   close_memstream(hr.out_f); hr.out_f = NULL;
 
-  *pbuf = 0;
-  // report IP?
-  if (hr.ssl_flag) {
-    pbuf = stpcpy(pbuf, "HTTPS:");
-  } else {
-    pbuf = stpcpy(pbuf, "HTTPS:");
-  }
-  pbuf = stpcpy(pbuf, xml_unparse_ipv6(&hr.ip));
-  *pbuf++ = ':';
-  if (/*hr.role_name*/ 1) {
-    pbuf = stpcpy(pbuf, hr.role_name);
-  }
-  if (hr.action > 0 && hr.action < NEW_SRV_ACTION_LAST && ns_symbolic_action_table[hr.action]) {
-    *pbuf++ = '/';
-    pbuf = stpcpy(pbuf, ns_symbolic_action_table[hr.action]);
-  }
-  if (hr.session_id) {
-    *pbuf++ = '/';
-    *pbuf++ = 'S';
-    pbuf += sprintf(pbuf, "%016llx", hr.session_id);
-    if (hr.client_key) {
-      *pbuf++ = '-';
-      pbuf += sprintf(pbuf, "%016llx", hr.client_key);
+  if (!hr.disable_log) {
+    *pbuf = 0;
+    // report IP?
+    if (hr.ssl_flag) {
+      pbuf = stpcpy(pbuf, "HTTPS:");
+    } else {
+      pbuf = stpcpy(pbuf, "HTTPS:");
     }
-  }
-  if (hr.user_id > 0) {
-    *pbuf++ = '/';
-    *pbuf++ = 'U';
-    pbuf += sprintf(pbuf, "%d", hr.user_id);
-  }
-  if (hr.contest_id > 0) {
-    *pbuf++ = '/';
-    *pbuf++ = 'C';
-    pbuf += sprintf(pbuf, "%d", hr.contest_id);
+    pbuf = stpcpy(pbuf, xml_unparse_ipv6(&hr.ip));
+    *pbuf++ = ':';
+    if (/*hr.role_name*/ 1) {
+      pbuf = stpcpy(pbuf, hr.role_name);
+    }
+    if (hr.action > 0 && hr.action < NEW_SRV_ACTION_LAST && ns_symbolic_action_table[hr.action]) {
+      *pbuf++ = '/';
+      pbuf = stpcpy(pbuf, ns_symbolic_action_table[hr.action]);
+    }
+    if (hr.session_id) {
+      *pbuf++ = '/';
+      *pbuf++ = 'S';
+      pbuf += sprintf(pbuf, "%016llx", hr.session_id);
+      if (hr.client_key) {
+        *pbuf++ = '-';
+        pbuf += sprintf(pbuf, "%016llx", hr.client_key);
+      }
+    }
+    if (hr.user_id > 0) {
+      *pbuf++ = '/';
+      *pbuf++ = 'U';
+      pbuf += sprintf(pbuf, "%d", hr.user_id);
+    }
+    if (hr.contest_id > 0) {
+      *pbuf++ = '/';
+      *pbuf++ = 'C';
+      pbuf += sprintf(pbuf, "%d", hr.contest_id);
+    }
   }
 
   // no reply now
@@ -479,7 +401,9 @@ cmd_http_request(
 
   if (hr.protocol_reply) {
     xfree(hr.out_t); hr.out_t = NULL;
-    info("%d:%s -> %d", p->id, info_buf, hr.protocol_reply);
+    if (!hr.disable_log) {
+      info("%d:%s -> %d", p->id, info_buf, hr.protocol_reply);
+    }
     nsf_close_client_fds(p);
     nsf_send_reply(state, p, hr.protocol_reply);
     goto cleanup;
@@ -537,7 +461,9 @@ cmd_http_request(
   if (!hr.out_t || !*hr.out_t) {
     xfree(hr.out_t); hr.out_t = NULL;
     if (hr.allow_empty_output) {
-      info("%d:%s -> OK", p->id, info_buf);
+      if (!hr.disable_log) {
+        info("%d:%s -> OK", p->id, info_buf);
+      }
       nsf_close_client_fds(p);
       nsf_send_reply(state, p, NEW_SRV_RPL_OK);
       goto cleanup;
@@ -548,7 +474,9 @@ cmd_http_request(
   }
 
   nsf_new_autoclose(state, p, hr.out_t, hr.out_z);
-  info("%d:%s -> OK, %zu", p->id, info_buf, hr.out_z);
+  if (!hr.disable_log) {
+    info("%d:%s -> OK, %zu", p->id, info_buf, hr.out_z);
+  }
   nsf_send_reply(state, p, NEW_SRV_RPL_OK);
   hr.out_t = NULL; hr.out_z = 0;
 
@@ -562,6 +490,9 @@ cmd_http_request(
   xfree(hr.name_arm);
   xfree(hr.script_part);
   xfree(hr.body_attr);
+  if (hr.user_info) {
+    userlist_free(&hr.user_info->b);
+  }
 }
 
 void
@@ -620,6 +551,7 @@ handle_ws_request(
   hr.fw_state = state;
   gettimeofday(&hr.timestamp1, 0);
   hr.current_time = hr.timestamp1.tv_sec;
+  hr.current_time_us = hr.timestamp1.tv_sec * 1000000LL + hr.timestamp1.tv_usec;
   hr.locale_id = -1;
   hr.config = ejudge_config;
   hr.json = root;
@@ -889,6 +821,92 @@ setup_log_file(void)
   ejudge_config->new_server_log = xstrdup("/tmp/ej-contests.log");
 }
 
+static void
+setup_spool_dirs(const struct ejudge_cfg *config, struct server_framework_state *state)
+{
+  __attribute__((unused)) int r;
+  const unsigned char *contest_server_id = config->contest_server_id;
+
+#if defined EJUDGE_COMPILE_SPOOL_DIR
+  const unsigned char *compile_spool_dir = EJUDGE_COMPILE_SPOOL_DIR;
+
+  unsigned char compile_report_buf[PATH_MAX];
+  unsigned char compile_status_buf[PATH_MAX];
+  unsigned char compile_status_dir_buf[PATH_MAX];
+  unsigned char compile_status_in_buf[PATH_MAX];
+  unsigned char compile_status_out_buf[PATH_MAX];
+
+  r = snprintf(compile_status_buf, sizeof(compile_status_buf), "%s/%s/status", compile_spool_dir, contest_server_id);
+  r = snprintf(compile_report_buf, sizeof(compile_report_buf), "%s/%s/report", compile_spool_dir, contest_server_id);
+  r = snprintf(compile_status_dir_buf, sizeof(compile_status_dir_buf), "%s/dir", compile_status_buf);
+  r = snprintf(compile_status_in_buf, sizeof(compile_status_in_buf), "%s/in", compile_status_buf);
+  r = snprintf(compile_status_out_buf, sizeof(compile_status_out_buf), "%s/out", compile_status_buf);
+
+  const unsigned char *compile_group = NULL;
+#if defined EJUDGE_COMPILE_USER
+  compile_group = EJUDGE_COMPILE_USER;
+#endif
+
+  if (os_MakeDirPath2(compile_report_buf, "0770", compile_group) < 0) {
+    startup_error("failed to create compile spool: %s", os_ErrorMsg());
+  }
+  if (os_MakeDirPath2(compile_status_dir_buf, "0770", compile_group) < 0) {
+    startup_error("failed to create compile spool: %s", os_ErrorMsg());
+  }
+  if (os_MakeDirPath2(compile_status_in_buf, "0770", compile_group) < 0) {
+    startup_error("failed to create compile spool: %s", os_ErrorMsg());
+  }
+  if (os_MakeDirPath2(compile_status_out_buf, "0700", NULL) < 0) {
+    startup_error("failed to create compile spool: %s", os_ErrorMsg());
+  }
+
+  nsf_add_directory_watch(config, state, compile_status_buf, compile_report_buf, NULL, ns_compile_dir_ready, NULL);
+#endif
+
+#if defined EJUDGE_RUN_SPOOL_DIR
+  const unsigned char *run_spool_dir = EJUDGE_RUN_SPOOL_DIR;
+
+  unsigned char run_status_buf[PATH_MAX];
+  unsigned char run_status_dir_buf[PATH_MAX];
+  unsigned char run_status_in_buf[PATH_MAX];
+  unsigned char run_status_out_buf[PATH_MAX];
+  unsigned char run_report_buf[PATH_MAX];
+  unsigned char run_full_archive_buf[PATH_MAX];
+
+  r = snprintf(run_status_buf, sizeof(run_status_buf), "%s/%s/status", run_spool_dir, contest_server_id);
+  r = snprintf(run_report_buf, sizeof(run_report_buf), "%s/%s/report", run_spool_dir, contest_server_id);
+  r = snprintf(run_full_archive_buf, sizeof(run_full_archive_buf), "%s/%s/output", run_spool_dir, contest_server_id);
+  r = snprintf(run_status_dir_buf, sizeof(run_status_dir_buf), "%s/dir", run_status_buf);
+  r = snprintf(run_status_in_buf, sizeof(run_status_in_buf), "%s/in", run_status_buf);
+  r = snprintf(run_status_out_buf, sizeof(run_status_out_buf), "%s/out", run_status_buf);
+
+  if (os_MakeDirPath(run_report_buf, 0700) < 0) {
+    startup_error("failed to create run spool '%s': %s",
+                  run_report_buf, os_ErrorMsg());
+  }
+  if (os_MakeDirPath(run_full_archive_buf, 0700) < 0) {
+    startup_error("failed to create run spool '%s': %s",
+                  run_full_archive_buf, os_ErrorMsg());
+  }
+  if (os_MakeDirPath(run_status_dir_buf, 0700) < 0) {
+    startup_error("failed to create run spool '%s': %s",
+                  run_status_dir_buf, os_ErrorMsg());
+  }
+  if (os_MakeDirPath(run_status_in_buf, 0700) < 0) {
+    startup_error("failed to create run spool '%s': %s",
+                  run_status_in_buf, os_ErrorMsg());
+  }
+  if (os_MakeDirPath(run_status_out_buf, 0700) < 0) {
+    startup_error("failed to create run spool '%s': %s",
+                  run_status_out_buf, os_ErrorMsg());
+  }
+
+  nsf_add_directory_watch(config, state,
+                          run_status_buf, run_report_buf, run_full_archive_buf,
+                          ns_run_dir_ready, NULL);
+#endif /* EJUDGE_RUN_SPOOL_DIR */
+}
+
 extern int ej_bson_force_link_dummy;
 extern int ej_bson_new_force_link_dummy;
 
@@ -904,6 +922,8 @@ static void *forced_symbols[] __attribute__((unused,used)) =
   &sha256b64ubuf,
   &teamdb_get_user_map,
   &stand_setup_style,
+  &server_info_get_processes,
+  &mixed_id_marshall,
 };
 
 int
@@ -916,6 +936,7 @@ main(int argc, char *argv[])
   char **argv_restart = 0;
   int pid;
   time_t server_start_time = 0;
+  int disable_stack_trace = 0;
 
   hr_set_symbolic_action_table(NEW_SRV_ACTION_LAST, ns_symbolic_action_table, ns_submit_button_labels, 0);
   time(&server_start_time);
@@ -948,6 +969,9 @@ main(int argc, char *argv[])
     } else if (!strcmp(argv[i], "-R")) {
       params.restart_mode_flag = 1;
       ++i;
+    } else if (!strcmp(argv[i], "-nst")) {
+      disable_stack_trace = 1;
+      ++i;
     } else if (!strcmp(argv[i], "--")) {
       argv_restart[j++] = argv[i];
       i++;
@@ -965,6 +989,9 @@ main(int argc, char *argv[])
   if (i != argc) startup_error("invalid number of parameters");
   argv_restart[j] = 0;
   start_set_args(argv_restart);
+  if (disable_stack_trace <= 0) {
+    start_enable_stacktrace(NULL);
+  }
 
   if (!(pid = start_find_process("ej-contests", NULL, 0))) {
     params.force_socket_flag = 1;
@@ -1039,7 +1066,9 @@ main(int argc, char *argv[])
     return 1;
   }
 
+  idc_init(&main_id_cache);
   if (!(state = nsf_init(&params, 0, server_start_time))) return 1;
+  setup_spool_dirs(ejudge_config, state);
   if (nsf_prepare(state) < 0) return 1;
   nsf_main_loop(state);
   restart_flag = nsf_is_restart_requested(state);

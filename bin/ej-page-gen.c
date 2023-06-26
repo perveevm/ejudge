@@ -1,6 +1,6 @@
 /* -*- c -*- */
 
-/* Copyright (C) 2014-2021 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2014-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -24,6 +24,8 @@
 #include "ejudge/new_server_pi.h"
 #include "ejudge/super_serve_pi.h"
 #include "ejudge/internal_pages.h"
+
+#include "ejudge/compile_heartbeat.h"
 
 #include "ejudge/osdeps.h"
 #include "ejudge/xalloc.h"
@@ -3423,7 +3425,7 @@ handle_html_text(FILE *out_f, FILE *txt_f, FILE *log_f, const unsigned char *mem
             fprintf(txt_f, ";\n");
         }
 
-        fprintf(out_f, "fwrite(csp_str%d, 1, %d, out_f);\n", i, len);
+        fprintf(out_f, "fwrite_unlocked(csp_str%d, 1, %d, out_f);\n", i, len);
     }
     return 0;
 }
@@ -4503,7 +4505,7 @@ handle_config_open(
         value = CONF_STYLE_PREFIX;
     }
     if (value) {
-        fprintf(prg_f, "fwrite(\"%s\", 1, %zu, out_f);\n", value, strlen(value));
+        fprintf(prg_f, "fwrite_unlocked(\"%s\", 1, %zu, out_f);\n", value, strlen(value));
     }
 
     return 0;
@@ -6646,6 +6648,10 @@ super_serve_sid_state_get_max_edited_cnts(void)
     return 0;
 }
 void
+super_serve_sid_state_clear(ej_cookie_t cookie)
+{
+}
+void
 super_serve_move_edited_contest(void *dst, void * src /*struct sid_state *dst, struct sid_state *src*/)
 {
 }
@@ -6764,6 +6770,8 @@ PrivViewUsersPage dummy_pvup;
 UserInfoPage dummy_uip;
 StandingsPage dummy_page;
 LanguageStat dummy_lang_stat;
+struct compile_heartbeat_vector chv;
+struct compile_queues_info cqi;
 
 /*
  * Local variables:

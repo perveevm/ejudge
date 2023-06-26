@@ -105,6 +105,7 @@ struct problem_config_section
   ejintbool_t stop_on_first_fail;
   ejintbool_t enable_control_socket;
   ejintbool_t enable_iframe_statement;
+  ejintbool_t copy_exe_to_tgzdir;
 
   int id;
   int real_time_limit;
@@ -198,6 +199,7 @@ struct problem_config_section
   unsigned char *uuid;
   unsigned char *container_options;
   unsigned char *iframe_statement;
+  unsigned char *extra_src_dir;
 
   char **test_sets;
   char **date_penalty;

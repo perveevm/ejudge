@@ -58,6 +58,7 @@ struct compile_request_packet
   unsigned char *container_options;
   unsigned char *vcs_compile_cmd;
   unsigned char *compile_cmd;     // custom compilation command for "custom" lang
+  unsigned char *extra_src_dir;   // directory with additional files to be copied to the compilation directory
   int run_block_len;
   void *run_block;
   int env_num;
@@ -119,5 +120,10 @@ compile_reply_packet_write(
 
 struct compile_reply_packet *
 compile_reply_packet_free(struct compile_reply_packet *in_data);
+
+int
+compile_reply_packet_get_contest_id(
+        size_t in_size,
+        const void *in_data);
 
 #endif /* __COMPILE_PACKET_H__ */

@@ -63,6 +63,15 @@ struct Future
     pthread_cond_t c;
 
     cJSON *value;
+    long long expiration_time_ms;
+    int cancel_requested;
+
+    // information for the chained future
+    int enable_chained_future;
+    int chained_notify_signal;
+    pthread_t chained_notify_thread;
+    long long chained_timeout_ms;
+    struct Future *chained_future;
 };
 
 struct AgentClientSsh
@@ -140,10 +149,10 @@ static void future_fini(struct Future *f)
     if (f->value) cJSON_Delete(f->value);
 }
 
-static void future_wait(struct Future *f)
+static void future_wait(struct AgentClientSsh *acs, struct Future *f)
 {
     pthread_mutex_lock(&f->m);
-    while (!f->ready) {
+    while (!f->ready && !acs->is_stopped) {
         pthread_cond_wait(&f->c, &f->m);
     }
     pthread_mutex_unlock(&f->m);
@@ -242,7 +251,8 @@ add_wchunk_move(struct AgentClientSsh *acs, unsigned char *data, int size)
     c->size = size;
     pthread_mutex_unlock(&acs->wchunkm);
     uint64_t v = 1;
-    write(acs->vfd, &v, sizeof(v));
+    __attribute__((unused)) int _;
+    _ = write(acs->vfd, &v, sizeof(v));
 }
 
 static void
@@ -447,6 +457,28 @@ handle_rchunks(struct AgentClientSsh *acs)
                         f->ready = 1;
                         f->callback(f, f->user);
                     } else {
+                        cJSON *jj = cJSON_GetObjectItem(j, "q");
+                        if (jj && jj->type == cJSON_String && !strcmp("channel-result", jj->valuestring)
+                            && f->enable_chained_future) {
+                            // create the future for wake-up immediately here
+                            // to avoid the race condition
+                            cJSON *jc = cJSON_GetObjectItem(j, "channel");
+                            if (jc && jc->type == cJSON_Number) {
+                                int channel = jc->valuedouble;
+                                struct Future *future = calloc(1, sizeof(*future));
+                                f->chained_future = future;
+                                future_init(future, channel);
+                                future->notify_signal = f->chained_notify_signal;
+                                future->notify_thread = f->chained_notify_thread;
+                                if (f->chained_timeout_ms > 0) {
+                                    struct timeval tv;
+                                    gettimeofday(&tv, NULL);
+                                    long long current_time_ms = tv.tv_sec * 1000LL + tv.tv_usec / 1000;
+                                    future->expiration_time_ms = current_time_ms + f->chained_timeout_ms;
+                                }
+                                add_future(acs, future);
+                            }
+                        }
                         int notify_signal = f->notify_signal;
                         pthread_t notify_thread = f->notify_thread;
                         f->value = j; j = NULL;
@@ -472,6 +504,8 @@ done1:
 
 static struct Future *
 internal_ping(struct AgentClientSsh *acs);
+static void
+internal_cancel(struct AgentClientSsh *acs, int channel);
 
 static void *
 thread_func(void *ptr)
@@ -549,6 +583,16 @@ thread_func(void *ptr)
                     acs->need_cleanup = 1;
                 }
             }
+            pthread_mutex_lock(&acs->futurem);
+            int fut_index;
+            for (fut_index = 0; fut_index < acs->futureu; ++fut_index) {
+                struct Future *f = acs->futures[fut_index];
+                if (f->expiration_time_ms > 0 && acs->current_time_ms > f->expiration_time_ms && !f->cancel_requested) {
+                    f->cancel_requested = 1;
+                    internal_cancel(acs, f->serial);
+                }
+            }
+            pthread_mutex_unlock(&acs->futurem);
         }
         if (acs->stop_request) {
             if (acs->stop_initiated_ms <= 0) {
@@ -577,6 +621,8 @@ thread_func(void *ptr)
         acs->pid = -1;
     }
 
+    acs->is_stopped = 1;
+
     // wake up all futures
     pthread_mutex_lock(&acs->futurem);
     for (int i = 0; i < acs->futureu; ++i) {
@@ -594,7 +640,6 @@ thread_func(void *ptr)
     pthread_mutex_unlock(&acs->futurem);
 
     pthread_mutex_lock(&acs->stop_m);
-    acs->is_stopped = 1;
     pthread_cond_signal(&acs->stop_c);
     pthread_mutex_unlock(&acs->stop_m);
 
@@ -607,8 +652,14 @@ connect_func(struct AgentClient *ac)
     struct AgentClientSsh *acs = (struct AgentClientSsh *) ac;
     int tossh[2] = { -1, -1 }, fromssh[2] = { -1, -1 };
 
-    pipe2(tossh, O_CLOEXEC);
-    pipe2(fromssh, O_CLOEXEC);
+    if (pipe2(tossh, O_CLOEXEC) < 0) {
+        err("pipe2 failed: %s", os_ErrorMsg());
+        goto fail;
+    }
+    if (pipe2(fromssh, O_CLOEXEC) < 0) {
+        err("pipe2 failed: %s", os_ErrorMsg());
+        goto fail;
+    }
 
     acs->pid = fork();
     if (acs->pid < 0) {
@@ -653,6 +704,8 @@ connect_func(struct AgentClient *ac)
         {
             "ssh",
             "-aTx",
+            "-o",
+            "StrictHostKeyChecking=no",
             acs->endpoint,
             cmd_s,
             NULL,
@@ -753,7 +806,8 @@ close_func(struct AgentClient *ac)
     pthread_mutex_lock(&acs->stop_m);
     acs->stop_request = 1;
     uint64_t value = 1;
-    write(acs->vfd, &value, sizeof(value));
+    __attribute__((unused)) int _;
+    _ = write(acs->vfd, &value, sizeof(value));
     while (!acs->is_stopped) {
         pthread_cond_wait(&acs->stop_c, &acs->stop_m);
     }
@@ -793,8 +847,11 @@ create_request(
 {
     cJSON *jq = cJSON_CreateObject();
     int serial = ++acs->serial;
-    future_init(f, serial);
-    add_future(acs, f);
+
+    if (f) {
+        future_init(f, serial);
+        add_future(acs, f);
+    }
 
     struct timeval tv;
     gettimeofday(&tv, NULL);
@@ -809,11 +866,21 @@ create_request(
 }
 
 static int
+process_file_result(
+        struct AgentClientSsh *acs,
+        cJSON *j,
+        char **p_pkt_ptr,
+        size_t *p_pkt_len);
+
+static int
 poll_queue_func(
         struct AgentClient *ac,
         unsigned char *pkt_name,
         size_t pkt_len,
-        int random_mode)
+        int random_mode,
+        int enable_file,
+        char **p_data,
+        size_t *p_size)
 {
     int result = 0;
     struct AgentClientSsh *acs = (struct AgentClientSsh *) ac;
@@ -823,28 +890,48 @@ poll_queue_func(
     if (random_mode > 0) {
         cJSON_AddTrueToObject(jq, "random_mode");
     }
+    if (enable_file > 0) {
+        cJSON_AddTrueToObject(jq, "enable_file");
+    }
     add_wchunk_json(acs, jq);
     cJSON_Delete(jq); jq = NULL;
 
-    future_wait(&f);
-
-    // { "q" : "poll-result", "pkt-name" : N }
-    if (f.value) {
-        cJSON *jj = cJSON_GetObjectItem(f.value, "q");
-        if (jj && jj->type == cJSON_String
-            && !strcmp("poll-result", jj->valuestring)) {
-            cJSON *jn = cJSON_GetObjectItem(f.value, "pkt-name");
-            if (jn && jn->type == cJSON_String) {
-                snprintf(pkt_name, pkt_len, "%s", jn->valuestring);
-                result = 1;
+    future_wait(acs, &f);
+    if (acs->is_stopped) {
+        result = -1;
+    } else {
+        // { "q" : "poll-result", "pkt-name" : N }
+        if (f.value) {
+            cJSON *jj = cJSON_GetObjectItem(f.value, "q");
+            if (jj && jj->type == cJSON_String
+                && !strcmp("poll-result", jj->valuestring)) {
+                cJSON *jn = cJSON_GetObjectItem(f.value, "pkt-name");
+                if (!jn) {
+                    pkt_name[0] = 0;
+                    result = 1;
+                } else if (jn->type == cJSON_String) {
+                    snprintf(pkt_name, pkt_len, "%s", jn->valuestring);
+                    result = 1;
+                }
             }
-        }
-        cJSON *jt = cJSON_GetObjectItem(f.value, "t");
-        if (jt && jt->type == cJSON_Number) {
-            long long dur_ms = jt->valuedouble;
-            dur_ms -= time_ms;
-            (void) dur_ms;
-            //fprintf(stderr, "poll: %lld ms\n", dur_ms);
+            if (jj && jj->type == cJSON_String
+                && !strcmp("file-result", jj->valuestring)) {
+                cJSON *jn = cJSON_GetObjectItem(f.value, "pkt-name");
+                if (!jn) {
+                    pkt_name[0] = 0;
+                    result = 1;
+                } else if (jn->type == cJSON_String) {
+                    snprintf(pkt_name, pkt_len, "%s", jn->valuestring);
+                    result = 1;
+                }
+                result = process_file_result(acs, f.value, p_data, p_size);
+            }
+            cJSON *jt = cJSON_GetObjectItem(f.value, "t");
+            if (jt && jt->type == cJSON_Number) {
+                long long dur_ms = jt->valuedouble;
+                dur_ms -= time_ms;
+                (void) dur_ms;
+            }
         }
     }
 
@@ -1006,9 +1093,13 @@ get_packet_func(
     add_wchunk_json(acs, jq);
     cJSON_Delete(jq); jq = NULL;
 
-    future_wait(&f);
+    future_wait(acs, &f);
+    if (acs->is_stopped) {
+        result = -1;
+    } else {
+        result = process_file_result(acs, f.value, p_pkt_ptr, p_pkt_len);
+    }
 
-    result = process_file_result(acs, f.value, p_pkt_ptr, p_pkt_len);
     future_fini(&f);
     return result;
 }
@@ -1033,9 +1124,13 @@ get_data_func(
     add_wchunk_json(acs, jq);
     cJSON_Delete(jq); jq = NULL;
 
-    future_wait(&f);
+    future_wait(acs, &f);
+    if (acs->is_stopped) {
+        result = -1;
+    } else {
+        result = process_file_result(acs, f.value, p_pkt_ptr, p_pkt_len);
+    }
 
-    result = process_file_result(acs, f.value, p_pkt_ptr, p_pkt_len);
     future_fini(&f);
     return result;
 }
@@ -1141,11 +1236,14 @@ put_reply_func(
     add_wchunk_json(acs, jq);
     cJSON_Delete(jq); jq = NULL;
 
-    future_wait(&f);
-
-    cJSON *jok = cJSON_GetObjectItem(f.value, "ok");
-    if (!jok || jok->type != cJSON_True) {
+    future_wait(acs, &f);
+    if (acs->is_stopped) {
         result = -1;
+    } else if (f.value) {
+        cJSON *jok = cJSON_GetObjectItem(f.value, "ok");
+        if (!jok || jok->type != cJSON_True) {
+            result = -1;
+        }
     }
 
     future_fini(&f);
@@ -1177,11 +1275,14 @@ put_output_func(
     add_wchunk_json(acs, jq);
     cJSON_Delete(jq); jq = NULL;
 
-    future_wait(&f);
-
-    cJSON *jok = cJSON_GetObjectItem(f.value, "ok");
-    if (!jok || jok->type != cJSON_True) {
+    future_wait(acs, &f);
+    if (acs->is_stopped) {
         result = -1;
+    } else if (f.value) {
+        cJSON *jok = cJSON_GetObjectItem(f.value, "ok");
+        if (!jok || jok->type != cJSON_True) {
+            result = -1;
+        }
     }
 
     future_fini(&f);
@@ -1249,11 +1350,14 @@ put_output_2_func(
         munmap(pkt_ptr, pkt_len);
     }
 
-    future_wait(&f);
-
-    cJSON *jok = cJSON_GetObjectItem(f.value, "ok");
-    if (!jok || jok->type != cJSON_True) {
+    future_wait(acs, &f);
+    if (acs->is_stopped) {
         result = -1;
+    } else if (f.value) {
+        cJSON *jok = cJSON_GetObjectItem(f.value, "ok");
+        if (!jok || jok->type != cJSON_True) {
+            result = -1;
+        }
     }
 
     future_fini(&f);
@@ -1265,9 +1369,13 @@ async_wait_init_func(
         struct AgentClient *ac,
         int notify_signal,
         int random_mode,
+        int enable_file,
         unsigned char *pkt_name,
         size_t pkt_len,
-        struct Future **p_future)
+        struct Future **p_future,
+        long long timeout_ms,
+        char **p_data,
+        size_t *p_size)
 {
     int result = 0;
     struct AgentClientSsh *acs = (struct AgentClientSsh *) ac;
@@ -1278,32 +1386,56 @@ async_wait_init_func(
     if (random_mode > 0) {
         cJSON_AddTrueToObject(jq, "random_mode");
     }
+    if (enable_file > 0) {
+        cJSON_AddTrueToObject(jq, "enable_file");
+    }
+
+    // if a packet is not available immediately, 'channel-result' is returned
+    // a new future is returned in chained_future
+    // the future is created in I/O thread to avoid race condition
+    f.enable_chained_future = 1;
+    f.chained_notify_signal = notify_signal;
+    f.chained_notify_thread = pthread_self();
+    f.chained_timeout_ms = timeout_ms;
+    f.chained_future = NULL;
+
     add_wchunk_json(acs, jq);
     cJSON_Delete(jq); jq = NULL;
 
-    future_wait(&f);
-
-    // { "q" : "poll-result", "pkt-name" : N }
-    if (f.value) {
-        cJSON *jj = cJSON_GetObjectItem(f.value, "q");
-        if (jj && jj->type == cJSON_String
-            && !strcmp("poll-result", jj->valuestring)) {
-            cJSON *jn = cJSON_GetObjectItem(f.value, "pkt-name");
-            if (jn && jn->type == cJSON_String) {
-                snprintf(pkt_name, pkt_len, "%s", jn->valuestring);
-                result = 1;
+    future_wait(acs, &f);
+    if (acs->is_stopped) {
+        result = -1;
+    } else {
+        // { "q" : "poll-result", "pkt-name" : N }
+        if (f.value) {
+            cJSON *jj = cJSON_GetObjectItem(f.value, "q");
+            if (jj && jj->type == cJSON_String
+                && !strcmp("poll-result", jj->valuestring)) {
+                cJSON *jn = cJSON_GetObjectItem(f.value, "pkt-name");
+                if (!jn) {
+                    pkt_name[0] = 0;
+                    result = 1;
+                } else if (jn->type == cJSON_String) {
+                    snprintf(pkt_name, pkt_len, "%s", jn->valuestring);
+                    result = 1;
+                }
             }
-        }
-        if (jj && jj->type == cJSON_String && !strcmp("channel-result", jj->valuestring)) {
-            cJSON *jc = cJSON_GetObjectItem(f.value, "channel");
-            if (jc && jc->type == cJSON_Number) {
-                int channel = jc->valuedouble;
-                struct Future *future = malloc(sizeof(*future));
-                *p_future = future;
-                future_init(future, channel);
-                future->notify_signal = notify_signal;
-                future->notify_thread = pthread_self();
-                add_future(acs, future);
+            if (jj && jj->type == cJSON_String
+                && !strcmp("file-result", jj->valuestring)) {
+                cJSON *jn = cJSON_GetObjectItem(f.value, "pkt-name");
+                if (!jn) {
+                    pkt_name[0] = 0;
+                    result = 1;
+                } else if (jn->type == cJSON_String) {
+                    snprintf(pkt_name, pkt_len, "%s", jn->valuestring);
+                    result = 1;
+                }
+                result = process_file_result(acs, f.value, p_data, p_size);
+            }
+            if (jj && jj->type == cJSON_String && !strcmp("channel-result", jj->valuestring)) {
+                // the future to wait on is already create in the IO thread
+                *p_future = f.chained_future;
+                f.chained_future = NULL;
                 result = 0;
             }
         }
@@ -1318,7 +1450,9 @@ async_wait_complete_func(
         struct AgentClient *ac,
         struct Future **p_future,
         unsigned char *pkt_name,
-        size_t pkt_len)
+        size_t pkt_len,
+        char **p_data,
+        size_t *p_size)
 {
     __attribute__((unused)) struct AgentClientSsh *acs = (struct AgentClientSsh *) ac;
     struct Future *future = *p_future;
@@ -1330,17 +1464,31 @@ async_wait_complete_func(
 
     int result = -1;
     cJSON *j = future->value;
-    cJSON *jq = cJSON_GetObjectItem(j, "q");
-    if (!jq || jq->type != cJSON_String || strcmp("poll-result", jq->valuestring) != 0) {
-        goto done;
+    cJSON *jj = cJSON_GetObjectItem(j, "q");
+    if (jj && jj->type == cJSON_String
+        && !strcmp("poll-result", jj->valuestring)) {
+        cJSON *jn = cJSON_GetObjectItem(j, "pkt-name");
+        if (!jn) {
+            pkt_name[0] = 0;
+        } else if (jn->type != cJSON_String) {
+            goto done;
+        } else {
+            snprintf(pkt_name, pkt_len, "%s", jn->valuestring);
+        }
+        result = 1;
     }
-    cJSON *jn = cJSON_GetObjectItem(j, "pkt-name");
-    if (!jn || jq->type != cJSON_String) {
-        goto done;
+    if (jj && jj->type == cJSON_String
+        && !strcmp("file-result", jj->valuestring)) {
+        cJSON *jn = cJSON_GetObjectItem(j, "pkt-name");
+        if (!jn) {
+            pkt_name[0] = 0;
+            result = 1;
+        } else if (jn->type == cJSON_String) {
+            snprintf(pkt_name, pkt_len, "%s", jn->valuestring);
+            result = 1;
+        }
+        result = process_file_result(acs, j, p_data, p_size);
     }
-
-    snprintf(pkt_name, pkt_len, "%s", jn->valuestring);
-    result = 1;
 
 done:
     future_fini(future);
@@ -1351,8 +1499,8 @@ done:
 
 static void
 internal_ping_callback(
-    struct Future *f,
-    void *u)
+        struct Future *f,
+        void *u)
 {
     struct AgentClientSsh *acs = (struct AgentClientSsh *) u;
     if (acs->ping_future) {
@@ -1378,6 +1526,15 @@ internal_ping(struct AgentClientSsh *acs)
     return f;
 }
 
+static void
+internal_cancel(struct AgentClientSsh *acs, int channel)
+{
+    cJSON *jq = create_request(acs, NULL, &acs->ping_time_ms, "cancel");
+    cJSON_AddNumberToObject(jq, "channel", (double) channel);
+    add_wchunk_json(acs, jq);
+    cJSON_Delete(jq); jq = NULL;
+}
+
 static int
 add_ignored_func(
         struct AgentClient *ac,
@@ -1392,11 +1549,14 @@ add_ignored_func(
     add_wchunk_json(acs, jq);
     cJSON_Delete(jq); jq = NULL;
 
-    future_wait(&f);
-
-    cJSON *jok = cJSON_GetObjectItem(f.value, "ok");
-    if (!jok || jok->type != cJSON_True) {
+    future_wait(acs, &f);
+    if (acs->is_stopped) {
         result = -1;
+    } else if (f.value) {
+        cJSON *jok = cJSON_GetObjectItem(f.value, "ok");
+        if (!jok || jok->type != cJSON_True) {
+            result = -1;
+        }
     }
 
     future_fini(&f);
@@ -1420,11 +1580,14 @@ put_packet_func(
     add_wchunk_json(acs, jq);
     cJSON_Delete(jq); jq = NULL;
 
-    future_wait(&f);
-
-    cJSON *jok = cJSON_GetObjectItem(f.value, "ok");
-    if (!jok || jok->type != cJSON_True) {
+    future_wait(acs, &f);
+    if (acs->is_stopped) {
         result = -1;
+    } else if (f.value) {
+        cJSON *jok = cJSON_GetObjectItem(f.value, "ok");
+        if (!jok || jok->type != cJSON_True) {
+            result = -1;
+        }
     }
 
     future_fini(&f);
@@ -1495,7 +1658,8 @@ put_heartbeat_func(
         size_t size,
         long long *p_last_saved_time_ms,
         unsigned char *p_stop_flag,
-        unsigned char *p_down_flag)
+        unsigned char *p_down_flag,
+        unsigned char *p_reboot_flag)
 {
     int result = -1;
     struct AgentClientSsh *acs = (struct AgentClientSsh *) ac;
@@ -1507,25 +1671,34 @@ put_heartbeat_func(
     add_wchunk_json(acs, jq);
     cJSON_Delete(jq); jq = NULL;
 
-    future_wait(&f);
-
-    cJSON *jok = cJSON_GetObjectItem(f.value, "ok");
-    if (!jok || jok->type != cJSON_True) {
-        goto done;
+    future_wait(acs, &f);
+    if (acs->is_stopped) {
+        result = -1;
+    } else {
+        if (f.value) {
+            cJSON *jok = cJSON_GetObjectItem(f.value, "ok");
+            if (!jok || jok->type != cJSON_True) {
+                goto done;
+            }
+            cJSON *jtt = cJSON_GetObjectItem(f.value, "tt");
+            if (jtt && jtt->type == cJSON_Number && p_last_saved_time_ms) {
+                *p_last_saved_time_ms = (long long) jtt->valuedouble;
+            }
+            cJSON *jsf = cJSON_GetObjectItem(f.value, "stop_flag");
+            if (jsf && jsf->type == cJSON_True && p_stop_flag) {
+                *p_stop_flag = 1;
+            }
+            cJSON *jdf = cJSON_GetObjectItem(f.value, "down_flag");
+            if (jdf && jdf->type == cJSON_True && p_down_flag) {
+                *p_down_flag = 1;
+            }
+            cJSON *jrf = cJSON_GetObjectItem(f.value, "reboot_flag");
+            if (jrf && jrf->type == cJSON_True && p_reboot_flag) {
+                *p_reboot_flag = 1;
+            }
+        }
+        result = 0;
     }
-    cJSON *jtt = cJSON_GetObjectItem(f.value, "tt");
-    if (jtt && jtt->type == cJSON_Number && p_last_saved_time_ms) {
-        *p_last_saved_time_ms = (long long) jtt->valuedouble;
-    }
-    cJSON *jsf = cJSON_GetObjectItem(f.value, "stop_flag");
-    if (jsf && jsf->type == cJSON_True && p_stop_flag) {
-        *p_stop_flag = 1;
-    }
-    cJSON *jdf = cJSON_GetObjectItem(f.value, "down_flag");
-    if (jdf && jdf->type == cJSON_True && p_down_flag) {
-        *p_down_flag = 1;
-    }
-    result = 0;
 
 done:;
     future_fini(&f);
@@ -1546,14 +1719,19 @@ delete_heartbeat_func(
     add_wchunk_json(acs, jq);
     cJSON_Delete(jq); jq = NULL;
 
-    future_wait(&f);
-
-    cJSON *jok = cJSON_GetObjectItem(f.value, "ok");
-    if (!jok || jok->type != cJSON_True) {
-        goto done;
+    future_wait(acs, &f);
+    if (acs->is_stopped) {
+        result = -1;
+    } else {
+        if (f.value) {
+            cJSON *jok = cJSON_GetObjectItem(f.value, "ok");
+            if (!jok || jok->type != cJSON_True) {
+                goto done;
+            }
+        }
+        result = 0;
     }
 
-    result = 0;
 done:;
     future_fini(&f);
     return result;
@@ -1619,11 +1797,14 @@ put_archive_2_func(
         munmap(pkt_ptr, pkt_len);
     }
 
-    future_wait(&f);
-
-    cJSON *jok = cJSON_GetObjectItem(f.value, "ok");
-    if (!jok || jok->type != cJSON_True) {
+    future_wait(acs, &f);
+    if (acs->is_stopped) {
         result = -1;
+    } else if (f.value) {
+        cJSON *jok = cJSON_GetObjectItem(f.value, "ok");
+        if (!jok || jok->type != cJSON_True) {
+            result = -1;
+        }
     }
 
     future_fini(&f);
@@ -1666,58 +1847,61 @@ mirror_file_func(
     add_wchunk_json(acs, jq);
     cJSON_Delete(jq); jq = NULL;
 
-    future_wait(&f);
+    future_wait(acs, &f);
+    if (acs->is_stopped) {
+        result = -1;
+    } else if (f.value) {
+        cJSON *jok = cJSON_GetObjectItem(f.value, "ok");
+        if (!jok || jok->type != cJSON_True) {
+            goto done;
+        }
+        jq = cJSON_GetObjectItem(f.value, "q");
+        if (!jq || jq->type != cJSON_String) {
+            err("mirror_file: invalid or missing 'q' in reply");
+            goto done;
+        }
+        if (!strcmp(jq->valuestring, "file-unchanged")) {
+            result = 0;
+            goto done;
+        }
+        if (process_file_result(acs, f.value, &pkt_ptr, &pkt_len) < 0) {
+            goto done;
+        }
 
-    cJSON *jok = cJSON_GetObjectItem(f.value, "ok");
-    if (!jok || jok->type != cJSON_True) {
-        goto done;
-    }
-    jq = cJSON_GetObjectItem(f.value, "q");
-    if (!jq || jq->type != cJSON_String) {
-        err("mirror_file: invalid or missing 'q' in reply");
-        goto done;
-    }
-    if (!strcmp(jq->valuestring, "file-unchanged")) {
-        result = 0;
-        goto done;
-    }
-    if (process_file_result(acs, f.value, &pkt_ptr, &pkt_len) < 0) {
-        goto done;
-    }
+        time_t mtime = 0;
+        int mode = -1;
+        int uid = -1;
+        int gid = -1;
 
-    time_t mtime = 0;
-    int mode = -1;
-    int uid = -1;
-    int gid = -1;
+        cJSON *jj = cJSON_GetObjectItem(f.value, "mtime");
+        if (jj && jj->type == cJSON_Number) {
+            mtime = jj->valuedouble;
+            if (mtime < 0) mtime = 0;
+        }
+        jj = cJSON_GetObjectItem(f.value, "mode");
+        if (jj && jj->type == cJSON_String) {
+            mode = strtol(jj->valuestring, NULL, 8);
+            mode &= 07777;
+        }
+        jj = cJSON_GetObjectItem(f.value, "uid");
+        if (jj && jj->type == cJSON_Number) {
+            uid = jj->valuedouble;
+            if (uid < 0) uid = -1;
+        }
+        jj = cJSON_GetObjectItem(f.value, "gid");
+        if (jj && jj->type == cJSON_Number) {
+            gid = jj->valuedouble;
+            if (gid < 0) gid = -1;
+        }
 
-    cJSON *jj = cJSON_GetObjectItem(f.value, "mtime");
-    if (jj && jj->type == cJSON_Number) {
-        mtime = jj->valuedouble;
-        if (mtime < 0) mtime = 0;
+        *p_pkt_ptr = pkt_ptr; pkt_ptr = NULL;
+        *p_pkt_len = pkt_len; pkt_len = 0;
+        if (p_new_mtime) *p_new_mtime = mtime;
+        if (p_new_mode) *p_new_mode = mode;
+        if (p_uid) *p_uid = uid;
+        if (p_gid) *p_gid = gid;
+        result = 1;
     }
-    jj = cJSON_GetObjectItem(f.value, "mode");
-    if (jj && jj->type == cJSON_String) {
-        mode = strtol(jj->valuestring, NULL, 8);
-        mode &= 07777;
-    }
-    jj = cJSON_GetObjectItem(f.value, "uid");
-    if (jj && jj->type == cJSON_Number) {
-        uid = jj->valuedouble;
-        if (uid < 0) uid = -1;
-    }
-    jj = cJSON_GetObjectItem(f.value, "gid");
-    if (jj && jj->type == cJSON_Number) {
-        gid = jj->valuedouble;
-        if (gid < 0) gid = -1;
-    }
-
-    *p_pkt_ptr = pkt_ptr; pkt_ptr = NULL;
-    *p_pkt_len = pkt_len; pkt_len = 0;
-    if (p_new_mtime) *p_new_mtime = mtime;
-    if (p_new_mode) *p_new_mode = mode;
-    if (p_uid) *p_uid = uid;
-    if (p_gid) *p_gid = gid;
-    result = 1;
 
 done:;
     if (pkt_ptr) free(pkt_ptr);

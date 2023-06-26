@@ -28,24 +28,7 @@
 #include <time.h>
 #include <sys/time.h>
 
-// a structure to store some persistent information
 struct userlist_user;
-
-struct session_info
-{
-  struct session_info *next;
-  struct session_info *prev;
-  ej_cookie_t _session_id;
-  ej_cookie_t _client_key;
-  time_t expire_time;
-
-  int user_view_all_runs;
-  int user_view_all_clars;
-  int user_viewed_section;
-
-  struct userlist_user *user_info;
-};
-
 struct server_framework_state;
 struct client_state;
 struct contest_desc;
@@ -169,13 +152,10 @@ ns_html_error(
         int priv_mode,
         int error_code);
 
-struct session_info *
-ns_get_session(
-        ej_cookie_t session_id,
-        ej_cookie_t client_key,
-        time_t cur_time);
-
-void ns_remove_session(ej_cookie_t session_id);
+void
+ns_invalidate_session(
+        unsigned long long session_id,
+        unsigned long long client_key);
 
 void ns_unload_contests(void);
 
@@ -183,9 +163,12 @@ int  ns_loop_callback(struct server_framework_state *state);
 void ns_post_select_callback(struct server_framework_state *state);
 
 unsigned char *
-ns_submit_button(unsigned char *buf, size_t size,
-                 const unsigned char *var_name, int action,
-                 const unsigned char *label);
+ns_submit_button(
+         unsigned char *buf,
+         size_t size,
+         const unsigned char *var_name,
+         int action,
+         const unsigned char *label);
 
 unsigned char *
 ns_submit_button_2(
@@ -197,9 +180,11 @@ ns_submit_button_2(
         const unsigned char *label);
 
 unsigned char *
-ns_url(unsigned char *buf, size_t size,
-       const struct http_request_info *phr,
-       int action, const char *format, ...)
+ns_url(unsigned char *buf,
+        size_t size,
+        const struct http_request_info *phr,
+        int action,
+        const char *format, ...)
   __attribute__((format(printf, 5, 6)));
 unsigned char *
 ns_url_unescaped(unsigned char *buf, size_t size,
@@ -229,12 +214,16 @@ ns_refresh_page_2(
         const unsigned char *url);
 
 void
-ns_write_priv_all_runs(FILE *f,
-                       struct http_request_info *phr,
-                       const struct contest_desc *cnts,
-                       struct contest_extra *extra,
-                       int first_run_set, int first_run, int last_run_set, int last_run,
-                       unsigned char const *filter_expr);
+ns_write_priv_all_runs(
+        FILE *f,
+        struct http_request_info *phr,
+        const struct contest_desc *cnts,
+        struct contest_extra *extra,
+        int first_run_set,
+        int first_run,
+        int last_run_set,
+        int last_run,
+        unsigned char const *filter_expr);
 
 // clar filter options
 enum
@@ -394,10 +383,12 @@ ns_write_judging_priorities(
         const struct contest_desc *cnts,
         struct contest_extra *extra);
 int
-ns_new_run_form(FILE *fout, FILE *log_f,
-                struct http_request_info *phr,
-                const struct contest_desc *cnts,
-                struct contest_extra *extra);
+ns_new_run_form(
+        FILE *fout,
+        FILE *log_f,
+        struct http_request_info *phr,
+        const struct contest_desc *cnts,
+        struct contest_extra *extra);
 
 void
 ns_write_priv_standings(
@@ -531,9 +522,17 @@ ns_get_user_problems_summary(
         const ej_ip_t *ip,
         struct UserProblemInfo *pinfo); /* user problem info */
 
-int ns_insert_variant_num(unsigned char *buf, size_t size,
-                          const unsigned char *file, int variant);
-void ns_register_pages(FILE *fout, struct http_request_info *phr);
+int
+ns_insert_variant_num(
+        unsigned char *buf,
+        size_t size,
+        const unsigned char *file,
+        int variant);
+
+void
+ns_register_pages(
+        FILE *fout,
+        struct http_request_info *phr);
 
 unsigned char *
 ns_get_checker_comment(
@@ -753,6 +752,18 @@ ns_scan_heartbeat_dirs(
         serve_state_t cs,
         struct super_run_status_vector *vec);
 
+struct compile_heartbeat_vector;
+void
+ns_scan_compile_heartbeat_dirs(
+        serve_state_t cs,
+        struct compile_heartbeat_vector *vec);
+
+struct compile_queues_info;
+void
+ns_scan_compile_queue(
+        serve_state_t cs,
+        struct compile_queues_info *info);
+
 int
 ns_parse_run_id(
         FILE *fout,
@@ -952,5 +963,26 @@ ns_get_accepted_set(
         serve_state_t cs,
         int user_id,
         unsigned char *acc_set);
+
+void
+ns_compile_dir_ready(
+        const struct ejudge_cfg *config,
+        struct server_framework_state *state,
+        const unsigned char *dir,
+        const unsigned char *dir_dir,
+        const unsigned char *dir_out,
+        const unsigned char *data_dir,
+        const unsigned char *data2_dir,
+        void *user);
+void
+ns_run_dir_ready(
+        const struct ejudge_cfg *config,
+        struct server_framework_state *state,
+        const unsigned char *dir,
+        const unsigned char *dir_dir,
+        const unsigned char *dir_out,
+        const unsigned char *data_dir,
+        const unsigned char *data2_dir,
+        void *user);
 
 #endif /* __NEW_SERVER_H__ */

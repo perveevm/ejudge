@@ -1242,6 +1242,21 @@ super_serve_sid_state_get_test_editor_nc(int contest_id)
   return 0;
 }
 
+struct sid_state *
+super_serve_sid_state_get_first(void)
+{
+  return sid_state_first;
+}
+
+void
+super_serve_sid_state_clear(ej_cookie_t sid)
+{
+  struct sid_state *p = sid_state_find(sid);
+  if (p) {
+    sid_state_delete(p);
+  }
+}
+
 struct section_problem_data *
 super_serve_find_problem(struct sid_state *ss, const unsigned char *name)
 {
@@ -2431,6 +2446,11 @@ do_loop(void)
   sigdelset(&work_mask, SIGHUP);
   sigdelset(&work_mask, SIGCHLD);
   sigdelset(&work_mask, SIGUSR1);
+  sigdelset(&work_mask, SIGILL);
+  sigdelset(&work_mask, SIGABRT);
+  sigdelset(&work_mask, SIGBUS);
+  sigdelset(&work_mask, SIGFPE);
+  sigdelset(&work_mask, SIGSEGV);
   sigprocmask(SIG_SETMASK, &block_mask, 0);
 
   signal(SIGTERM, handler_term);
@@ -2776,6 +2796,7 @@ main(int argc, char **argv)
   const unsigned char *user = 0, *group = 0, *workdir = 0;
   char **argv_restart = 0;
   int pid;
+  int disable_stack_trace = 0;
 
   hr_set_symbolic_action_table(SSERV_CMD_LAST, 0, 0, super_serve_help_urls);
 
@@ -2794,6 +2815,9 @@ main(int argc, char **argv)
       cur_arg++;
     } else if (!strcmp(argv[cur_arg], "-R")) {
       restart_mode = 1;
+      cur_arg++;
+    } else if (!strcmp(argv[cur_arg], "-nst")) {
+      disable_stack_trace = 1;
       cur_arg++;
     } else if (!strcmp(argv[cur_arg], "-a")) {
       autonomous_mode = 1;
@@ -2843,6 +2867,9 @@ main(int argc, char **argv)
   }
   argv_restart[j] = 0;
   start_set_args(argv_restart);
+  if (disable_stack_trace <= 0) {
+    start_enable_stacktrace(NULL);
+  }
 
   if (!(pid = start_find_process("ej-super-server", NULL, 0))) {
     forced_mode = 1;

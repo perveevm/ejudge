@@ -3,7 +3,7 @@
 #ifndef __NEW_SERVER_PROTO_H__
 #define __NEW_SERVER_PROTO_H__
 
-/* Copyright (C) 2006-2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2006-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -377,6 +377,10 @@ enum
   NEW_SRV_ACTION_CREATE_USERPROB,
   NEW_SRV_ACTION_SAVE_USERPROB,
   NEW_SRV_ACTION_REMOVE_USERPROB,
+  NEW_SRV_ACTION_SERVER_INFO_PAGE,
+  NEW_SRV_ACTION_CLEAR_SESSION_CACHE,
+  NEW_SRV_ACTION_COMPILER_OP,
+  NEW_SRV_ACTION_INVOKER_REBOOT,
 
   NEW_SRV_ACTION_LAST,
 };
@@ -562,6 +566,8 @@ enum
   NEW_SRV_ERR_RATE_EXCEEDED,
   NEW_SRV_ERR_INV_SUBMIT_ID,
   NEW_SRV_ERR_INV_USERPROB_ID,
+  NEW_SRV_ERR_INV_EXT_USER,
+  NEW_SRV_ERR_INV_NOTIFY,
 
   NEW_SRV_ERR_LAST,
 };

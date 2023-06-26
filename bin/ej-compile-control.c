@@ -131,20 +131,21 @@ env_init(struct EnvVector *ev)
 static void
 env_set(struct EnvVector *ev, const unsigned char *name, const unsigned char *value)
 {
+    __attribute__((unused)) int _;
     if (!value) return;
 
     int namelen = strlen(name);
     for (int i = 0; i < ev->u; ++i) {
         if (!strncmp(ev->v[i], name, namelen) && ev->v[i][namelen] == '=') {
             free(ev->v[i]); ev->v[i] = NULL;
-            asprintf(&ev->v[i], "%s=%s", name, value);
+            _ = asprintf(&ev->v[i], "%s=%s", name, value);
             return;
         }
     }
     if (ev->u + 1 == ev->a) {
         ev->v = realloc(ev->v, (ev->a *= 2) * sizeof(ev->v[0]));
     }
-    asprintf(&ev->v[ev->u++], "%s=%s", name, value);
+    _ = asprintf(&ev->v[ev->u++], "%s=%s", name, value);
     ev->v[ev->u] = NULL;
 }
 
@@ -306,7 +307,10 @@ start_process(
         const char *instance_id,
         const char *queue,
         int verbose_mode,
-        const char *ip_address)
+        const char *ip_address,
+        const char *halt_command,
+        const char *reboot_command,
+        const char *heartbeat_instance_id)
 {
     int pid = fork();
     if (pid < 0) {
@@ -376,6 +380,10 @@ start_process(
         args[argi++] = "--instance-id";
         args[argi++] = (char*) instance_id;
     }
+    if (heartbeat_instance_id && *heartbeat_instance_id) {
+        args[argi++] = "-hi";
+        args[argi++] = (char*) heartbeat_instance_id;
+    }
     if (ip_address && *ip_address) {
         args[argi++] = "--ip";
         args[argi++] = (char*) ip_address;
@@ -383,6 +391,14 @@ start_process(
     if (queue && *queue) {
         args[argi++] = "-I";
         args[argi++] = (char*) queue;
+    }
+    if (halt_command && *halt_command) {
+        args[argi++] = "-hc";
+        args[argi++] = (char*) halt_command;
+    }
+    if (reboot_command && *reboot_command) {
+        args[argi++] = "-rc";
+        args[argi++] = (char*) reboot_command;
     }
     if (verbose_mode) {
         args[argi++] = "-v";
@@ -461,9 +477,10 @@ change_ownership_and_permissions(const unsigned char *dir, const unsigned char *
     if (snprintf(p, sizeof(p), "%s/%s", dir, name) >= sizeof(p)) return;
     struct stat stb;
     if (stat(p, &stb) < 0 || !S_ISDIR(stb.st_mode)) return;
+    __attribute__((unused)) int _;
 
-    chown(p, uid, gid);
-    chmod(p, perms);
+    _ = chown(p, uid, gid);
+    _ = chmod(p, perms);
 }
 
 static void
@@ -488,6 +505,7 @@ check_directories_2(int primary_uid, int primary_gid, const struct ejudge_cfg *c
     unsigned char d3[PATH_MAX];
     unsigned char d4[PATH_MAX];
     struct stat stb;
+    __attribute__((unused)) int _;
 
 #if defined EJUDGE_LOCAL_DIR
     snprintf(d1, sizeof(d1), "%s", EJUDGE_LOCAL_DIR);
@@ -499,28 +517,28 @@ check_directories_2(int primary_uid, int primary_gid, const struct ejudge_cfg *c
         if (!S_ISDIR(stb.st_mode)) {
             system_error("'%s' is not a directory", d2);
         }
-        chown(d2, primary_uid, primary_gid);
-        chmod(d2, 0770);
+        _ = chown(d2, primary_uid, primary_gid);
+        _ = chmod(d2, 0770);
     } else {
         if (mkdir(d2, 0770) < 0) {
             syscall_error("cannot create '%s'", d2);
         }
-        chown(d2, primary_uid, primary_gid);
-        chmod(d2, 0770);
+        _ = chown(d2, primary_uid, primary_gid);
+        _ = chmod(d2, 0770);
     }
     snprintf(d3, sizeof(d3), "%s/work", d2);
     if (stat(d3, &stb) >= 0) {
         if (!S_ISDIR(stb.st_mode)) {
             system_error("'%s' is not a directory", d3);
         }
-        chown(d3, primary_uid, primary_gid);
-        chmod(d3, 0770);
+        _ = chown(d3, primary_uid, primary_gid);
+        _ = chmod(d3, 0770);
     } else {
         if (mkdir(d3, 0770) < 0) {
             syscall_error("cannot create '%s'", d3);
         }
-        chown(d3, primary_uid, primary_gid);
-        chmod(d3, 0770);
+        _ = chown(d3, primary_uid, primary_gid);
+        _ = chmod(d3, 0770);
     }
 #endif
     d1[0] = 0;
@@ -540,14 +558,14 @@ check_directories_2(int primary_uid, int primary_gid, const struct ejudge_cfg *c
         if (!S_ISDIR(stb.st_mode)) {
             system_error("'%s' is not a directory", d2);
         }
-        chown(d2, primary_uid, primary_gid);
+        _ = chown(d2, primary_uid, primary_gid);
         chmod(d2, 0755);
     } else {
         if (mkdir(d2, 0750) < 0) {
             syscall_error("cannot create '%s'", d2);
         }
-        chown(d2, primary_uid, primary_gid);
-        chmod(d2, 0755);
+        _ = chown(d2, primary_uid, primary_gid);
+        _ = chmod(d2, 0755);
     }
     // reserve working directory
     snprintf(d3, sizeof(d3), "%s/work", d2);
@@ -555,14 +573,14 @@ check_directories_2(int primary_uid, int primary_gid, const struct ejudge_cfg *c
         if (!S_ISDIR(stb.st_mode)) {
             system_error("'%s' is not a directory", d3);
         }
-        chown(d3, primary_uid, primary_gid);
-        chmod(d3, 0770);
+        _ = chown(d3, primary_uid, primary_gid);
+        _ = chmod(d3, 0770);
     } else {
         if (mkdir(d3, 0755) < 0) {
             syscall_error("cannot create '%s'", d3);
         }
-        chown(d3, primary_uid, primary_gid);
-        chmod(d3, 0770);
+        _ = chown(d3, primary_uid, primary_gid);
+        _ = chmod(d3, 0770);
     }
 
 #if defined EJUDGE_COMPILE_SPOOL_DIR
@@ -594,14 +612,14 @@ check_directories_2(int primary_uid, int primary_gid, const struct ejudge_cfg *c
         if (!S_ISDIR(stb.st_mode)) {
             system_error("'%s' is not a directory", d3);
         }
-        chown(d3, primary_uid, primary_gid);
-        chmod(d3, 0770);
+        _ = chown(d3, primary_uid, primary_gid);
+        _ = chmod(d3, 0770);
     } else {
         if (mkdir(d3, 0755) < 0) {
             syscall_error("cannot create '%s'", d3);
         }
-        chown(d3, primary_uid, primary_gid);
-        chmod(d3, 0770);
+        _ = chown(d3, primary_uid, primary_gid);
+        _ = chmod(d3, 0770);
     }
 
     // spool directory skeleton
@@ -694,6 +712,7 @@ check_directories(int primary_uid, int compile_uid, int primary_gid, int compile
     unsigned char d3[PATH_MAX];
     unsigned char d4[PATH_MAX];
     struct stat stb;
+    __attribute__((unused)) int _;
 
 #if defined EJUDGE_LOCAL_DIR
     snprintf(d1, sizeof(d1), "%s", EJUDGE_LOCAL_DIR);
@@ -717,15 +736,15 @@ check_directories(int primary_uid, int compile_uid, int primary_gid, int compile
         }
         // must be group-writable
         if (stb.st_gid != compile_gid) {
-            chown(d3, -1, compile_gid);
-            chmod(d3, 06775);
+            _ = chown(d3, -1, compile_gid);
+            _ = chmod(d3, 06775);
         }
     } else {
         if (mkdir(d3, 0755) < 0) {
             syscall_error("cannot create '%s'", d3);
         }
-        chown(d3, primary_uid, compile_gid);
-        chmod(d3, 06775);
+        _ = chown(d3, primary_uid, compile_gid);
+        _ = chmod(d3, 06775);
     }
 #endif
     d1[0] = 0;
@@ -749,8 +768,8 @@ check_directories(int primary_uid, int compile_uid, int primary_gid, int compile
         if (mkdir(d2, 0755) < 0) {
             syscall_error("cannot create '%s'", d2);
         }
-        chown(d3, primary_uid, primary_gid);
-        chmod(d3, 0755);
+        _ = chown(d3, primary_uid, primary_gid);
+        _ = chmod(d3, 0755);
     }
     // reserve working directory
     snprintf(d3, sizeof(d3), "%s/work", d2);
@@ -760,15 +779,15 @@ check_directories(int primary_uid, int compile_uid, int primary_gid, int compile
         }
         // must be group-writable
         if (stb.st_gid != compile_gid) {
-            chown(d3, -1, compile_gid);
-            chmod(d3, 06775);
+            _ = chown(d3, -1, compile_gid);
+            _ = chmod(d3, 06775);
         }
     } else {
         if (mkdir(d3, 0755) < 0) {
             syscall_error("cannot create '%s'", d3);
         }
-        chown(d3, primary_uid, compile_gid);
-        chmod(d3, 06775);
+        _ = chown(d3, primary_uid, compile_gid);
+        _ = chmod(d3, 06775);
     }
 
 #if defined EJUDGE_COMPILE_SPOOL_DIR
@@ -802,15 +821,15 @@ check_directories(int primary_uid, int compile_uid, int primary_gid, int compile
         }
         // must be group-writable
         if (stb.st_gid != compile_gid) {
-            chown(d3, -1, compile_gid);
-            chmod(d3, 06775);
+            _ = chown(d3, -1, compile_gid);
+            _ = chmod(d3, 06775);
         }
     } else {
         if (mkdir(d3, 0755) < 0) {
             syscall_error("cannot create '%s'", d3);
         }
-        chown(d3, primary_uid, compile_gid);
-        chmod(d3, 06775);
+        _ = chown(d3, primary_uid, compile_gid);
+        _ = chmod(d3, 06775);
     }
 
     // spool directory skeleton
@@ -905,6 +924,9 @@ int main(int argc, char *argv[])
     long long timeout_us = -1;
     int date_suffix_flag = 0;
     const char *ip_address = NULL;
+    const char *halt_command = NULL;
+    const char *reboot_command = NULL;
+    const char *heartbeat_instance_id = NULL;
 
     if (argc < 1) {
         system_error("no arguments");
@@ -939,6 +961,12 @@ int main(int argc, char *argv[])
                 }
                 instance_id = argv[aidx + 1];
                 aidx += 2;
+            } else if (!strcmp(argv[aidx], "-hi")) {
+                if (aidx + 1 >= argc) {
+                    system_error("argument expected for -hi");
+                }
+                heartbeat_instance_id = argv[aidx + 1];
+                aidx += 2;
             } else if (!strcmp(argv[aidx], "--queue")) {
                 if (aidx + 1 >= argc) {
                     system_error("argument expected for --queue");
@@ -950,6 +978,18 @@ int main(int argc, char *argv[])
                     system_error("argument expected for --ip");
                 }
                 ip_address = argv[aidx + 1];
+                aidx += 2;
+            } else if (!strcmp(argv[aidx], "-hc")) {
+                if (aidx + 1 >= argc) {
+                    system_error("argument expected for -hc");
+                }
+                halt_command = argv[aidx + 1];
+                aidx += 2;
+            } else if (!strcmp(argv[aidx], "-rc")) {
+                if (aidx + 1 >= argc) {
+                    system_error("argument expected for -rc");
+                }
+                reboot_command = argv[aidx + 1];
                 aidx += 2;
             } else if (!strcmp(argv[aidx], "--timeout")) {
                 if (aidx + 1 >= argc) {
@@ -1273,7 +1313,7 @@ int main(int argc, char *argv[])
             }
 
             for (int i = 0; i < compile_parallelism; ++i) {
-                int ret = start_process(config, EJ_COMPILE_PROGRAM, log_fd, workdir, &ev, ej_compile_path, compile_parallelism > 1, 1 /* FIXME */, ejudge_xml_fds, compile_parallelism, i, agent, instance_id, queue, verbose_mode, ip_address);
+                int ret = start_process(config, EJ_COMPILE_PROGRAM, log_fd, workdir, &ev, ej_compile_path, compile_parallelism > 1, 1 /* FIXME */, ejudge_xml_fds, compile_parallelism, i, agent, instance_id, queue, verbose_mode, ip_address, halt_command, reboot_command, heartbeat_instance_id);
                 if (ret < 0) {
                     emergency_stop();
                     return EXIT_SYSTEM_ERROR;

@@ -46,6 +46,7 @@
 #include <ctype.h>
 #include <arpa/inet.h>
 #include <sys/time.h>
+#include <sys/inotify.h>
 
 #define MAX_IN_PACKET_SIZE 134217728 /* 128 mb */
 
@@ -82,6 +83,30 @@ struct watchlist
   struct server_framework_watch w;
 };
 
+struct directory_watch
+{
+  struct directory_watch *next, *prev;
+  const struct ejudge_cfg *config;
+  unsigned char *dir;
+  unsigned char *dir_dir;
+  unsigned char *dir_out;
+  unsigned char *data_dir;
+  unsigned char *data2_dir;
+  void *user;
+  void (*callback)(
+        const struct ejudge_cfg *config,
+        struct server_framework_state *state,
+        const unsigned char *dir,
+        const unsigned char *dir_dir,
+        const unsigned char *dir_out,
+        const unsigned char *data_dir,
+        const unsigned char *data2_dir,
+        void *user);
+
+  int wd; // watch descriptor from inotify_add_watch
+  int ready;
+};
+
 struct server_framework_state
 {
   struct server_framework_params *params;
@@ -93,6 +118,9 @@ struct server_framework_state
 
   // websocket file descriptor
   int ws_fd;
+
+  // inotify file descriptor
+  int ifd;
 
   time_t server_start_time;
 
@@ -108,6 +136,9 @@ struct server_framework_state
 
   struct ws_client_state *ws_first;
   struct ws_client_state *ws_last;
+
+  struct directory_watch *dw_first;
+  struct directory_watch *dw_last;
 };
 
 static int
@@ -1441,12 +1472,101 @@ handle_control_command(
   p->read_len = 0;
 }
 
+int
+nsf_add_directory_watch(
+        const struct ejudge_cfg *config,
+        struct server_framework_state *state,
+        const unsigned char *dir,
+        const unsigned char *data_dir,
+        const unsigned char *data2_dir,
+        void (*callback)(
+                const struct ejudge_cfg *config,
+                struct server_framework_state *state,
+                const unsigned char *dir,
+                const unsigned char *dir_dir,
+                const unsigned char *dir_out,
+                const unsigned char *data_dir,
+                const unsigned char *data2_dir,
+                void *user),
+        void *user)
+{
+  struct directory_watch *dw;
+  XCALLOC(dw, 1);
+
+  dw->prev = state->dw_last;
+  if (state->dw_last) {
+    state->dw_last->next = dw;
+  } else {
+    state->dw_first = dw;
+  }
+  state->dw_last = dw;
+
+  dw->config = config;
+  dw->dir = xstrdup(dir);
+  dw->data_dir = xstrdup(data_dir);
+  if (data2_dir) {
+    dw->data2_dir = xstrdup(data2_dir);
+  }
+  __attribute__((unused)) int r;
+  char *s = NULL;
+  r = asprintf(&s, "%s/dir", dw->dir);
+  dw->dir_dir = s; s = NULL;
+  r = asprintf(&s, "%s/out", dw->dir);
+  dw->dir_out = s; s = NULL;
+  dw->user = user;
+  dw->callback = callback;
+  dw->wd = -1;
+
+  return 0;
+}
+
+static void
+do_inotify_read(struct server_framework_state *state)
+{
+  unsigned char buf[4096];
+  while (1) {
+    errno = 0;
+    int r = read(state->ifd, buf, sizeof(buf));
+    if (r < 0 && errno == EAGAIN) {
+      break;
+    }
+    if (r < 0) {
+      err("do_inotify_read: read failed: %s", os_ErrorMsg());
+      break;
+    }
+    if (!r) {
+      err("do_inotify_read: read returned 0");
+      break;
+    }
+    const unsigned char *bend = buf + r;
+    const unsigned char *p = buf;
+    while (p < bend) {
+      const struct inotify_event *ev = (const struct inotify_event *) p;
+      p += sizeof(*ev) + ev->len;
+      struct directory_watch *dw;
+      for (dw = state->dw_first; dw; dw = dw->next) {
+        if (dw->wd == ev->wd) {
+          break;
+        }
+      }
+      if (!dw) {
+        err("do_inotify_read: watch descriptor %d not found", ev->wd);
+      } else {
+        dw->ready = 1;
+      }
+    }
+    if (p > bend) {
+      err("do_inotify_read: buffer overrun: end = %p, cur = %p", bend, p);
+    }
+  }
+}
+
 void
 nsf_main_loop(struct server_framework_state *state)
 {
   struct ht_client_state *cur_clnt;
-  struct timeval timeout;
-  int fd_max, n, errcode;
+  struct timespec timeoutn;
+  int fd_max, n;
   fd_set rset, wset;
   struct watchlist *pw;
   int mode;
@@ -1456,6 +1576,13 @@ nsf_main_loop(struct server_framework_state *state)
   while (1) {
     int work_done = 1;
     if (state->params->loop_start) work_done = state->params->loop_start(state);
+
+    for (struct directory_watch *dw = state->dw_first; dw; dw = dw->next) {
+      if (dw->ready) {
+        dw->callback(dw->config, state, dw->dir, dw->dir_dir, dw->dir_out, dw->data_dir, dw->data2_dir, dw->user);
+        dw->ready = 0;
+      }
+    }
 
     fd_max = -1;
     FD_ZERO(&rset);
@@ -1468,6 +1595,11 @@ nsf_main_loop(struct server_framework_state *state)
     if (state->ws_fd >= 0) {
       FD_SET(state->ws_fd, &rset);
       if (state->ws_fd > fd_max) fd_max = state->ws_fd;
+    }
+
+    if (state->ifd >= 0) {
+      FD_SET(state->ifd, &rset);
+      if (state->ifd > fd_max) fd_max = state->ifd;
     }
 
     for (cur_clnt = state->clients_first; cur_clnt; cur_clnt = (struct ht_client_state *) cur_clnt->b.next) {
@@ -1521,21 +1653,16 @@ nsf_main_loop(struct server_framework_state *state)
       }
     }
 
-    timeout.tv_sec = state->params->select_timeout;
-    if (timeout.tv_sec <= 0) timeout.tv_sec = 10;
-    timeout.tv_usec = 0;
-    if (!work_done) timeout.tv_sec = 0;
+    if (work_done) {
+      if ((timeoutn.tv_sec = state->params->select_timeout) <= 0) {
+        timeoutn.tv_sec = 10;
+      }
+    } else {
+      timeoutn.tv_sec = 0;
+    }
+    timeoutn.tv_nsec = 0;
 
-    // here's a potential race condition :-(
-    // it cannot be handled properly until Linux
-    // has the proper pselect implementation
-    sigprocmask(SIG_SETMASK, &state->work_mask, 0);
-    errno = 0;
-    n = select(fd_max + 1, &rset, &wset, 0, &timeout);
-    errcode = errno;
-    sigprocmask(SIG_SETMASK, &state->block_mask, 0);
-    errno = errcode;
-    // end of race condition prone code
+    n = pselect(fd_max + 1, &rset, &wset, NULL, &timeoutn, &state->work_mask);
 
     if (n < 0 && errno != EINTR) {
       err("unexpected select error: %s", os_ErrorMsg());
@@ -1618,6 +1745,10 @@ nsf_main_loop(struct server_framework_state *state)
           ws_clnt->state = WS_STATE_DISCONNECT;
         }
       }
+    }
+
+    if (state->ifd >= 0 && FD_ISSET(state->ifd, &rset)) {
+      do_inotify_read(state);
     }
 
     // execute ready commands from control connections
@@ -1760,6 +1891,21 @@ nsf_prepare(struct server_framework_state *state)
     }
   }
 
+  if (state->dw_first) {
+    state->ifd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    if (state->ifd < 0) {
+      state->params->startup_error("inotify_init1() failed: %s", os_ErrorMsg());
+    }
+
+    for (struct directory_watch *dw = state->dw_first; dw; dw = dw->next) {
+      dw->wd = inotify_add_watch(state->ifd, dw->dir_dir, IN_CREATE | IN_MOVED_TO);
+      if (dw->wd < 0) {
+        state->params->startup_error("inotify_add_watch() failed: %s", os_ErrorMsg());
+      }
+      dw->ready = 1;
+    }
+  }
+
   // create a control socket
   if ((state->socket_fd = socket(PF_UNIX, SOCK_STREAM, 0)) < 0)
     state->params->startup_error("socket() failed: %s", os_ErrorMsg());
@@ -1780,7 +1926,7 @@ nsf_prepare(struct server_framework_state *state)
   if (bind(state->socket_fd, (struct sockaddr *) &addr, sizeof(addr)) < 0)
     state->params->startup_error("bind() failed: %s", os_ErrorMsg());
 
-  if (listen(state->socket_fd, 5) < 0)
+  if (listen(state->socket_fd, 128) < 0)
     state->params->startup_error("listen() failed: %s", os_ErrorMsg());
   if (chmod(state->params->socket_path, 0777) < 0)
     state->params->startup_error("chmod() failed: %s", os_ErrorMsg());
@@ -1793,6 +1939,18 @@ nsf_prepare(struct server_framework_state *state)
   sigdelset(&state->work_mask, SIGHUP);
   sigdelset(&state->work_mask, SIGCHLD);
   sigdelset(&state->work_mask, SIGUSR1);
+
+  // we want these signals handled by backtrace
+  sigdelset(&state->work_mask, SIGILL);
+  sigdelset(&state->work_mask, SIGBUS);
+  sigdelset(&state->work_mask, SIGFPE);
+  sigdelset(&state->work_mask, SIGSEGV);
+  sigdelset(&state->work_mask, SIGABRT);
+  sigdelset(&state->block_mask, SIGILL);
+  sigdelset(&state->block_mask, SIGBUS);
+  sigdelset(&state->block_mask, SIGFPE);
+  sigdelset(&state->block_mask, SIGSEGV);
+  sigdelset(&state->block_mask, SIGABRT);
 
   memset(&act, 0, sizeof(act));
   act.sa_handler = sighup_handler;
@@ -1848,6 +2006,21 @@ nsf_cleanup(struct server_framework_state *state)
 
     xfree(p->read_buf); p->read_buf = 0;
     p->expected_len = p->read_len = 0;
+
+    for (struct directory_watch *dw = state->dw_first; dw; ) {
+      struct directory_watch *p = dw;
+      dw = dw->next;
+      xfree(p->dir_out);
+      xfree(p->dir_dir);
+      xfree(p->dir);
+      xfree(p);
+    }
+    state->dw_first = NULL;
+    state->dw_last = NULL;
+
+    if (state->ifd >= 0) {
+      close(state->ifd); state->ifd = -1;
+    }
   }
 
   if (state->socket_fd >= 0) close(state->socket_fd);
@@ -1874,6 +2047,8 @@ nsf_init(
   state->user_data = data;
   //state->client_id = 1;
   state->server_start_time = server_start_time;
+  state->ifd = -1;
+
   return state;
 }
 

@@ -1,6 +1,6 @@
 # -*- Makefile -*-
 
-# Copyright (C) 2002-2022 Alexander Chernov <cher@ejudge.ru> */
+# Copyright (C) 2002-2023 Alexander Chernov <cher@ejudge.ru> */
 
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -137,12 +137,14 @@ COMMON_CFILES=\
  lib/cldb_plugin_file.c\
  lib/clntutil.c\
  lib/common_plugin.c\
+ lib/compile_heartbeat.c\
  lib/compile_packet_1.c\
  lib/compile_packet_2.c\
  lib/compile_packet_3.c\
  lib/compile_packet_4.c\
  lib/compile_packet_5.c\
  lib/compile_packet_6.c\
+ lib/compile_packet_7.c\
  lib/content_plugin.c\
  lib/content_plugin_file.c\
  lib/content_plugin_none.c\
@@ -186,6 +188,7 @@ COMMON_CFILES=\
  lib/html_start_form.c\
  lib/http_request.c\
  lib/imagemagick.c\
+ lib/json_serializers.c\
  lib/l10n.c\
  lib/lang_config.c\
  lib/lang_config_vis.c\
@@ -195,6 +198,7 @@ COMMON_CFILES=\
  lib/metrics_contest.c\
  lib/mime_type.c\
  lib/misctext.c\
+ lib/mixed_id.c\
  lib/ncheck_packet.c\
  lib/new_server_html.c\
  lib/new_server_html_2.c\
@@ -204,6 +208,7 @@ COMMON_CFILES=\
  lib/new_server_proto.c\
  lib/new_server_tables.c\
  lib/ncurses_utils.c\
+ lib/notify_plugin.c\
  lib/nsdb_plugin_files.c\
  lib/nwrun_packet.c\
  lib/oauth.c\
@@ -239,10 +244,12 @@ COMMON_CFILES=\
  lib/run_packet_5.c\
  lib/run_packet_6.c\
  lib/send_job_packet.c\
+ lib/server_info.c\
  lib/server_framework.c\
  lib/serve_2.c\
  lib/serve_state.c\
  lib/session.c\
+ lib/session_cache.c\
  lib/sformat.c\
  lib/shellcfg_parse.c\
  lib/standings.c\
@@ -293,6 +300,7 @@ COMMON_CFILES=\
  lib/tsc.c\
  lib/type_info.c\
  lib/uldb_plugin_xml.c\
+ lib/ulid.c\
  lib/unicode_width.c\
  lib/userlist.c\
  lib/userlist_bin.c\
@@ -349,6 +357,14 @@ COMMON_CFILES=\
  xml_utils/xml_err.c\
  xml_utils/xml_err_a.c\
  ${REUSE_CFILES}
+
+FLATCC_CFILES =\
+ lib/flatcc/builder.c\
+ lib/flatcc/emitter.c\
+ lib/flatcc/json_parser.c\
+ lib/flatcc/json_printer.c\
+ lib/flatcc/refmap.c\
+ lib/flatcc/verifier.c
 
 PLATFORM_CFILES =\
  $(ARCH)/fileutl.c\
@@ -558,6 +574,7 @@ HFILES=\
  ./include/ejudge/clntutil.h\
  ./include/ejudge/common_plugin.h\
  ./include/ejudge/compat.h\
+ ./include/ejudge/compile_heartbeat.h\
  ./include/ejudge/compile_packet.h\
  ./include/ejudge/compile_packet_priv.h\
  ./include/ejudge/content_plugin.h\
@@ -600,6 +617,7 @@ HFILES=\
  ./include/ejudge/interrupt.h\
  ./include/ejudge/iterators.h\
  ./include/ejudge/job_packet.h\
+ ./include/ejudge/json_serializers.h\
  ./include/ejudge/l10n.h\
  ./include/ejudge/lang_config_vis.h\
  ./include/ejudge/list_ops.h\
@@ -609,9 +627,11 @@ HFILES=\
  ./include/ejudge/mime_type.h\
  ./include/ejudge/mischtml.h\
  ./include/ejudge/misctext.h\
+ ./include/ejudge/mixed_id.h\
  ./include/ejudge/ncheck_packet.h\
  ./include/ejudge/ncurses_utils.h\
  ./include/ejudge/new-server.h\
+ ./include/ejudge/notify_plugin.h\
  ./include/ejudge/nsdb_plugin.h\
  ./include/ejudge/nwrun_packet.h\
  ./include/ejudge/oauth.h\
@@ -637,8 +657,10 @@ HFILES=\
  ./include/ejudge/runlog_state.h\
  ./include/ejudge/run_packet.h\
  ./include/ejudge/run_packet_priv.h\
+ ./include/ejudge/server_info.h\
  ./include/ejudge/server_framework.h\
  ./include/ejudge/serve_state.h\
+ ./include/ejudge/session_cache.h\
  ./include/ejudge/sformat.h\
  ./include/ejudge/shellcfg_parse.h\
  ./include/ejudge/sock_op.h\
@@ -677,6 +699,7 @@ HFILES=\
  ./include/ejudge/tsc.h\
  ./include/ejudge/type_info.h\
  ./include/ejudge/uldb_plugin.h\
+ ./include/ejudge/ulid.h\
  ./include/ejudge/userlist.h\
  ./include/ejudge/userlist_bin.h\
  ./include/ejudge/userlist_clnt.h\

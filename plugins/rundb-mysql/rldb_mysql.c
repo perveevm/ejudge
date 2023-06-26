@@ -32,6 +32,8 @@
 #include "ejudge/misctext.h"
 #include "ejudge/compat.h"
 #include "ejudge/ej_uuid.h"
+#include "ejudge/metrics_contest.h"
+#include "ejudge/mixed_id.h"
 
 #include "ejudge/xalloc.h"
 #include "ejudge/logger.h"
@@ -55,6 +57,8 @@ struct rldb_mysql_state
   struct common_mysql_state *md;
 
   int window;
+
+  long long last_serial_id;
 };
 
 struct rldb_mysql_cnts
@@ -62,6 +66,9 @@ struct rldb_mysql_cnts
   struct rldb_mysql_state *plugin_state;
   struct runlog_state *rl_state;
   int contest_id;
+  struct metrics_contest_data *metrics;
+  int next_run_id_set;
+  int next_run_id;
 };
 
 #include "methods.inc.c"
@@ -123,6 +130,14 @@ struct rldb_plugin_iface plugin_rldb_mysql =
   run_set_is_checked_func,
 };
 
+static long long
+get_current_time_us(void)
+{
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  return tv.tv_sec * 1000000LL + tv.tv_usec;
+}
+
 static struct common_plugin_data *
 init_func(void)
 {
@@ -182,7 +197,7 @@ prepare_func(
 
 #include "tables.inc.c"
 
-#define RUN_DB_VERSION 25
+#define RUN_DB_VERSION 27
 
 static int
 do_create(struct rldb_mysql_state *state)
@@ -205,6 +220,60 @@ do_create(struct rldb_mysql_state *state)
 
  fail:
   return -1;
+}
+
+static long long
+next_serial_id(struct rldb_mysql_state *state)
+{
+  if (state->last_serial_id > 0) {
+    return ++state->last_serial_id;
+  }
+
+  struct common_mysql_iface *mi = state->mi;
+  struct common_mysql_state *md = state->md;
+
+  int r = mi->fquery(md, 1, "SELECT MAX(serial_id) FROM %sruns ;", md->table_prefix);
+  if (r < 0) {
+    err("request failed");
+    goto reset_counter;
+  }
+  if (md->row_count > 1) {
+    err("too many rows");
+    goto reset_counter;
+  }
+  if (md->row_count < 1) {
+    err("too few rows");
+    goto reset_counter;
+  }
+  if (mi->next_row(md) < 0) {
+    err("database error");
+    goto reset_counter;
+  }
+  if (!md->row[0]) {
+    goto reset_counter;
+  }
+  int len = strlen(md->row[0]);
+  if (len != md->lengths[0]) {
+    err("binary data");
+    mi->free_res(md);
+    goto reset_counter;
+  }
+  const char *s = md->row[0];
+  char *eptr = NULL;
+  errno = 0;
+  long long value = strtoll(s, &eptr, 10);
+  if (errno || *eptr || s == eptr || value < 0) {
+    err("invalid data");
+    mi->free_res(md);
+    goto reset_counter;
+  }
+
+  state->last_serial_id = value + 1;
+  return state->last_serial_id;
+
+reset_counter:;
+  state->last_serial_id = 1;
+  return state->last_serial_id;
 }
 
 static int
@@ -407,6 +476,14 @@ do_open(struct rldb_mysql_state *state)
       if (mi->simple_fquery(md, "ALTER TABLE %sruns ADD COLUMN verdict_bits INT NOT NULL DEFAULT 0 AFTER is_vcs", md->table_prefix) < 0)
         return -1;
       break;
+    case 25:
+      if (mi->simple_fquery(md, "ALTER TABLE %sruns ADD COLUMN ext_user_kind TINYINT NOT NULL DEFAULT 0 AFTER verdict_bits, ADD COLUMN ext_user VARCHAR(40) DEFAULT NULL AFTER ext_user_kind", md->table_prefix) < 0)
+        return -1;
+      break;
+    case 26:
+      if (mi->simple_fquery(md, "ALTER TABLE %sruns ADD COLUMN notify_driver TINYINT NOT NULL DEFAULT 0 AFTER ext_user, ADD COLUMN notify_kind TINYINT NOT NULL DEFAULT 0 AFTER notify_driver, ADD COLUMN notify_queue VARCHAR(40) DEFAULT NULL AFTER notify_kind", md->table_prefix) < 0)
+        return -1;
+      break;
     case RUN_DB_VERSION:
       run_version = -1;
       break;
@@ -427,6 +504,64 @@ do_open(struct rldb_mysql_state *state)
  fail:
   mi->free_res(md);
   return -1;
+}
+
+static int
+next_run_id(struct rldb_mysql_cnts *cs)
+{
+  if (cs->next_run_id_set) {
+    return cs->next_run_id++;
+  }
+
+  struct rldb_mysql_state *state = cs->plugin_state;
+  struct common_mysql_iface *mi = state->mi;
+  struct common_mysql_state *md = state->md;
+
+  int r = mi->fquery(md, 1, "SELECT MAX(run_id) FROM %s runs WHERE contest_id = %d;", md->table_prefix, cs->contest_id);
+  if (r < 0) {
+    err("request failed");
+    goto reset_counter;
+  }
+  if (md->row_count > 1) {
+    err("too many rows");
+    goto reset_counter;
+  }
+  if (md->row_count < 1) {
+    err("too few rows");
+    goto reset_counter;
+  }
+  if (mi->next_row(md) < 0) {
+    err("database error");
+    goto reset_counter;
+  }
+  if (!md->row[0]) {
+    goto reset_counter;
+  }
+  int len = strlen(md->row[0]);
+  if (len != md->lengths[0]) {
+    err("binary data");
+    mi->free_res(md);
+    goto reset_counter;
+  }
+
+  const char *s = md->row[0];
+  char *eptr = NULL;
+  errno = 0;
+  long value = strtol(s, &eptr, 10);
+  if (errno || *eptr || s == eptr || value < 0 || (int) value != value) {
+    err("invalid data");
+    mi->free_res(md);
+    goto reset_counter;
+  }
+
+  cs->next_run_id = value + 1;
+  cs->next_run_id_set = 1;
+  return cs->next_run_id++;
+
+reset_counter:;
+  cs->next_run_id = 1;
+  cs->next_run_id_set = 1;
+  return 0;
 }
 
 static int
@@ -682,6 +817,8 @@ load_runs(struct rldb_mysql_cnts *cs)
   ej_uuid_t run_uuid;
   ej_uuid_t prob_uuid;
   ej_uuid_t judge_uuid;
+  ej_mixed_id_t ext_user;
+  ej_mixed_id_t notify_queue;
 
   memset(&ri, 0, sizeof(ri));
   if (state->window > 0) {
@@ -732,6 +869,8 @@ load_runs(struct rldb_mysql_cnts *cs)
       xfree(ri.run_uuid); ri.run_uuid = 0;
       xfree(ri.prob_uuid); ri.prob_uuid = NULL;
       xfree(ri.judge_uuid); ri.judge_uuid = NULL;
+      xfree(ri.ext_user); ri.ext_user = NULL;
+      xfree(ri.notify_queue); ri.notify_queue = NULL;
 
       expand_runs(rls, ri.run_id);
       re = &rls->runs[ri.run_id - rls->run_f];
@@ -746,6 +885,7 @@ load_runs(struct rldb_mysql_cnts *cs)
       re->nsec = ri.create_nsec;
       if (re->nsec <= 0) re->nsec = ri.create_tv.tv_usec * 1000;
       re->status = ri.status;
+      re->last_change_us = ri.last_change_time * 1000000LL + ri.last_change_nsec / 1000;
       continue;
     }
     if (ri.user_id <= 0) db_error_inv_value_fail(md, "user_id");
@@ -767,16 +907,41 @@ load_runs(struct rldb_mysql_cnts *cs)
     //if (ri.ip_version != 4) db_error_inv_value_fail(md, "ip_version");
     if (ri.mime_type && (mime_type = mime_type_parse(ri.mime_type)) < 0)
       db_error_inv_value_fail(md, "mime_type");
+    if (ri.ext_user_kind > 0 && ri.ext_user_kind < MIXED_ID_LAST) {
+      if (mixed_id_unmarshall(&ext_user, ri.ext_user_kind, ri.ext_user) < 0) {
+        // silently ignore parse error
+        ri.ext_user_kind = 0;
+        memset(&ext_user, 0, sizeof(ext_user));
+      }
+    } else {
+      ri.ext_user_kind = 0;
+      memset(&ext_user, 0, sizeof(ext_user));
+    }
+    if (ri.notify_driver > 0
+        && ri.notify_kind > 0 && ri.notify_kind < MIXED_ID_LAST) {
+      if (mixed_id_unmarshall(&notify_queue, ri.notify_kind, ri.notify_queue) < 0) {
+        ri.notify_driver = 0;
+        ri.notify_kind = 0;
+        memset(&notify_queue, 0, sizeof(notify_queue));
+      }
+    } else {
+      ri.notify_driver = 0;
+      ri.notify_kind = 0;
+      memset(&notify_queue, 0, sizeof(notify_queue));
+    }
     xfree(ri.hash); ri.hash = 0;
     xfree(ri.mime_type); ri.mime_type = 0;
     xfree(ri.run_uuid); ri.run_uuid = 0;
     xfree(ri.prob_uuid); ri.prob_uuid = NULL;
     xfree(ri.judge_uuid); ri.judge_uuid = NULL;
+    xfree(ri.ext_user); ri.ext_user = NULL;
+    xfree(ri.notify_queue); ri.notify_queue = NULL;
 
     expand_runs(rls, ri.run_id);
     re = &rls->runs[ri.run_id - rls->run_f];
 
     re->run_id = ri.run_id;
+    re->serial_id = ri.serial_id;
     re->size = ri.size;
     /*
     re->time = ri.create_time;
@@ -823,6 +988,12 @@ load_runs(struct rldb_mysql_cnts *cs)
     re->is_checked = ri.is_checked;
     re->is_vcs = ri.is_vcs;
     re->verdict_bits = ri.verdict_bits;
+    re->last_change_us = ri.last_change_time * 1000000LL + ri.last_change_nsec / 1000;
+    re->ext_user_kind = ri.ext_user_kind;
+    re->ext_user = ext_user;
+    re->notify_driver = ri.notify_driver;
+    re->notify_kind = ri.notify_kind;
+    re->notify_queue = notify_queue;
   }
   return 1;
 
@@ -832,6 +1003,8 @@ load_runs(struct rldb_mysql_cnts *cs)
   xfree(ri.run_uuid);
   xfree(ri.prob_uuid);
   xfree(ri.judge_uuid);
+  xfree(ri.ext_user);
+  xfree(ri.notify_queue);
   mi->free_res(md);
   return -1;
 }
@@ -843,6 +1016,7 @@ open_func(
         const struct ejudge_cfg *config,
         const struct contest_desc *cnts,
         const struct section_global_data *global,
+        struct metrics_contest_data *metrics,
         int flags,
         time_t init_duration,
         time_t init_sched_time,
@@ -857,6 +1031,7 @@ open_func(
   cs->plugin_state = state;
   state->nref++;
   cs->rl_state = rl_state;
+  cs->metrics = metrics;
   if (cnts) cs->contest_id = cnts->id;
   if (!cs->contest_id) {
     err("undefined contest_id");
@@ -1182,6 +1357,8 @@ get_insert_run_id_func(
   ri.last_change_time = curtime.tv_sec;
   ri.last_change_nsec = curtime.tv_usec * 1000;
 
+  re->last_change_us = curtime.tv_sec * 1000000LL + curtime.tv_usec;
+
   cmd_f = open_memstream(&cmd_t, &cmd_z);
   fprintf(cmd_f, "INSERT INTO %sruns VALUES ( ", md->table_prefix);
   mi->unparse_spec(md, cmd_f, RUNS_ROW_WIDTH, runs_spec, &ri);
@@ -1215,9 +1392,9 @@ generate_update_entry_clause(
         struct rldb_mysql_state *state,
         FILE *f,
         const struct run_entry *re,
-        uint64_t mask)
+        uint64_t mask,
+        const struct timeval *curtime)
 {
-  struct timeval curtime;
   const unsigned char *sep = "";
   const unsigned char *comma = ", ";
   unsigned char uuid_buf[128];
@@ -1382,12 +1559,36 @@ generate_update_entry_clause(
     fprintf(f, "%sverdict_bits = %u", sep, re->verdict_bits);
     sep = comma;
   }
+  if ((mask & RE_EXT_USER)) {
+    if (!re->ext_user_kind) {
+      fprintf(f, "%sext_user_kind = 0%sext_user = NULL", sep, comma);
+      sep = comma;
+    } else if (re->ext_user_kind > 0 && re->ext_user_kind < MIXED_ID_LAST) {
+      fprintf(f, "%sext_user_kind = %d", sep, re->ext_user_kind);
+      sep = comma;
+      fprintf(f, "%sext_user = \"%s\"", sep,
+              mixed_id_marshall(uuid_buf, re->ext_user_kind, &re->ext_user));
+      sep = comma;
+    }
+  }
+  if ((mask & RE_NOTIFY)) {
+    if (re->notify_driver > 0
+        && re->notify_kind > 0 && re->notify_kind < MIXED_ID_LAST) {
+      fprintf(f, "%snotify_driver=%d,notify_kind=%d,notify_queue=\"%s\"",
+              sep, re->notify_driver, re->notify_kind,
+              mixed_id_marshall(uuid_buf, re->notify_kind, &re->notify_queue));
+      sep = comma;
+    } else {
+      fprintf(f, "%snotify_driver=0,notify_kind=0,notify_queue=NULL",
+              sep);
+      sep = comma;
+    }
+  }
 
-  gettimeofday(&curtime, 0);
   fprintf(f, "%slast_change_time = ", sep);
-  state->mi->write_timestamp(state->md, f, 0, curtime.tv_sec);
+  state->mi->write_timestamp(state->md, f, 0, curtime->tv_sec);
   sep = comma;
-  fprintf(f, "%slast_change_nsec = %ld", sep, curtime.tv_usec * 1000);
+  fprintf(f, "%slast_change_nsec = %ld", sep, curtime->tv_usec * 1000);
 }
 
 static void
@@ -1501,6 +1702,15 @@ update_entry(
   if ((mask & RE_VERDICT_BITS)) {
     dst->verdict_bits = src->verdict_bits;
   }
+  if ((mask & RE_EXT_USER)) {
+    dst->ext_user_kind = src->ext_user_kind;
+    dst->ext_user = src->ext_user;
+  }
+  if ((mask & RE_NOTIFY)) {
+    dst->notify_driver = src->notify_driver;
+    dst->notify_kind = src->notify_kind;
+    dst->notify_queue = src->notify_queue;
+  }
 }
 
 static int
@@ -1508,7 +1718,8 @@ do_update_entry(
         struct rldb_mysql_cnts *cs,
         int run_id,
         const struct run_entry *re,
-        uint64_t mask)
+        uint64_t mask,
+        struct run_entry *ure)
 {
   struct rldb_mysql_state *state = cs->plugin_state;
   struct runlog_state *rls = cs->rl_state;
@@ -1516,19 +1727,26 @@ do_update_entry(
   char *cmd_t = 0;
   size_t cmd_z = 0;
   FILE *cmd_f = 0;
+  struct timeval curtime;
 
   ASSERT(run_id >= rls->run_f && run_id < rls->run_u);
   de = &rls->runs[run_id - rls->run_f];
 
+  gettimeofday(&curtime, NULL);
+
   cmd_f = open_memstream(&cmd_t, &cmd_z);
   fprintf(cmd_f, "UPDATE %sruns SET ", state->md->table_prefix);
-  generate_update_entry_clause(state, cmd_f, re, mask);
+  generate_update_entry_clause(state, cmd_f, re, mask, &curtime);
   fprintf(cmd_f, " WHERE contest_id = %d AND run_id = %d ;",
           cs->contest_id, run_id);
   close_memstream(cmd_f); cmd_f = 0;
   if (state->mi->simple_query(state->md, cmd_t, cmd_z) < 0) goto fail;
   xfree(cmd_t); cmd_t = 0; cmd_z = 0;
   update_entry(de, re, mask);
+  de->last_change_us = curtime.tv_sec * 1000000LL + curtime.tv_usec;
+  if (ure) {
+    *ure = *de;
+  }
   return run_id;
 
  fail:
@@ -1542,7 +1760,8 @@ add_entry_func(
         struct rldb_plugin_cnts *cdata,
         int run_id,
         const struct run_entry *re,
-        uint64_t mask)
+        uint64_t mask,
+        struct run_entry *ure)
 {
   struct rldb_mysql_cnts *cs = (struct rldb_mysql_cnts *) cdata;
   struct runlog_state *rls = cs->rl_state;
@@ -1556,7 +1775,7 @@ add_entry_func(
   ASSERT(de->time > 0);
   (void) de;
 
-  return do_update_entry(cs, run_id, re, mask);
+  return do_update_entry(cs, run_id, re, mask, ure);
 }
 
 static int
@@ -1594,7 +1813,8 @@ change_status_func(
         int new_score,
         int new_judge_id,
         const ej_uuid_t *judge_uuid,
-        unsigned int verdict_bits)
+        unsigned int verdict_bits,
+        struct run_entry *ure)
 {
   struct rldb_mysql_cnts *cs = (struct rldb_mysql_cnts *) cdata;
   struct run_entry te;
@@ -1615,7 +1835,7 @@ change_status_func(
   }
   te.verdict_bits = verdict_bits;
 
-  return do_update_entry(cs, run_id, &te, mask);
+  return do_update_entry(cs, run_id, &te, mask, ure);
 }
 
 static void
@@ -1826,7 +2046,7 @@ set_status_func(
   memset(&te, 0, sizeof(te));
   te.status = new_status;
 
-  return do_update_entry(cs, run_id, &te, RE_STATUS);
+  return do_update_entry(cs, run_id, &te, RE_STATUS, NULL);
 }
 
 static int
@@ -1856,7 +2076,8 @@ static int
 set_hidden_func(
         struct rldb_plugin_cnts *cdata,
         int run_id,
-        int new_hidden)
+        int new_hidden,
+        struct run_entry *ure)
 {
   struct rldb_mysql_cnts *cs = (struct rldb_mysql_cnts *) cdata;
   struct run_entry te;
@@ -1866,14 +2087,15 @@ set_hidden_func(
   memset(&te, 0, sizeof(te));
   te.is_hidden = new_hidden;
 
-  return do_update_entry(cs, run_id, &te, RE_IS_HIDDEN);
+  return do_update_entry(cs, run_id, &te, RE_IS_HIDDEN, ure);
 }
 
 static int
 set_pages_func(
         struct rldb_plugin_cnts *cdata,
         int run_id,
-        int new_pages)
+        int new_pages,
+        struct run_entry *ure)
 {
   struct rldb_mysql_cnts *cs = (struct rldb_mysql_cnts *) cdata;
   struct run_entry te;
@@ -1881,7 +2103,7 @@ set_pages_func(
   memset(&te, 0, sizeof(te));
   te.pages = new_pages;
 
-  return do_update_entry(cs, run_id, &te, RE_PAGES);
+  return do_update_entry(cs, run_id, &te, RE_PAGES, ure);
 }
 
 static int
@@ -1889,7 +2111,8 @@ set_entry_func(
         struct rldb_plugin_cnts *cdata,
         int run_id,
         const struct run_entry *in,
-        uint64_t mask)
+        uint64_t mask,
+        struct run_entry *ure)
 {
   struct rldb_mysql_cnts *cs = (struct rldb_mysql_cnts *) cdata;
   struct runlog_state *rls = cs->rl_state;
@@ -1898,7 +2121,7 @@ set_entry_func(
   ASSERT(rls->runs[run_id - rls->run_f].status != RUN_EMPTY);
 
   (void) rls;
-  return do_update_entry(cs, run_id, in, mask);
+  return do_update_entry(cs, run_id, in, mask, ure);
 }
 
 static int
@@ -1921,6 +2144,9 @@ put_entry_func(
   char *cmd_t = 0;
   size_t cmd_z = 0;
   FILE *cmd_f = 0;
+  char uuid_buf[40];
+  char ext_user_buf[64];
+  char notify_queue_buf[64];
 
   ASSERT(re);
   ASSERT(re->run_id >= 0);
@@ -1957,7 +2183,6 @@ put_entry_func(
   }
 #if CONF_HAS_LIBUUID
   {
-    char uuid_buf[40];
     if (re->run_uuid.v[0] || re->run_uuid.v[1] || re->run_uuid.v[2] || re->run_uuid.v[3]) {
       uuid_unparse((void*) &re->run_uuid, uuid_buf);
       ri.run_uuid = uuid_buf;
@@ -1992,6 +2217,23 @@ put_entry_func(
   ri.is_checked = re->is_checked;
   ri.is_vcs = re->is_vcs;
   ri.verdict_bits = re->verdict_bits;
+  if (re->ext_user_kind > 0 && re->ext_user_kind < MIXED_ID_LAST) {
+    ri.ext_user_kind = re->ext_user_kind;
+    ri.ext_user = mixed_id_marshall(ext_user_buf, re->ext_user_kind, &re->ext_user);
+  } else {
+    ri.ext_user_kind = 0;
+    ri.ext_user = NULL;
+  }
+  if (re->notify_driver > 0
+      && re->notify_kind > 0 && re->notify_kind < MIXED_ID_LAST) {
+    ri.notify_driver = re->notify_driver;
+    ri.notify_kind = re->notify_kind;
+    ri.notify_queue = mixed_id_marshall(notify_queue_buf, re->notify_kind, &re->notify_queue);
+  } else {
+    ri.notify_driver = 0;
+    ri.notify_kind = 0;
+    ri.notify_queue = NULL;
+  }
 
   cmd_f = open_memstream(&cmd_t, &cmd_z);
   fprintf(cmd_f, "INSERT INTO %sruns VALUES ( ", state->md->table_prefix);
@@ -2001,7 +2243,9 @@ put_entry_func(
   if (state->mi->simple_query(state->md, cmd_t, cmd_z) < 0) goto fail;
   xfree(cmd_t); cmd_t = 0;
 
-  memcpy(&rls->runs[re->run_id - rls->run_f], re, sizeof(rls->runs[0]));
+  struct run_entry *dst = &rls->runs[re->run_id - rls->run_f];
+  memcpy(dst, re, sizeof(*dst));
+  dst->last_change_us = curtime.tv_sec * 1000000LL + curtime.tv_usec;
 
   return 0;
 
@@ -2050,7 +2294,8 @@ change_status_3_func(
         int user_status,
         int user_tests_passed,
         int user_score,
-        unsigned int verdict_bits)
+        unsigned int verdict_bits,
+        struct run_entry *ure)
 {
   struct rldb_mysql_cnts *cs = (struct rldb_mysql_cnts *) cdata;
   struct run_entry te;
@@ -2069,15 +2314,18 @@ change_status_3_func(
   te.verdict_bits = verdict_bits;
 
   return do_update_entry(cs, run_id, &te,
-                         RE_STATUS | RE_TEST | RE_SCORE | RE_JUDGE_ID | RE_IS_MARKED
-                         | RE_IS_SAVED | RE_SAVED_STATUS | RE_SAVED_TEST | RE_SAVED_SCORE | RE_PASSED_MODE | RE_VERDICT_BITS);
+                         RE_STATUS | RE_TEST | RE_SCORE | RE_JUDGE_ID
+                         | RE_IS_MARKED | RE_IS_SAVED | RE_SAVED_STATUS
+                         | RE_SAVED_TEST | RE_SAVED_SCORE | RE_PASSED_MODE
+                         | RE_VERDICT_BITS, ure);
 }
 
 static int
 change_status_4_func(
         struct rldb_plugin_cnts *cdata,
         int run_id,
-        int new_status)
+        int new_status,
+        struct run_entry *ure)
 {
   struct rldb_mysql_cnts *cs = (struct rldb_mysql_cnts *) cdata;
   struct run_entry te;
@@ -2097,7 +2345,8 @@ change_status_4_func(
   return do_update_entry(cs, run_id, &te,
                          RE_STATUS /* | RE_TEST */ | RE_SCORE | RE_JUDGE_ID
                          | RE_IS_MARKED | RE_IS_SAVED | RE_SAVED_STATUS
-                         /* | RE_SAVED_TEST */ | RE_SAVED_SCORE | RE_PASSED_MODE);
+                         /* | RE_SAVED_TEST */ | RE_SAVED_SCORE
+                         | RE_PASSED_MODE, ure);
 }
 
 static int
@@ -2319,7 +2568,7 @@ struct run_id_create_time_internal
 
 enum { RUNIDCREATETIME_WIDTH = 2 };
 #define RUNIDCREATETIME_OFFSET(f) XOFFSET(struct run_id_create_time_internal, f)
-static const struct common_mysql_parse_spec run_id_create_time_spec[RUNIDCREATETIME_WIDTH] =
+static __attribute__((unused)) const struct common_mysql_parse_spec run_id_create_time_spec[RUNIDCREATETIME_WIDTH] =
 {
   { 1, 'd', "run_id", RUNIDCREATETIME_OFFSET(run_id), 0 },
   { 1, 'T', "create_time", RUNIDCREATETIME_OFFSET(create_time), 0 },
@@ -2332,7 +2581,8 @@ append_run_func(
         uint64_t mask,
         struct timeval *p_tv,
         int64_t *p_serial_id,
-        ej_uuid_t *p_uuid)
+        ej_uuid_t *p_uuid,
+        struct run_entry *ure)
 {
   struct rldb_mysql_cnts *cs = (struct rldb_mysql_cnts *) cdata;
   struct rldb_mysql_state *state = cs->plugin_state;
@@ -2346,15 +2596,26 @@ append_run_func(
   ej_uuid_t tmp_uuid = {};
   unsigned char uuid_buf[64];
   long long serial_id = -1;
+  int run_id = 0;
+  struct timeval current_time_tv;
+
+  gettimeofday(&current_time_tv, NULL);
+  long long request_start_time = current_time_tv.tv_sec * 1000000LL + current_time_tv.tv_usec;
 
   mask &= ~((uint64_t) RE_RUN_UUID);
 
   if (!p_uuid) p_uuid = &tmp_uuid;
   if (!ej_uuid_is_nonempty(*p_uuid)) ej_uuid_generate(p_uuid);
 
+  serial_id = next_serial_id(state);
+  run_id = next_run_id(cs);
+
+  /*
   if (mi->simple_fquery(md, "START TRANSACTION;") < 0)
     db_error_fail(md);
+  */
 
+  /*
   if (mi->fquery(md, 1, "SELECT IFNULL(MAX(run_id),-1)+1 FROM %sruns WHERE contest_id = %d;", md->table_prefix, cs->contest_id) < 0) {
     mi->simple_fquery(md, "ROLLBACK;");
     db_error_fail(md);
@@ -2368,16 +2629,16 @@ append_run_func(
     mi->simple_fquery(md, "ROLLBACK;");
     db_error_fail(md);
   }
-  int run_id = 0;
   if (!md->row[0] || mi->parse_int(md, md->row[0], &run_id) < 0) {
     err("invalid run_id");
     mi->simple_fquery(md, "ROLLBACK;");
     db_error_fail(md);
   }
   mi->free_res(md);
+  */
 
   cmd_f = open_memstream(&cmd_s, &cmd_z);
-  fprintf(cmd_f, "INSERT INTO %sruns(run_id,contest_id,create_time,create_nsec,run_uuid,last_change_time,last_change_nsec",
+  fprintf(cmd_f, "INSERT INTO %sruns(serial_id,run_id,contest_id,create_time,create_nsec,run_uuid,last_change_time,last_change_nsec",
           md->table_prefix);
   if ((mask & RE_SIZE)) {
     fputs(",size", cmd_f);
@@ -2484,7 +2745,14 @@ append_run_func(
   if ((mask & RE_VERDICT_BITS)) {
     fputs(",verdict_bits", cmd_f);
   }
-  fprintf(cmd_f, ") VALUES (%d, %d, NOW(6), MICROSECOND(NOW(6)) * 1000, '%s', NOW(), MICROSECOND(NOW(6)) * 1000",
+  if ((mask & RE_EXT_USER)) {
+    fputs(",ext_user_kind,ext_user", cmd_f);
+  }
+  if ((mask & RE_NOTIFY)) {
+    fputs(",notify_driver,notify_kind,notify_queue", cmd_f);
+  }
+  fprintf(cmd_f, ") VALUES (%lld, %d, %d, NOW(6), MICROSECOND(NOW(6)) * 1000, '%s', NOW(), MICROSECOND(NOW(6)) * 1000",
+          serial_id,
           run_id,
           cs->contest_id,
           ej_uuid_unparse_r(uuid_buf, sizeof(uuid_buf), p_uuid, ""));
@@ -2608,15 +2876,40 @@ append_run_func(
   if ((mask & RE_VERDICT_BITS)) {
     fprintf(cmd_f, ",%u", in_re->verdict_bits);
   }
+  if ((mask & RE_EXT_USER)) {
+    int ext_user_kind = in_re->ext_user_kind;
+    if (ext_user_kind < 0 || ext_user_kind >= MIXED_ID_LAST) {
+      ext_user_kind = 0;
+    }
+    if (!ext_user_kind) {
+      fprintf(cmd_f, ",0,NULL");
+    } else {
+      fprintf(cmd_f, ",%d,\"%s\"", ext_user_kind,
+              mixed_id_marshall(uuid_buf, ext_user_kind,
+                                &in_re->ext_user));
+    }
+  }
+  if ((mask & RE_NOTIFY)) {
+    if (in_re->notify_driver > 0
+        && in_re->notify_kind > 0 && in_re->notify_kind < MIXED_ID_LAST) {
+      fprintf(cmd_f, ",%d,%d,\"%s\"",
+              in_re->notify_driver, in_re->notify_kind,
+              mixed_id_marshall(uuid_buf, in_re->notify_kind,
+                                &in_re->notify_queue));
+    } else {
+      fprintf(cmd_f, ",0,0,NULL");
+    }
+  }
   fprintf(cmd_f, ") ;");
   fclose(cmd_f); cmd_f = NULL;
   if (mi->simple_query(md, cmd_s, cmd_z) < 0) {
-    mi->simple_fquery(md, "ROLLBACK;");
+    //mi->simple_fquery(md, "ROLLBACK;");
     goto fail;
   }
   free(cmd_s); cmd_s = NULL; cmd_z = 0;
-  mi->simple_fquery(md, "COMMIT;");
+  //mi->simple_fquery(md, "COMMIT;");
 
+  /*
   if (mi->fquery(md, 1, "SELECT LAST_INSERT_ID();") < 0) {
     goto fail;
   }
@@ -2630,7 +2923,9 @@ append_run_func(
     goto fail;
   }
   mi->free_res(md);
+  */
 
+  /*
   cmd_f = open_memstream(&cmd_s, &cmd_z);
   fprintf(cmd_f, "SELECT run_id, create_time FROM %sruns WHERE serial_id = %lld; ", md->table_prefix, serial_id);
   fclose(cmd_f); cmd_f = NULL;
@@ -2645,14 +2940,17 @@ append_run_func(
     goto fail;
   }
   mi->free_res(md);
+  */
 
-  expand_runs(rls, ri.run_id);
-  new_re = &rls->runs[ri.run_id - rls->run_f];
+  expand_runs(rls, run_id);
+  new_re = &rls->runs[run_id - rls->run_f];
   memset(new_re, 0, sizeof(*new_re));
-  new_re->run_id = ri.run_id;
-  new_re->time = ri.create_time.tv_sec;
-  new_re->nsec = ri.create_time.tv_usec * 1000;
+  new_re->run_id = run_id;
+  new_re->time = current_time_tv.tv_sec;
+  new_re->nsec = current_time_tv.tv_usec * 1000;
+  new_re->last_change_us = current_time_tv.tv_sec * 1000000LL + current_time_tv.tv_usec;
   new_re->run_uuid = *p_uuid;
+  new_re->serial_id = serial_id;
   if ((mask & RE_SIZE)) {
     new_re->size = in_re->size;
   }
@@ -2761,10 +3059,29 @@ append_run_func(
   if ((mask & RE_VERDICT_BITS)) {
     new_re->verdict_bits = in_re->verdict_bits;
   }
+  if ((mask & RE_EXT_USER)) {
+    new_re->ext_user_kind = in_re->ext_user_kind;
+    new_re->ext_user = in_re->ext_user;
+  }
+  if ((mask & RE_NOTIFY)) {
+    new_re->notify_driver = in_re->notify_driver;
+    new_re->notify_kind = in_re->notify_kind;
+    new_re->notify_queue = in_re->notify_queue;
+  }
 
-  if (p_tv) *p_tv = ri.create_time;
+  if (p_tv) *p_tv = current_time_tv;
   if (p_serial_id) *p_serial_id = serial_id;
-  return ri.run_id;
+  if (ure) {
+    *ure = *new_re;
+  }
+
+  if (cs->metrics) {
+    long long request_end_time = get_current_time_us();
+    cs->metrics->append_run_us += (request_end_time - request_start_time);
+    ++cs->metrics->append_run_count;
+  }
+
+  return run_id;
 
 fail:
   if (cmd_f) fclose(cmd_f);
@@ -2784,5 +3101,5 @@ run_set_is_checked_func(
   memset(&te, 0, sizeof(te));
   te.is_checked = !!is_checked;
 
-  return do_update_entry(cs, run_id, &te, RE_IS_CHECKED);
+  return do_update_entry(cs, run_id, &te, RE_IS_CHECKED, NULL);
 }

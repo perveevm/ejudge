@@ -59,6 +59,11 @@ static const char create_runs_query[] =
 "        judge_uuid VARCHAR(40) DEFAULT NULL, "
 "        is_vcs TINYINT NOT NULL DEFAULT 0, "
 "        verdict_bits INT NOT NULL DEFAULT 0, "
+"        ext_user_kind TINYINT NOT NULL DEFAULT 0, "
+"        ext_user VARCHAR(40) DEFAULT NULL, "
+"        notify_driver TINYINT NOT NULL DEFAULT 0, "
+"        notify_kind TINYINT NOT NULL DEFAULT 0, "
+"        notify_queue VARCHAR(40) DEFAULT NULL, "
 "        UNIQUE KEY runs_run_contest_id_idx(run_id, contest_id), "
 "        KEY runs_contest_id_idx (contest_id) "
 "        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;";
@@ -109,9 +114,14 @@ struct run_entry_internal
   unsigned char *judge_uuid;    /* 40 */
   int is_vcs;
   int verdict_bits;
+  int ext_user_kind;
+  unsigned char *ext_user;
+  int notify_driver;            /* 45 */
+  int notify_kind;
+  unsigned char *notify_queue;
 };
 
-enum { RUNS_ROW_WIDTH = 43 };
+enum { RUNS_ROW_WIDTH = 48 };
 
 #define RUNS_OFFSET(f) XOFFSET(struct run_entry_internal, f)
 static const struct common_mysql_parse_spec runs_spec[RUNS_ROW_WIDTH] =
@@ -159,6 +169,11 @@ static const struct common_mysql_parse_spec runs_spec[RUNS_ROW_WIDTH] =
   { 1, 's', "judge_uuid", RUNS_OFFSET(judge_uuid), 0 },
   { 0, 'b', "is_vcs", RUNS_OFFSET(is_vcs), 0 },
   { 0, 'd', "verdict_bits", RUNS_OFFSET(verdict_bits), 0 },
+  { 0, 'd', "ext_user_kind", RUNS_OFFSET(ext_user_kind), 0 },
+  { 1, 's', "ext_user", RUNS_OFFSET(ext_user), 0 },
+  { 0, 'd', "notify_driver", RUNS_OFFSET(notify_driver), 0 },
+  { 0, 'd', "notify_kind", RUNS_OFFSET(notify_kind), 0 },
+  { 1, 's', "notify_queue", RUNS_OFFSET(notify_queue), 0 },
 };
 
 enum

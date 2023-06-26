@@ -18,6 +18,7 @@
 
 #include "ejudge/ej_types.h"
 #include "ejudge/serve_state.h"
+#include "ejudge/mixed_id.h"
 
 #include <time.h>
 #include <string.h>
@@ -101,6 +102,7 @@ struct section_global_data;
 struct teamdb_state;
 struct runlog_state;
 typedef struct runlog_state *runlog_state_t;
+struct metrics_contest_data;
 
 runlog_state_t run_init(struct teamdb_state *);
 runlog_state_t run_destroy(runlog_state_t);
@@ -112,6 +114,7 @@ run_open(
         const struct contest_desc *cnts,
         const struct section_global_data *global,
         const unsigned char *plugin_name,
+        struct metrics_contest_data *metrics,
         int flags,
         time_t init_duration,
         time_t init_sched_time,
@@ -135,7 +138,13 @@ run_add_record(
         int            mime_type,
         const unsigned char *prob_uuid,
         int            store_flags,
-        int            is_vcs);
+        int            is_vcs,
+        int            ext_user_kind,
+        ej_mixed_id_t *ext_user,
+        int            notify_driver,
+        int            notify_kind,
+        ej_mixed_id_t *notify_queue,
+        struct run_entry *ure);
 int run_start_contest(runlog_state_t, time_t);
 time_t run_get_start_time(runlog_state_t);
 int
@@ -148,7 +157,8 @@ run_change_status(
         int newscore,
         int judge_id,
         const ej_uuid_t *judge_uuid,
-        unsigned int verdict_bits);
+        unsigned int verdict_bits,
+        struct run_entry *ure);
 int
 run_change_status_3(
         runlog_state_t state,
@@ -162,12 +172,14 @@ run_change_status_3(
         int user_status,
         int user_tests_passed,
         int user_score,
-        unsigned int verdict_bits);
+        unsigned int verdict_bits,
+        struct run_entry *ure);
 int
 run_change_status_4(
         runlog_state_t state,
         int runid,
-        int newstatus);
+        int newstatus,
+        struct run_entry *re);
 int run_get_status(runlog_state_t state, int runid);
 int run_is_imported(runlog_state_t state, int runid);
 void run_get_times(runlog_state_t, int user_id, time_t *, time_t *, time_t *, time_t *,
@@ -275,7 +287,9 @@ enum
     RE_JUDGE_UUID    = 0x100000000ULL,
     RE_IS_VCS        = 0x200000000ULL,
     RE_VERDICT_BITS  = 0x400000000ULL,
-    RE_ALL           = 0x7FFFFFFFFULL,
+    RE_EXT_USER      = 0x800000000ULL,
+    RE_NOTIFY        = 0x1000000000ULL,
+    RE_ALL           = 0x1FFFFFFFFFULL,
   };
 
 struct run_entry
@@ -333,9 +347,15 @@ struct run_entry
   rint16_t       mime_type;     /* 2 */
   int64_t        serial_id;     /* 8 */
   unsigned char  pages;         /* 1 */
-  char _pad0[3];
+  unsigned char  ext_user_kind; /* 1 */
+  unsigned char  notify_driver; /* 1 */
+  unsigned char  notify_kind;   /* 1 */
   ruint32_t      verdict_bits;  /* 4 */
-  char _pad[80];
+  rint64_t       last_change_us;/* 8 */
+  char _pad1[8];
+  ej_mixed_id_t  ext_user;      /* 16 */
+  ej_mixed_id_t  notify_queue;  /* 16 */
+  char _pad[32];
   /* total is 256 bytes */
 };
 
@@ -353,8 +373,12 @@ struct run_data
 void run_get_header(runlog_state_t, struct run_header *out);
 void run_get_all_entries(runlog_state_t, struct run_entry *out);
 int run_get_entry(runlog_state_t, int run_id, struct run_entry *out);
-int run_set_entry(runlog_state_t, int run_id, uint64_t mask,
-                  struct run_entry const *in);
+int run_set_entry(
+        runlog_state_t,
+        int run_id,
+        uint64_t mask,
+        struct run_entry const *in,
+        struct run_entry *ure);
 int run_is_readonly(runlog_state_t, int run_id);
 const struct run_entry *run_get_entries_ptr(runlog_state_t);
 
@@ -372,7 +396,10 @@ int run_has_transient_user_runs(runlog_state_t state, int user_id);
 int run_clear_user_entries(runlog_state_t, int user_id);
 
 int run_forced_clear_entry(runlog_state_t, int run_id);
-int run_set_hidden(runlog_state_t state, int run_id);
+int run_set_hidden(
+        runlog_state_t state,
+        int run_id,
+        struct run_entry *ure);
 
 int run_put_entry(runlog_state_t state, const struct run_entry *re);
 int run_put_header(runlog_state_t state, const struct run_header *rh);
@@ -413,7 +440,11 @@ int run_set_runlog(
 int runlog_check(FILE *, const struct run_header *, size_t begin, size_t, const struct run_entry *);
 
 int run_get_pages(runlog_state_t, int run_id);
-int run_set_pages(runlog_state_t, int run_id, int pages);
+int run_set_pages(
+        runlog_state_t,
+        int run_id,
+        int pages,
+        struct run_entry *ure);
 int run_get_total_pages(runlog_state_t, int run_id);
 
 int run_find(
@@ -529,6 +560,9 @@ run_get_user_run_header_id_range(
         runlog_state_t state,
         int *p_low_user_id,
         int *p_high_user_id);
+
+long long
+run_get_last_update_time_us(runlog_state_t state);
 
 struct user_run_header_info;
 

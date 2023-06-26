@@ -464,8 +464,13 @@ prepare_unparse_global(
     fprintf(f, "sleep_time = %d\n", global->sleep_time);
   if (global->serve_sleep_time != DFLT_G_SERVE_SLEEP_TIME)
     fprintf(f, "serve_sleep_time = %d\n", global->serve_sleep_time);
-  if (global->autoupdate_standings != DFLT_G_AUTOUPDATE_STANDINGS)
-    unparse_bool(f, "autoupdate_standings", global->autoupdate_standings);
+  if (ejudge_config && ejudge_config->disable_autoupdate_standings > 0) {
+    if (global->autoupdate_standings > 0)
+      unparse_bool(f, "autoupdate_standings", global->autoupdate_standings);
+  } else {
+    if (global->autoupdate_standings != DFLT_G_AUTOUPDATE_STANDINGS)
+      unparse_bool(f, "autoupdate_standings", global->autoupdate_standings);
+  }
   if (global->use_ac_not_ok != DFLT_G_USE_AC_NOT_OK)
     unparse_bool(f, "use_ac_not_ok", global->use_ac_not_ok);
   if (global->inactivity_timeout
@@ -643,6 +648,9 @@ prepare_unparse_unhandled_global(FILE *f, const struct section_global_data *glob
 
   //GLOBAL_PARAM(super_run_dir, "S"),
   do_str(f, &ab, "super_run_dir", global->super_run_dir);
+
+  //GLOBAL_PARAM(compile_server_id, "S"),
+  do_str(f, &ab, "compile_server_id", global->compile_server_id);
 
   //GLOBAL_PARAM(tests_to_accept, "d"),
   if (global->tests_to_accept >= 0
@@ -1474,6 +1482,7 @@ prepare_unparse_prob(
   do_xstr(f, &ab, "lang_max_vm_size", prob->lang_max_vm_size);
   do_xstr(f, &ab, "lang_max_stack_size", prob->lang_max_stack_size);
   do_xstr(f, &ab, "lang_max_rss_size", prob->lang_max_rss_size);
+  do_xstr(f, &ab, "checker_extra_files", prob->checker_extra_files);
   do_xstr(f, &ab, "test_sets", prob->test_sets);
   do_xstr(f, &ab, "disable_language", prob->disable_language);
   do_xstr(f, &ab, "enable_language", prob->enable_language);
@@ -1606,6 +1615,10 @@ prepare_unparse_prob(
       || (!prob->abstract && prob->enable_control_socket >= 0)) {
     unparse_bool(f, "enable_control_socket", prob->enable_control_socket);
   }
+  if ((prob->abstract > 0 && prob->copy_exe_to_tgzdir > 0)
+      || (!prob->abstract && prob->copy_exe_to_tgzdir >= 0)) {
+    unparse_bool(f, "copy_exe_to_tgzdir", prob->copy_exe_to_tgzdir);
+  }
   if ((prob->abstract > 0 && prob->hide_variant > 0)
       || (!prob->abstract && prob->hide_variant >= 0)) {
     unparse_bool(f, "hide_variant", prob->hide_variant);
@@ -1651,6 +1664,8 @@ prepare_unparse_prob(
     fprintf(f, "custom_compile_cmd = \"%s\"\n", CARMOR(prob->custom_compile_cmd));
   if (prob->custom_lang_name)
     fprintf(f, "custom_lang_name = \"%s\"\n", CARMOR(prob->custom_lang_name));
+  if (prob->extra_src_dir)
+    fprintf(f, "extra_src_dir = \"%s\"\n", CARMOR(prob->extra_src_dir));
   if (prob->normalization)
     fprintf(f, "normalization = \"%s\"\n", CARMOR(prob->normalization));
   if (prob->super_run_dir && prob->super_run_dir[0]) {
@@ -1934,6 +1949,7 @@ prepare_unparse_actual_prob(
   do_xstr(f, &ab, "lang_max_vm_size", prob->lang_max_vm_size);
   do_xstr(f, &ab, "lang_max_stack_size", prob->lang_max_stack_size);
   do_xstr(f, &ab, "lang_max_rss_size", prob->lang_max_rss_size);
+  do_xstr(f, &ab, "checker_extra_files", prob->checker_extra_files);
   do_xstr(f, &ab, "test_sets", prob->test_sets);
   do_xstr(f, &ab, "disable_language", prob->disable_language);
   do_xstr(f, &ab, "enable_language", prob->enable_language);
@@ -2052,6 +2068,8 @@ prepare_unparse_actual_prob(
     unparse_bool(f, "stop_on_first_fail", prob->stop_on_first_fail);
   if (prob->enable_control_socket > 0)
     unparse_bool(f, "enable_control_socket", prob->enable_control_socket);
+  if (prob->copy_exe_to_tgzdir > 0)
+    unparse_bool(f, "copy_exe_to_tgzdir", prob->copy_exe_to_tgzdir);
   if (prob->hide_variant > 0)
     unparse_bool(f, "hide_variant", prob->hide_variant);
   if (prob->enable_text_form > 0)
@@ -2089,6 +2107,8 @@ prepare_unparse_actual_prob(
     fprintf(f, "custom_compile_cmd = \"%s\"\n", CARMOR(prob->custom_compile_cmd));
   if (prob->custom_lang_name)
     fprintf(f, "custom_lang_name = \"%s\"\n", CARMOR(prob->custom_lang_name));
+  if (prob->extra_src_dir)
+    fprintf(f, "extra_src_dir = \"%s\"\n", CARMOR(prob->extra_src_dir));
   if (prob->normalization)
     fprintf(f, "normalization = \"%s\"\n", CARMOR(prob->normalization));
   if (prob->extid && prob->extid[0])

@@ -6,7 +6,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: 3.0\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2023-02-26 00:10+0300\n"
+"POT-Creation-Date: 2023-06-10 07:29+0300\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: Ukrainian <uk@li.org>\n"
@@ -729,6 +729,12 @@ msgid "Clear finished flag"
 msgstr ""
 
 msgid "Clear runs"
+msgstr ""
+
+msgid "Clear session"
+msgstr ""
+
+msgid "Clear session cache"
 msgstr ""
 
 msgid "Clear the BANNED flag for the selected users"
@@ -1895,6 +1901,9 @@ msgstr ""
 msgid "Invalid error code"
 msgstr ""
 
+msgid "Invalid external user"
+msgstr ""
+
 msgid "Invalid file name"
 msgstr ""
 
@@ -1920,6 +1929,9 @@ msgstr ""
 
 #, c-format
 msgid "Invalid name `%s' in row %d\n"
+msgstr ""
+
+msgid "Invalid notification"
 msgstr ""
 
 msgid "Invalid pages count"
@@ -3430,7 +3442,13 @@ msgstr ""
 msgid "Serial No"
 msgstr ""
 
+msgid "Server Info"
+msgstr ""
+
 msgid "Server error"
+msgstr ""
+
+msgid "Server information"
 msgstr ""
 
 msgid "Server is down"
@@ -4065,8 +4083,8 @@ msgid "Try again this operation later"
 msgstr ""
 
 msgid ""
-"Type the login and the password in to the form above and press the \"Log in"
-"\" button to activate the account."
+"Type the login and the password in to the form above and press the \"Log "
+"in\" button to activate the account."
 msgstr ""
 
 #, c-format
@@ -4117,6 +4135,9 @@ msgid "Unmark displayed runs"
 msgstr ""
 
 msgid "Up all"
+msgstr ""
+
+msgid "Update"
 msgstr ""
 
 msgid "Update public standings"
@@ -4315,6 +4336,9 @@ msgid "Variants (variant.map)"
 msgstr ""
 
 msgid "View"
+msgstr ""
+
+msgid "View Editing Sessions"
 msgstr ""
 
 msgid "View all"

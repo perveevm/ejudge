@@ -1,6 +1,6 @@
 /* -*- c -*- */
 
-/* Copyright (C) 2012-2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2012-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -61,6 +61,7 @@ static const struct source_suffixes_s source_suffixes[] =
   { ".pl", LANG_PL },
   { ".sh", LANG_SH },
   { ".kum", LANG_KUM },
+  { ".go", LANG_GO },
   { 0, 0 },
 };
 
@@ -401,16 +402,28 @@ build_generate_checker_compilation_rule(
       fprintf(out_f, "\t${DCC} -DEJUDGE ${DCCTESTLIBFLAGS} %s%s\n", cmd, source_suffix);
     } else if (languages == LANG_JAVA) {
       fprintf(out_f, "%s: %s%s\n", cmd, cmd, source_suffix);
-      fprintf(out_f, "\t${JAVAC} -cp testlib4j.jar %s%s\n", cmd, source_suffix);
-      fprintf(out_f, "\t${JAR} cf %s.jar *.class\n", cmd);
-      fprintf(out_f, "\trm -f *.class\n");
-      fprintf(out_f, "\techo '#! /bin/sh' > %s\n", cmd);
-      fprintf(out_f, "\techo 'd=\"`dirname $$0`\"' >> %s\n", cmd);
-      fprintf(out_f, "\techo 'exec ${JAVA} -DEJUDGE=1 -cp \"$$d/testlib4j.jar:$$d/%s.jar\" ru.ifmo.testlib.CheckerFramework %s \"$$@\"' >> %s\n", cmd, cmd, cmd);
-      fprintf(out_f, "\tchmod +x %s\n", cmd);
+      if (prob && prob->enable_testlib_mode > 0) {
+        fprintf(out_f, "\t${JAVAC} -cp testlib4j.jar %s%s\n", cmd, source_suffix);
+        fprintf(out_f, "\t${JAR} cf %s.jar *.class\n", cmd);
+        fprintf(out_f, "\trm -f *.class\n");
+        fprintf(out_f, "\techo '#! /bin/sh' > %s\n", cmd);
+        fprintf(out_f, "\techo 'd=\"`dirname $$0`\"' >> %s\n", cmd);
+        fprintf(out_f, "\techo 'exec ${JAVA} -DEJUDGE=1 -cp \"$$d/testlib4j.jar:$$d/%s.jar\" ru.ifmo.testlib.CheckerFramework %s \"$$@\"' >> %s\n", cmd, cmd, cmd);
+        fprintf(out_f, "\tchmod +x %s\n", cmd);
+      } else {
+        fprintf(out_f, "\t${JAVACHELPER} %s%s %s.jar\n", cmd, source_suffix, cmd);
+        fprintf(out_f, "\trm -f *.class\n");
+        fprintf(out_f, "\techo '#! /bin/sh' > %s\n", cmd);
+        fprintf(out_f, "\techo 'd=\"`dirname $$0`\"' >> %s\n", cmd);
+        fprintf(out_f, "\techo 'exec ${JAVA} -jar %s.jar \"$$@\"' >> %s\n", cmd, cmd);
+        fprintf(out_f, "\tchmod +x %s\n", cmd);
+      }
     } else if (languages == LANG_PY) {
       fprintf(out_f, "%s: %s%s\n", cmd, cmd, source_suffix);
       fprintf(out_f, "\t${PYCHELPER} %s%s %s\n", cmd, source_suffix, cmd);
+    } else if (languages == LANG_GO) {
+      fprintf(out_f, "%s: %s%s\n", cmd, cmd, source_suffix);
+      fprintf(out_f, "\t${GOCHELPER} %s%s %s\n", cmd, source_suffix, cmd);
     } else {
       fprintf(out_f, "# no information how to build %s '%s'\n", what, cmd);
     }
@@ -496,6 +509,9 @@ build_generate_solution_compilation_rule(
   } else if (language == LANG_PY) {
     fprintf(mk_f, "%s : %s\n", full_exe_name, full_src_name);
     fprintf(mk_f, "\t%s${PYCHELPER} %s %s\n", cd_cmd, last_src_name, last_exe_name);
+  } else if (language == LANG_GO) {
+    fprintf(mk_f, "%s : %s\n", full_exe_name, full_src_name);
+    fprintf(mk_f, "\t%s${GOCHELPER} %s %s\n", cd_cmd, last_src_name, last_exe_name);
   } else if (language == LANG_KUM) {
     fprintf(mk_f, "%s : %s\n", full_exe_name, full_src_name);
     fprintf(mk_f, "\t%s${KUMCHELPER} %s %s\n", cd_cmd, last_src_name, last_exe_name);
@@ -1127,6 +1143,19 @@ do_generate_makefile(
     } else {
       fprintf(mk_f, "PYCHELPER = %s\n", compiler_path);
       enabled_languages |= LANG_PY;
+    }
+    xfree(compiler_path); compiler_path = NULL;
+    fprintf(mk_f, "\n");
+  }
+
+  if ((languages & LANG_GO)) {
+    compiler_path = build_get_compiler_script(log_f, ejudge_config, NULL, "gccgo");
+    if (!compiler_path) compiler_path = build_get_compiler_script(log_f, ejudge_config, NULL, "gccgo");
+    if (!compiler_path) {
+      fprintf(mk_f, "GOCHELPER ?= /bin/false\n");
+    } else {
+      fprintf(mk_f, "GOCHELPER = %s\n", compiler_path);
+      enabled_languages |= LANG_GO;
     }
     xfree(compiler_path); compiler_path = NULL;
     fprintf(mk_f, "\n");

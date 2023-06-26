@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2010-2019 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2010-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -554,7 +554,7 @@ process_contest(int contest_id)
   state->config_path = xstrdup(config_path);
   state->current_time = time(0);
   state->load_time = state->current_time;
-  if (prepare(NULL, state, state->config_path, 0, PREPARE_SERVE, "", 1, 0, 0) < 0)
+  if (prepare(NULL, NULL, state, state->config_path, 0, PREPARE_SERVE, "", 1, 0, 0) < 0)
     goto failure;
   global = state->global;
   if (!global) {
@@ -678,7 +678,8 @@ process_contest(int contest_id)
   snprintf(cmd_buf, sizeof(cmd_buf), "diff -u %s %s",
            config_path, out_config_path);
   //fprintf(stderr, ">>%s\n", cmd_buf);
-  system(cmd_buf);
+  __attribute__((unused)) int _;
+  _ = system(cmd_buf);
 
   process_db(contest_id, state->max_lang + 1, lang_map);
 

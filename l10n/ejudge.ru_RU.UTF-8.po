@@ -6,7 +6,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: ejudge 3\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2023-02-26 00:10+0300\n"
+"POT-Creation-Date: 2023-06-10 07:29+0300\n"
 "PO-Revision-Date: 2022-01-12 13:17+0300\n"
 "Last-Translator: Alexander Chernov <cher@ejudge.ru>\n"
 "Language-Team: Russian <ru@li.org>\n"
@@ -158,10 +158,10 @@ msgstr ""
 "<p class=\"ejudge_copyright\">Авторские права на программу: &copy; %s "
 "Александр Чернов.</p>\n"
 "<p class=\"ejudge_copyright\">Данная программа является свободным ПО. Вы "
-"можете распространять и/или модифицировать её в соответствии с <a href="
-"\"http://www.gnu.org/licenses/gpl.html\">Общей Лицензией GNU</a> (GNU "
-"General Public License), опубликованной <a href=\"http://www.fsf.org"
-"\">Фондом свободного ПО</a> (Free Software Foundation), либо версии 2 "
+"можете распространять и/или модифицировать её в соответствии с <a "
+"href=\"http://www.gnu.org/licenses/gpl.html\">Общей Лицензией GNU</a> (GNU "
+"General Public License), опубликованной <a href=\"http://www.fsf."
+"org\">Фондом свободного ПО</a> (Free Software Foundation), либо версии 2 "
 "Лицензии, либо (по Вашему желанию) любой последующей версии.</p>\n"
 
 msgid ""
@@ -783,6 +783,12 @@ msgstr "Сбросить флаг проверенности решений"
 
 msgid "Clear runs"
 msgstr "Очистить посылки"
+
+msgid "Clear session"
+msgstr "Сбросить сессию"
+
+msgid "Clear session cache"
+msgstr "Очистить кеш сессий"
 
 msgid "Clear the BANNED flag for the selected users"
 msgstr "Сбросить флаг БЛОКИРОВКИ у отмеченных пользователей"
@@ -1902,8 +1908,8 @@ msgid ""
 "In order to complete the registration procedure, hit the \"Confirm "
 "registration\" link."
 msgstr ""
-"Для завершения процедуры регистрации нажмите ссылку \"Подтвердить регистрацию"
-"\"."
+"Для завершения процедуры регистрации нажмите ссылку \"Подтвердить "
+"регистрацию\"."
 
 msgid "In reply to"
 msgstr "В ответ на"
@@ -2022,6 +2028,9 @@ msgstr "Неверная спецификация продолжительнос
 msgid "Invalid error code"
 msgstr "Неверный код ошибки"
 
+msgid "Invalid external user"
+msgstr "Недопустимый внешний пользователь"
+
 msgid "Invalid file name"
 msgstr "Неверное имя файла"
 
@@ -2048,6 +2057,9 @@ msgstr "Недопустимое регистрационное имя `%s' в �
 #, c-format
 msgid "Invalid name `%s' in row %d\n"
 msgstr "Недопустимое имя `%s' в строке %d\n"
+
+msgid "Invalid notification"
+msgstr "Неверная спецификация нотификации"
 
 msgid "Invalid pages count"
 msgstr "Неверное количество страниц"
@@ -3587,8 +3599,14 @@ msgstr "Сен"
 msgid "Serial No"
 msgstr "NN"
 
+msgid "Server Info"
+msgstr "Информация о сервере"
+
 msgid "Server error"
 msgstr "Ошибка сервера"
+
+msgid "Server information"
+msgstr "Информация о сервере"
 
 msgid "Server is down"
 msgstr "Сервер не работает"
@@ -4256,8 +4274,8 @@ msgid "Try again this operation later"
 msgstr "Повторите операцию позже"
 
 msgid ""
-"Type the login and the password in to the form above and press the \"Log in"
-"\" button to activate the account."
+"Type the login and the password in to the form above and press the \"Log "
+"in\" button to activate the account."
 msgstr ""
 "Введите Ваш логин и пароль в форму сверху и нажмите кнопку \"Войти\" для "
 "активации учётной записи."
@@ -4311,6 +4329,9 @@ msgstr "Разотметить отображённые посылки"
 
 msgid "Up all"
 msgstr "Все вверх"
+
+msgid "Update"
+msgstr "Обновить"
 
 msgid "Update public standings"
 msgstr "Обновить публичную таблицу положения участников"
@@ -4515,6 +4536,9 @@ msgstr "Варианты (variant.map)"
 
 msgid "View"
 msgstr "Просмотр"
+
+msgid "View Editing Sessions"
+msgstr "Просмотр сессий редактирования"
 
 msgid "View all"
 msgstr "Посмотреть всё"

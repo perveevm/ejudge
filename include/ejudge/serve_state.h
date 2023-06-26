@@ -24,6 +24,7 @@
 #include "ejudge/contest_plugin.h"
 
 #include <time.h>
+#include <sys/time.h>
 
 struct generic_section_config;
 struct section_global_data;
@@ -73,7 +74,7 @@ struct user_filter_info
   struct filter_tree_mem *tree_mem;
   unsigned char *error_msgs;
 
-  int run_fields;
+  long long run_fields;
 
   /* standings filter */
   unsigned char *stand_user_expr;
@@ -100,6 +101,15 @@ struct compile_dir_item
   unsigned char *status_dir;
   unsigned char *report_dir;
 };
+
+struct compile_queue_item
+{
+  unsigned char *id;
+  unsigned char *queue_dir;
+  unsigned char *src_dir;
+  unsigned char *heartbeat_dir;
+};
+
 struct run_dir_item
 {
   unsigned char *id;
@@ -248,7 +258,6 @@ struct serve_state
   int *group_member_map;
 
   time_t load_time;
-  time_t current_time;
   int clients_suspended;
   int testing_suspended;
   int printing_suspended;
@@ -256,6 +265,13 @@ struct serve_state
   int testing_finished;
   int standings_updated;
   int has_olympiad_mode;
+
+  // legacy timestamp
+  time_t current_time;
+  // microsecond precision timestamp
+  long long current_time_us;
+  // raw structure
+  struct timeval current_time_tv;
 
   // upsolving mode
   int upsolving_mode;
@@ -310,11 +326,21 @@ struct serve_state
   time_t last_update_internal_xml_log;
   time_t last_update_status_file;
 
+  // runlog last update timestamp on the moment of public log update
+  long long last_update_public_log_us;
+  // runlog last update timestamp on the moment of external XML update
+  long long last_update_external_xml_log_us;
+  // runlog last update timestamp on the moment of internal XML update
+  long long last_update_internal_xml_log_us;
+
   time_t last_periodic_check;
   time_t last_daily_reminder;
 
   struct compile_dir_item *compile_dirs;
   int compile_dirs_u, compile_dirs_a;
+
+  struct compile_queue_item *compile_queues;
+  int compile_queues_u, compile_queues_a;
 
   struct run_dir_item *run_dirs;
   int run_dirs_u, run_dirs_a;
@@ -511,7 +537,8 @@ serve_compile_request(
         int rejudge_flag,
         int vcs_mode,
         int not_ok_is_cf,
-        const struct userlist_user *user)
+        const struct userlist_user *user,
+        struct run_entry *ure)
 #if defined __GNUC__
   __attribute__((warn_unused_result))
 #endif
@@ -550,7 +577,8 @@ serve_run_request(
         int store_flags,
         int not_ok_is_cf,
         const unsigned char *inp_text,
-        size_t inp_size);
+        size_t inp_size,
+        struct run_entry *ure);
 
 int serve_is_valid_status(serve_state_t state, int status, int mode);
 
@@ -649,6 +677,7 @@ serve_rejudge_by_mask(
 
 void
 serve_mark_by_mask(
+        const struct ejudge_cfg *config,
         serve_state_t state,
         int user_id,
         const ej_ip_t *ip,
@@ -713,7 +742,10 @@ serve_read_compile_packet(
         const struct contest_desc *cnts,
         const unsigned char *compile_status_dir,
         const unsigned char *compile_report_dir,
-        const unsigned char *pname);
+        const unsigned char *pname,
+        struct compile_reply_packet *comp_pkt /* ownership transferred */);
+
+struct run_reply_packet;
 int
 serve_read_run_packet(
         struct contest_extra *extra,
@@ -723,7 +755,8 @@ serve_read_run_packet(
         const unsigned char *run_status_dir,
         const unsigned char *run_report_dir,
         const unsigned char *run_full_archive_dir,
-        const unsigned char *pname);
+        const unsigned char *pname,
+        struct run_reply_packet *reply_pkt /* ownership transferred */);
 
 struct run_entry;
 struct problem_desc;
@@ -777,10 +810,16 @@ void serve_judge_virtual_olympiad(
 void serve_clear_by_mask(serve_state_t state,
                          int user_id, const ej_ip_t *ip, int ssl_flag,
                          int mask_size, unsigned long *mask);
-void serve_ignore_by_mask(serve_state_t state,
-                          int user_id, const ej_ip_t *ip, int ssl_flag,
-                          int mask_size, unsigned long *mask,
-                          int new_status);
+void
+serve_ignore_by_mask(
+        const struct ejudge_cfg *config,
+        serve_state_t state,
+        int user_id,
+        const ej_ip_t *ip,
+        int ssl_flag,
+        int mask_size,
+        unsigned long *mask,
+        int new_status);
 void
 serve_send_email_to_user(
         const struct ejudge_cfg *config,
@@ -935,11 +974,32 @@ serve_invoker_down(
         const serve_state_t state,
         const unsigned char *queue,
         const unsigned char *file);
+void
+serve_invoker_reboot(
+        const serve_state_t state,
+        const unsigned char *queue,
+        const unsigned char *file);
+
+void
+serve_compiler_op(
+        const serve_state_t state,
+        const unsigned char *queue,
+        const unsigned char *file,
+        const unsigned char *op);
 
 void
 serve_check_telegram_reminder(
         const struct ejudge_cfg *config,
         serve_state_t state,
         const struct contest_desc *cnts);
+
+int
+serve_get_compile_reply_contest_id(const unsigned char *path);
+
+void
+serve_notify_run_update(
+        const struct ejudge_cfg *config,
+        serve_state_t cs,
+        const struct run_entry *re);
 
 #endif /* __SERVE_STATE_H__ */

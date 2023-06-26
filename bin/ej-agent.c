@@ -23,6 +23,7 @@
 #include "ejudge/fileutl.h"
 #include "ejudge/base64.h"
 #include "ejudge/ej_lzma.h"
+#include "ejudge/random.h"
 
 #include <stdlib.h>
 #include "ejudge/cJSON.h"
@@ -46,6 +47,7 @@
 #include <ctype.h>
 #include <sys/mman.h>
 #include <zlib.h>
+#include <dirent.h>
 
 static const unsigned char *program_name;
 static const unsigned char *log_file;
@@ -167,6 +169,7 @@ struct AppState
     int wait_finished;
     int wait_random_mode;
     int reopen_log_flag;
+    int wait_enable_file;
 
     int ifd;                    /* inotify file descriptor */
     int sfd;                    /* signal file descriptor */
@@ -178,13 +181,16 @@ struct AppState
     int mode;
     unsigned char *inst_id;
 
+    unsigned char *unique_prefix;
     unsigned char *spool_dir;
     unsigned char *queue_dir;
     unsigned char *queue_packet_dir;
+    unsigned char *queue_out_dir;
     unsigned char *data_dir;
     unsigned char *heartbeat_dir;
     unsigned char *heartbeat_packet_dir;
     unsigned char *heartbeat_in_dir;
+    int heartbeat_created;
 
     int verbose_mode;
 };
@@ -478,8 +484,9 @@ static void
 timer_read_func(struct AppState *as, struct FDInfo *fdi)
 {
     uint64_t value;
-    read(fdi->fd, &value, sizeof(value));
-    as->timer_flag = 1;
+    if (read(fdi->fd, &value, sizeof(value)) == (ssize_t) sizeof(value)) {
+        as->timer_flag = 1;
+    }
 }
 
 static const struct FDInfoOps timer_ops =
@@ -828,40 +835,68 @@ fail:
 static void
 app_state_configure_directories(struct AppState *as)
 {
+    // attribute ((unused)) also disables "set but not used" warning
+    int __attribute__((unused)) r;
+
     if (!as->mode || !as->queue_id) return;
+
+    char *s = NULL;
+    unsigned long long r64 = random_u64();
+    r = asprintf(&s, "%llx_", r64);
+    as->unique_prefix = s; s = NULL;
 
     if (as->mode == PREPARE_COMPILE) {
 #if defined EJUDGE_COMPILE_SPOOL_DIR
-        char *s = NULL;
-        asprintf(&s, "%s/%s", EJUDGE_COMPILE_SPOOL_DIR, as->queue_id);
+        r = asprintf(&s, "%s/%s", EJUDGE_COMPILE_SPOOL_DIR, as->queue_id);
         as->spool_dir = s; s = NULL;
-        asprintf(&s, "%s/queue", as->spool_dir);
+        r = asprintf(&s, "%s/queue", as->spool_dir);
         as->queue_dir = s; s = NULL;
-        asprintf(&s, "%s/dir", as->queue_dir);
+        r = asprintf(&s, "%s/dir", as->queue_dir);
         as->queue_packet_dir = s; s = NULL;
-        asprintf(&s, "%s/%s/src", EJUDGE_COMPILE_SPOOL_DIR, as->queue_id);
+        r = asprintf(&s, "%s/out", as->queue_dir);
+        as->queue_out_dir = s; s = NULL;
+        r = asprintf(&s, "%s/%s/src", EJUDGE_COMPILE_SPOOL_DIR, as->queue_id);
         as->data_dir = s; s = NULL;
+        r = asprintf(&s, "%s/%s/heartbeat", EJUDGE_COMPILE_SPOOL_DIR, as->queue_id);
+        as->heartbeat_dir = s; s = NULL;
+        r = asprintf(&s, "%s/dir", as->heartbeat_dir);
+        as->heartbeat_packet_dir = s; s = NULL;
+        r = asprintf(&s, "%s/in", as->heartbeat_dir);
+        as->heartbeat_in_dir = s; s = NULL;
 #endif
     } else if (as->mode == PREPARE_RUN) {
 #if defined EJUDGE_RUN_SPOOL_DIR
-        char *s = NULL;
-        asprintf(&s, "%s/%s", EJUDGE_RUN_SPOOL_DIR, as->queue_id);
+        r = asprintf(&s, "%s/%s", EJUDGE_RUN_SPOOL_DIR, as->queue_id);
         as->spool_dir = s; s = NULL;
-        asprintf(&s, "%s/queue", as->spool_dir);
+        r = asprintf(&s, "%s/queue", as->spool_dir);
         as->queue_dir = s; s = NULL;
-        asprintf(&s, "%s/dir", as->queue_dir);
+        r = asprintf(&s, "%s/dir", as->queue_dir);
         as->queue_packet_dir = s; s = NULL;
-        asprintf(&s, "%s/%s/exe", EJUDGE_RUN_SPOOL_DIR, as->queue_id);
+        r = asprintf(&s, "%s/out", as->queue_dir);
+        as->queue_out_dir = s; s = NULL;
+        r = asprintf(&s, "%s/%s/exe", EJUDGE_RUN_SPOOL_DIR, as->queue_id);
         as->data_dir = s; s = NULL;
-        asprintf(&s, "%s/%s/heartbeat", EJUDGE_RUN_SPOOL_DIR, as->queue_id);
+        r = asprintf(&s, "%s/%s/heartbeat", EJUDGE_RUN_SPOOL_DIR, as->queue_id);
         as->heartbeat_dir = s; s = NULL;
-        asprintf(&s, "%s/dir", as->heartbeat_dir);
+        r = asprintf(&s, "%s/dir", as->heartbeat_dir);
         as->heartbeat_packet_dir = s; s = NULL;
-        asprintf(&s, "%s/in", as->heartbeat_dir);
+        r = asprintf(&s, "%s/in", as->heartbeat_dir);
         as->heartbeat_in_dir = s; s = NULL;
 #endif
     }
 }
+
+static int
+safe_read_packet(
+        struct AppState *as,
+        const unsigned char *pkt_name,
+        char **p_data,
+        size_t *p_size);
+static void
+add_file_to_object(
+        cJSON *j,
+        const char *data,
+        size_t size);
 
 static void
 check_spool_state(struct AppState *as)
@@ -869,6 +904,14 @@ check_spool_state(struct AppState *as)
     unsigned char pkt_name[PATH_MAX];
     int r = scan_dir(as->queue_dir, pkt_name, sizeof(pkt_name), as->wait_random_mode);
     if (r <= 0) return;
+
+    char *data = NULL;
+    size_t size = 0;
+
+    if (as->wait_enable_file) {
+        r = safe_read_packet(as, pkt_name, &data, &size);
+        if (r <= 0) return;
+    }
 
     cJSON *reply = cJSON_CreateObject();
     struct timeval tv;
@@ -879,7 +922,15 @@ check_spool_state(struct AppState *as)
     cJSON_AddNumberToObject(reply, "ss", (double) ++as->serial);
     cJSON_AddNumberToObject(reply, "s", (double) as->wait_serial);
     cJSON_AddNumberToObject(reply, "t", (double) as->wait_time_ms);
-    cJSON_AddStringToObject(reply, "q", "poll-result");
+    cJSON_AddTrueToObject(reply, "wake-up");
+    if (data != NULL) {
+        cJSON_AddStringToObject(reply, "q", "file-result");
+        cJSON_AddTrueToObject(reply, "found");
+        add_file_to_object(reply, data, size);
+        free(data); data = NULL;
+    } else {
+        cJSON_AddStringToObject(reply, "q", "poll-result");
+    }
     cJSON_AddStringToObject(reply, "pkt-name", pkt_name);
     cJSON_AddTrueToObject(reply, "ok");
     char *jstr = cJSON_PrintUnformatted(reply);
@@ -895,10 +946,13 @@ check_spool_state(struct AppState *as)
     jstr = NULL;
     app_state_arm_for_write(as, as->stdout_fdi);
 
+    info("%s: wake-up on directory: %d, %d, %s", as->inst_id, as->serial, as->wait_serial, pkt_name);
+
     cJSON_Delete(reply);
     as->wait_serial = 0;
     as->wait_time_ms = 0;
     as->wait_random_mode = 0;
+    as->wait_enable_file = 0;
     if (as->spool_wd >= 0) {
         inotify_rm_watch(as->ifd, as->spool_wd);
         as->spool_wd = -1;
@@ -1012,32 +1066,6 @@ set_query_func(
     return 1;
 }
 
-static int
-poll_func(
-        struct AppState *as,
-        const struct QueryCallback *cb,
-        cJSON *query,
-        cJSON *reply)
-{
-    unsigned char pkt_name[PATH_MAX];
-    int random_mode = 0;
-    cJSON *jrm = cJSON_GetObjectItem(query, "random_mode");
-    if (jrm && jrm->type == cJSON_True) {
-        random_mode = 1;
-    }
-    int r = scan_dir(as->queue_dir, pkt_name, sizeof(pkt_name), random_mode);
-    if (r < 0) {
-        cJSON_AddStringToObject(reply, "message", "scan_dir failed");
-        err("%s: scan_dir failed: %s", as->inst_id, strerror(-r));
-        return 0;
-    }
-    if (r > 0) {
-        cJSON_AddStringToObject(reply, "pkt-name", pkt_name);
-    }
-    cJSON_AddStringToObject(reply, "q", "poll-result");
-    return 1;
-}
-
 static void
 add_file_to_object(cJSON *j, const char *data, size_t size)
 {
@@ -1114,6 +1142,147 @@ add_file_to_object(cJSON *j, const char *data, size_t size)
             cJSON_AddStringToObject(j, "data", b64_buf);
             free(b64_buf);
             free(lzma_buf);
+        }
+    }
+}
+
+static int
+safe_read_packet(
+        struct AppState *as,
+        const unsigned char *pkt_name,
+        char **p_data,
+        size_t *p_size)
+{
+    unsigned char dir_path[PATH_MAX];
+    unsigned char out_path[PATH_MAX];
+    __attribute__((unused)) int r;
+    int fd = -1;
+    char *data = NULL;
+
+    r = snprintf(dir_path, sizeof(dir_path), "%s/%s", as->queue_packet_dir, pkt_name);
+    r = snprintf(out_path, sizeof(out_path), "%s/%s%s", as->queue_out_dir, as->unique_prefix, pkt_name);
+
+    r = rename(dir_path, out_path);
+    if (r < 0 && errno == ENOENT) {
+        return 0;
+    }
+    if (r < 0) {
+        err("%s: rename failed: %s", as->inst_id, os_ErrorMsg());
+        out_path[0] = 0;
+        goto fail;
+    }
+    struct stat stb;
+    if (lstat(out_path, &stb) < 0) {
+        err("%s: %d: lstat failed: %s", as->inst_id, __LINE__, os_ErrorMsg());
+        goto fail;
+    }
+    if (!S_ISREG(stb.st_mode)) {
+        err("%s: %d: not regular file", as->inst_id, __LINE__);
+        goto fail;
+    }
+    if (stb.st_nlink != 1) {
+        // two processes renamed the file simultaneously
+        rename(out_path, dir_path);
+        unlink(out_path);
+        info("%s: rename created two hardlinks, rollback", as->inst_id);
+        return 0;
+    }
+    if (stb.st_size <= 0) {
+        char *data = malloc(1);
+        data[0] = 0;
+        *p_data = data;
+        *p_size = 0;
+        unlink(out_path);
+        return 1;
+    }
+
+    data = malloc(stb.st_size + 1);
+    data[stb.st_size] = 0;
+    fd = open(out_path, O_RDONLY, 0);
+    if (fd < 0) {
+        err("%s: %d: cannot open '%s': %s", as->inst_id, __LINE__, out_path, os_ErrorMsg());
+        goto fail;
+    }
+    char *ptr = data;
+    size_t remain = stb.st_size;
+    while (remain > 0) {
+        ssize_t rr = read(fd, ptr, remain);
+        if (rr < 0) {
+            err("%s: read error on '%s': %s", as->inst_id, out_path, os_ErrorMsg());
+            goto fail;
+        }
+        if (!rr) {
+            err("%s: unexpected EOF on '%s'", as->inst_id, out_path);
+            goto fail;
+        }
+        remain -= rr;
+    }
+
+    close(fd);
+    unlink(out_path);
+    *p_data = data;
+    *p_size = stb.st_size;
+
+    info("%s: read file '%s', %lld", as->inst_id, pkt_name, (long long) stb.st_size);
+
+    return 1;
+
+fail:;
+    if (out_path[0]) unlink(out_path);
+    if (fd >= 0) close(fd);
+    free(data);
+    return -1;
+}
+
+static int
+poll_func(
+        struct AppState *as,
+        const struct QueryCallback *cb,
+        cJSON *query,
+        cJSON *reply)
+{
+    unsigned char pkt_name[PATH_MAX];
+    int random_mode = 0;
+    int enable_file = 0;
+    cJSON *jrm = cJSON_GetObjectItem(query, "random_mode");
+    if (jrm && jrm->type == cJSON_True) {
+        random_mode = 1;
+    }
+    cJSON *jef = cJSON_GetObjectItem(query, "enable_file");
+    if (jef && jef->type == cJSON_True) {
+        enable_file = 1;
+    }
+    while (1) {
+        int r = scan_dir(as->queue_dir, pkt_name, sizeof(pkt_name), random_mode);
+        if (r < 0) {
+            cJSON_AddStringToObject(reply, "message", "scan_dir failed");
+            err("%s: scan_dir failed: %s", as->inst_id, strerror(-r));
+            return 0;
+        }
+        if (!r) {
+            cJSON_AddStringToObject(reply, "q", "poll-result");
+            return 1;
+        }
+        if (!enable_file) {
+            cJSON_AddStringToObject(reply, "pkt-name", pkt_name);
+            cJSON_AddStringToObject(reply, "q", "poll-result");
+            return 1;
+        }
+
+        char *data = NULL;
+        size_t size = 0;
+        r = safe_read_packet(as, pkt_name, &data, &size);
+        if (r < 0) {
+            cJSON_AddStringToObject(reply, "message", "read_packet failed");
+            return 0;
+        }
+        if (r > 0) {
+            cJSON_AddStringToObject(reply, "pkt-name", pkt_name);
+            cJSON_AddStringToObject(reply, "q", "file-result");
+            cJSON_AddTrueToObject(reply, "found");
+            add_file_to_object(reply, data, size);
+            free(data);
+            return 1;
         }
     }
 }
@@ -1341,29 +1510,13 @@ create_contest_dirs(
     unsigned char server_dir[PATH_MAX];
     snprintf(server_dir, sizeof(server_dir), "%s/%s", root_dir, server);
     unsigned char server_contest_dir[PATH_MAX];
-    snprintf(server_contest_dir, sizeof(server_contest_dir), "%s/%06d", server_dir, contest_id);
+    strcpy(server_contest_dir, server_dir);
     unsigned char status_dir[PATH_MAX];
     snprintf(status_dir, sizeof(status_dir), "%s/status", server_contest_dir);
     unsigned char report_dir[PATH_MAX];
     snprintf(report_dir, sizeof(report_dir), "%s/report", server_contest_dir);
     unsigned char output_dir[PATH_MAX];
     snprintf(output_dir, sizeof(output_dir), "%s/output", server_contest_dir);
-
-    if (make_dir(server_dir, 0777) < 0) {
-        return NULL;
-    }
-    if (make_dir(server_contest_dir, 0777) < 0) {
-        return NULL;
-    }
-    if (make_all_dir(status_dir, 0777) < 0) {
-        return NULL;
-    }
-    if (make_dir(report_dir, 0777) < 0) {
-        return NULL;
-    }
-    if (make_dir(output_dir, 0777) < 0) {
-        return NULL;
-    }
 
     if (as->cntsu == as->cntsa) {
         if (!(as->cntsa *= 2)) as->cntsa = 4;
@@ -1378,6 +1531,7 @@ create_contest_dirs(
     ci->server_contest_dir = xstrdup(server_contest_dir);
     ci->status_dir = xstrdup(status_dir);
     ci->report_dir = xstrdup(report_dir);
+    ci->output_dir = xstrdup(output_dir);
 
     return ci;
 }
@@ -1508,6 +1662,26 @@ done:
 }
 
 static int
+simple_count_files(
+        struct AppState *as,
+        const unsigned char *path)
+{
+    int count = 0;
+    DIR *d = opendir(path);
+    if (!d) return 0;
+
+    struct dirent *dd;
+    while ((dd = readdir(d))) {
+        if (strcmp(dd->d_name, ".") != 0 && strcmp(dd->d_name, "..") != 0) {
+            ++count;
+        }
+    }
+
+    closedir(d);
+    return count;
+}
+
+static int
 wait_func(
         struct AppState *as,
         const struct QueryCallback *cb,
@@ -1526,21 +1700,46 @@ wait_func(
     if (jr && jr->type == cJSON_True) {
         random_mode = 1;
     }
-
-    unsigned char pkt_name[PATH_MAX];
-    int r = scan_dir(as->queue_dir, pkt_name, sizeof(pkt_name), random_mode);
-    if (r < 0) {
-        cJSON_AddStringToObject(reply, "message", "scan_dir failed");
-        err("%s: scan_dir failed: %s", as->inst_id, strerror(-r));
-        return 0;
+    int enable_file = 0;
+    cJSON *jef = cJSON_GetObjectItem(query, "enable_file");
+    if (jef && jef->type == cJSON_True) {
+        enable_file = 1;
     }
-    if (r > 0) {
-        cJSON_AddStringToObject(reply, "pkt-name", pkt_name);
-        cJSON_AddStringToObject(reply, "q", "poll-result");
-        return 1;
+
+    while (1) {
+        unsigned char pkt_name[PATH_MAX];
+        int r = scan_dir(as->queue_dir, pkt_name, sizeof(pkt_name), random_mode);
+        if (r < 0) {
+            cJSON_AddStringToObject(reply, "message", "scan_dir failed");
+            err("%s: scan_dir failed: %s", as->inst_id, strerror(-r));
+            return 0;
+        }
+        if (!r) break;
+
+        if (!enable_file) {
+            cJSON_AddStringToObject(reply, "pkt-name", pkt_name);
+            cJSON_AddStringToObject(reply, "q", "poll-result");
+        }
+
+        char *data = NULL;
+        size_t size = 0;
+        r = safe_read_packet(as, pkt_name, &data, &size);
+        if (r < 0) {
+            cJSON_AddStringToObject(reply, "message", "read_packet failed");
+            return 0;
+        }
+        if (r > 0) {
+            cJSON_AddStringToObject(reply, "q", "file-result");
+            cJSON_AddStringToObject(reply, "pkt-name", pkt_name);
+            cJSON_AddTrueToObject(reply, "found");
+            add_file_to_object(reply, data, size);
+            free(data);
+            return 1;
+        }
     }
 
     as->wait_random_mode = random_mode;
+    as->wait_enable_file = enable_file;
     as->wait_serial = channel;
     as->wait_time_ms = as->current_time_ms;
     as->spool_wd = inotify_add_watch(as->ifd, as->queue_packet_dir, IN_CREATE | IN_MOVED_TO);
@@ -1549,6 +1748,20 @@ wait_func(
         err("%s: wait_func: inotify_add_watch failed: %s",
             as->inst_id, os_ErrorMsg());
         exit(1);
+    }
+
+    if (simple_count_files(as, as->queue_packet_dir) > 0) {
+        // undo inotify watching and restart this function
+        as->wait_serial = 0;
+        as->wait_time_ms = 0;
+        as->wait_random_mode = 0;
+        as->wait_enable_file = 0;
+        if (as->spool_wd >= 0) {
+            inotify_rm_watch(as->ifd, as->spool_wd);
+            as->spool_wd = -1;
+        }
+
+        return wait_func(as, cb, query, reply);
     }
 
     cJSON_AddNumberToObject(reply, "channel", as->wait_serial);
@@ -1628,6 +1841,14 @@ put_heartbeat_func(
     unsigned char *mem = MAP_FAILED;
     unsigned char dir_path[PATH_MAX];
 
+    if (!as->heartbeat_created) {
+        if (make_all_dir(as->heartbeat_dir, 0700) < 0) {
+            err("%s: put_heartbeat: cannot create '%s'", as->inst_id, as->heartbeat_dir);
+            goto done;
+        }
+        as->heartbeat_created = 1;
+    }
+
     in_path[0] = 0;
     cJSON *jn = cJSON_GetObjectItem(query, "name");
     if (!jn || jn->type != cJSON_String) {
@@ -1661,7 +1882,9 @@ put_heartbeat_func(
             cJSON_AddStringToObject(reply, "message", "filesystem error");
             goto done;
         }
+        close(fd); fd = -1;
         memmove(mem, data, size);
+        munmap(mem, size); mem = MAP_FAILED;
     }
 
     snprintf(dir_path, sizeof(dir_path), "%s/%s", as->heartbeat_packet_dir, file_name);
@@ -1679,6 +1902,11 @@ put_heartbeat_func(
     snprintf(dir_path, sizeof(dir_path), "%s/%s@D", as->heartbeat_packet_dir, file_name);
     if (access(dir_path, F_OK) >= 0) {
         cJSON_AddTrueToObject(reply, "down_flag");
+        unlink(dir_path);
+    }
+    snprintf(dir_path, sizeof(dir_path), "%s/%s@R", as->heartbeat_packet_dir, file_name);
+    if (access(dir_path, F_OK) >= 0) {
+        cJSON_AddTrueToObject(reply, "reboot_flag");
         unlink(dir_path);
     }
 
@@ -1909,6 +2137,51 @@ done:;
     return result;
 }
 
+static int
+cancel_func(
+        struct AppState *as,
+        const struct QueryCallback *cb,
+        cJSON *query,
+        cJSON *reply)
+{
+    cJSON *jc = cJSON_GetObjectItem(query, "channel");
+    if (!jc || jc->type != cJSON_Number || jc->valuedouble <= 0) {
+        err("%s: invalid json: no channel", as->inst_id);
+        cJSON_AddStringToObject(reply, "message", "invalid json");
+        return 0;
+    }
+    int channel = (int) jc->valuedouble;
+
+    if (as->wait_serial <= 0) {
+        err("%s: cancel: requested %d but no wait channel registered",
+            as->inst_id, channel);
+        cJSON_AddStringToObject(reply, "message", "not in wait state");
+        cJSON_AddTrueToObject(reply, "invalid-channel");
+    } else if (as->wait_serial != channel) {
+        err("%s: cancel: requested %d but registered %d",
+            as->inst_id, channel, as->wait_serial);
+        cJSON_AddStringToObject(reply, "message", "bad wait state");
+        cJSON_AddTrueToObject(reply, "invalid-channel");
+    }
+
+    cJSON_ReplaceItemInObject(reply, "s", cJSON_CreateNumber(channel));
+    if (as->wait_time_ms > 0) {
+        cJSON_ReplaceItemInObject(reply, "t", cJSON_CreateNumber(as->wait_time_ms));
+    }
+    cJSON_AddStringToObject(reply, "q", "poll-result");
+
+
+    as->wait_serial = 0;
+    as->wait_time_ms = 0;
+    as->wait_random_mode = 0;
+    as->wait_enable_file = 0;
+    if (as->spool_wd >= 0) {
+        inotify_rm_watch(as->ifd, as->spool_wd);
+        as->spool_wd = -1;
+    }
+    return 1;
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1972,6 +2245,8 @@ main(int argc, char *argv[])
         die("invalid arguments");
     }
 
+    random_init();
+
     struct AppState app;
     app_state_init(&app);
     app.verbose_mode = verbose_mode;
@@ -2016,6 +2291,7 @@ main(int argc, char *argv[])
     app_state_add_query_callback(&app, "delete-heartbeat", NULL, delete_heartbeat_func);
     app_state_add_query_callback(&app, "put-archive", NULL, put_archive_func);
     app_state_add_query_callback(&app, "mirror", NULL, mirror_func);
+    app_state_add_query_callback(&app, "cancel", NULL, cancel_func);
 
     if (log_file && *log_file) {
         int fd = open(log_file, O_WRONLY | O_CREAT | O_APPEND | O_NOCTTY, 0600);

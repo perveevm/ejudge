@@ -27,6 +27,7 @@
 #include "ejudge/prepare.h"
 #include "ejudge/ej_uuid.h"
 #include "ejudge/win32_compat.h"
+#include "ejudge/mixed_id.h"
 
 #include "ejudge/xalloc.h"
 #include "ejudge/logger.h"
@@ -102,6 +103,20 @@ find_free_uuid_hash_index(
     int run_id,
     const ej_uuid_t *puuid);
 
+static void
+touch_last_update_time_us(runlog_state_t state)
+{
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  state->last_update_time_us = tv.tv_sec * 1000000LL + tv.tv_usec;
+}
+
+long long
+run_get_last_update_time_us(runlog_state_t state)
+{
+  return state->last_update_time_us;
+}
+
 runlog_state_t
 run_init(teamdb_state_t ts)
 {
@@ -150,6 +165,8 @@ run_set_runlog(
   if (runlog_check(0, &state->head, id_offset, total_entries, entries) < 0)
     return -1;
 
+  touch_last_update_time_us(state);
+
   if (state->iface->set_runlog(state->cnts, id_offset, total_entries, entries) < 0)
     return -1;
 
@@ -166,6 +183,7 @@ run_open(
         const struct contest_desc *cnts,
         const struct section_global_data *global,
         const unsigned char *plugin_name,
+        struct metrics_contest_data *metrics,
         int flags,
         time_t init_duration,
         time_t init_sched_time,
@@ -184,6 +202,8 @@ run_open(
     err("cannot register default plugin");
     return -1;
   }
+
+  touch_last_update_time_us(state);
 
   if (!plugin_name) {
     // use the default plugin
@@ -204,7 +224,9 @@ run_open(
     state->data = (struct rldb_plugin_data*) loaded_plugin->data;
 
     if (!(state->cnts = state->iface->open(state->data, state, config, cnts,
-                                           global, flags,
+                                           global,
+                                           metrics,
+					   flags,
                                            init_duration,
                                            init_sched_time,
                                            init_finish_time)))
@@ -225,7 +247,9 @@ run_open(
     state->data = (struct rldb_plugin_data*) loaded_plugin->data;
 
     if (!(state->cnts = state->iface->open(state->data, state, config, cnts,
-                                           global, flags,
+                                           global,
+                                           metrics,
+                                           flags,
                                            init_duration,
                                            init_sched_time,
                                            init_finish_time)))
@@ -267,7 +291,9 @@ run_open(
   state->data = (struct rldb_plugin_data*) loaded_plugin->data;
 
   if (!(state->cnts = state->iface->open(state->data, state, config, cnts,
-                                         global, flags,
+                                         global,
+                                         metrics,
+                                         flags,
                                          init_duration,
                                          init_sched_time,
                                          init_finish_time)))
@@ -313,7 +339,13 @@ run_add_record(
         int            mime_type,
         const unsigned char *prob_uuid,
         int            store_flags,
-        int            is_vcs)
+        int            is_vcs,
+        int            ext_user_kind,
+        ej_mixed_id_t *ext_user,
+        int            notify_driver,
+        int            notify_kind,
+        ej_mixed_id_t *notify_queue,
+        struct run_entry *ure)
 {
   int i;
   struct run_entry re;
@@ -399,11 +431,25 @@ run_add_record(
     flags |= RE_SHA1;
   }
   re.is_vcs = is_vcs;
+  if (ext_user_kind > 0 && ext_user_kind < MIXED_ID_LAST) {
+    re.ext_user_kind = ext_user_kind;
+    re.ext_user = *ext_user;
+    flags |= RE_EXT_USER;
+  }
+  if (notify_driver > 0
+      && notify_kind > 0 && notify_kind < MIXED_ID_LAST) {
+    re.notify_driver = notify_driver;
+    re.notify_kind = notify_kind;
+    re.notify_queue = *notify_queue;
+    flags |= RE_NOTIFY;
+  }
   flags |= RE_SIZE | RE_LOCALE_ID | RE_USER_ID | RE_LANG_ID | RE_PROB_ID | RE_STATUS | RE_TEST | RE_SCORE | RE_IP | RE_SSL_FLAG | RE_VARIANT | RE_IS_HIDDEN | RE_MIME_TYPE | RE_EOLN_TYPE | RE_STORE_FLAGS | RE_IS_VCS;
+
+  touch_last_update_time_us(state);
 
   int64_t serial_id = 0;
   if (state->iface->append_run) {
-    i = state->iface->append_run(state->cnts, &re, flags, p_tv, &serial_id, puuid);
+    i = state->iface->append_run(state->cnts, &re, flags, p_tv, &serial_id, puuid, ure);
     if (i < 0) {
       return -1;
     }
@@ -411,6 +457,7 @@ run_add_record(
     run_to_ignore = i;
     re.run_id = i;
     re.run_uuid = *puuid;
+    re.serial_id = serial_id;
   } else {
     gettimeofday(p_tv, NULL);
     if (!ej_uuid_is_nonempty(*puuid)) {
@@ -452,7 +499,7 @@ run_add_record(
   state->user_count = -1;
 
   if (!state->iface->append_run) {
-    if (state->iface->add_entry(state->cnts, i, &re, flags) < 0) return -1;
+    if (state->iface->add_entry(state->cnts, i, &re, flags, ure) < 0) return -1;
   }
 
   // updating user_id index
@@ -498,6 +545,8 @@ run_add_record(
 int
 run_undo_add_record(runlog_state_t state, int run_id)
 {
+  touch_last_update_time_us(state);
+
   if (run_id < state->run_f || run_id >= state->run_u) {
     err("run_undo_add_record: invalid run_id");
     return -1;
@@ -533,7 +582,8 @@ run_change_status(
         int newscore,
         int judge_id,
         const ej_uuid_t *judge_uuid,
-        unsigned int verdict_bits)
+        unsigned int verdict_bits,
+        struct run_entry *ure)
 {
   if (runid < state->run_f || runid >= state->run_u) ERR_R("bad runid: %d", runid);
 
@@ -558,9 +608,11 @@ run_change_status(
   if (state->runs[off_run_id].is_readonly)
     ERR_R("this entry is read-only");
 
+  touch_last_update_time_us(state);
+
   return state->iface->change_status(state->cnts, runid, newstatus, newtest,
                                      newpassedmode, newscore, judge_id,
-                                     judge_uuid, verdict_bits);
+                                     judge_uuid, verdict_bits, ure);
 }
 
 int
@@ -576,7 +628,8 @@ run_change_status_3(
         int user_status,
         int user_tests_passed,
         int user_score,
-        unsigned int verdict_bits)
+        unsigned int verdict_bits,
+        struct run_entry *ure)
 {
   if (runid < state->run_f || runid >= state->run_u) ERR_R("bad runid: %d", runid);
 
@@ -599,6 +652,8 @@ run_change_status_3(
   if (state->runs[off_run_id].is_readonly)
     ERR_R("this entry is read-only");
 
+  touch_last_update_time_us(state);
+
   return state->iface->change_status_3(state->cnts, /* cntx */
                                        runid,       /* run_id */
                                        newstatus,   /* new_status */
@@ -610,14 +665,16 @@ run_change_status_3(
                                        user_status,    /* user_status */
                                        user_tests_passed, /* user_tests_passed */
                                        user_score,       /* user_score */
-                                       verdict_bits);
+                                       verdict_bits,
+                                       ure);
 }
 
 int
 run_change_status_4(
         runlog_state_t state,
         int runid,
-        int newstatus)
+        int newstatus,
+        struct run_entry *re)
 {
   if (runid < state->run_f || runid >= state->run_u) ERR_R("bad runid: %d", runid);
   if (newstatus < 0 || newstatus > 255) ERR_R("bad newstatus: %d", newstatus);
@@ -636,7 +693,9 @@ run_change_status_4(
   if (state->runs[off_run_id].is_readonly)
     ERR_R("this entry is read-only");
 
-  return state->iface->change_status_4(state->cnts, runid, newstatus);
+  touch_last_update_time_us(state);
+
+  return state->iface->change_status_4(state->cnts, runid, newstatus, re);
 }
 
 int
@@ -657,30 +716,41 @@ int
 run_start_contest(runlog_state_t state, time_t start_time)
 {
   if (state->head.start_time) ERR_R("Contest already started");
+
+  touch_last_update_time_us(state);
+
   return state->iface->start(state->cnts, start_time);
 }
 
 int
 run_stop_contest(runlog_state_t state, time_t stop_time)
 {
+  touch_last_update_time_us(state);
+
   return state->iface->stop(state->cnts, stop_time);
 }
 
 int
 run_set_duration(runlog_state_t state, time_t dur)
 {
+  touch_last_update_time_us(state);
+
   return state->iface->set_duration(state->cnts, dur);
 }
 
 int
 run_sched_contest(runlog_state_t state, time_t sched)
 {
+  touch_last_update_time_us(state);
+
   return state->iface->schedule(state->cnts, sched);
 }
 
 int
 run_set_finish_time(runlog_state_t state, time_t finish_time)
 {
+  touch_last_update_time_us(state);
+
   return state->iface->set_finish_time(state->cnts, finish_time);
 }
 
@@ -1107,6 +1177,8 @@ run_reset(
 
   run_drop_uuid_hash(state);
 
+  touch_last_update_time_us(state);
+
   return state->iface->reset(state->cnts, init_duration, init_sched_time,
                              init_finish_time);
 }
@@ -1300,13 +1372,16 @@ run_set_entry(
         runlog_state_t state,
         int run_id,
         uint64_t mask,
-        const struct run_entry *in)
+        const struct run_entry *in,
+        struct run_entry *ure)
 {
   const struct run_entry *out;
   struct run_entry te;
   int f = 0;
   time_t stop_time;
   int old_user_id = 0;
+
+  touch_last_update_time_us(state);
 
   ASSERT(in);
   if (run_id < state->run_f || run_id >= state->run_u) ERR_R("bad runid: %d", run_id);
@@ -1572,7 +1647,7 @@ run_set_entry(
 
   if (!f) return 0;
 
-  if (state->iface->set_entry(state->cnts, run_id, &te, mask) < 0) return -1;
+  if (state->iface->set_entry(state->cnts, run_id, &te, mask, ure) < 0) return -1;
   int new_user_id = state->runs[run_id - state->run_f].user_id;
   if (new_user_id != old_user_id) {
     struct user_run_header_info *urh = NULL;
@@ -1688,6 +1763,9 @@ run_virtual_start(
     err("run_virtual_start: virtual contest for %d already started", user_id);
     return -1;
   }
+
+  touch_last_update_time_us(state);
+
   if (state->iface->user_run_header_set_start_time) {
     return state->iface->user_run_header_set_start_time(state->cnts, user_id, t, 1, user_id);
   }
@@ -1712,7 +1790,7 @@ run_virtual_start(
   }
   state->user_count = -1;
 
-  if ((i = state->iface->add_entry(state->cnts, i, &re, RE_USER_ID | RE_IP | RE_SSL_FLAG | RE_STATUS)) < 0) return -1;
+  if ((i = state->iface->add_entry(state->cnts, i, &re, RE_USER_ID | RE_IP | RE_SSL_FLAG | RE_STATUS, NULL)) < 0) return -1;
 
   urh = run_get_user_run_header(state, user_id, NULL);
   if (urh) {
@@ -1753,6 +1831,9 @@ run_virtual_stop(
     err("run_virtual_stop: virtual contest for %d already stopped", user_id);
     return -1;
   }
+
+  touch_last_update_time_us(state);
+
   if (state->iface->user_run_header_set_stop_time) {
     int duration = urh->duration;
     if (duration <= 0) {
@@ -1788,7 +1869,7 @@ run_virtual_stop(
   }
   state->user_count = -1;
 
-  if ((i = state->iface->add_entry(state->cnts, i, &re, RE_USER_ID | RE_IP | RE_SSL_FLAG | RE_STATUS)) < 0) return -1;
+  if ((i = state->iface->add_entry(state->cnts, i, &re, RE_USER_ID | RE_IP | RE_SSL_FLAG | RE_STATUS, NULL)) < 0) return -1;
 
   // updating user_id index
   extend_run_extras(state);
@@ -1826,6 +1907,8 @@ run_clear_entry(runlog_state_t state, int run_id)
 {
   int i;
   struct user_run_header_info *urh = NULL;
+
+  touch_last_update_time_us(state);
 
   if (run_id < state->run_f || run_id >= state->run_u) ERR_R("bad runid: %d", run_id);
   if (state->runs[run_id - state->run_f].is_readonly) ERR_R("run %d is readonly", run_id);
@@ -1879,6 +1962,8 @@ run_clear_user_entries(
   int run_id;
   if (user_id <= 0) return 0;
 
+  touch_last_update_time_us(state);
+
   for (run_id = state->run_u - 1; run_id >= state->run_f; --run_id) {
     if (state->runs[run_id - state->run_f].user_id == user_id) {
       state->iface->clear_entry(state->cnts, run_id);
@@ -1894,6 +1979,8 @@ run_forced_clear_entry(runlog_state_t state, int run_id)
 {
   if (run_id < state->run_f || run_id >= state->run_u) ERR_R("bad runid: %d", run_id);
 
+  touch_last_update_time_us(state);
+
   struct user_run_header_info *urh = run_try_user_run_header(state, state->runs[run_id - state->run_f].user_id);
   if (urh) {
     urh->run_id_valid = 0;
@@ -1907,10 +1994,14 @@ run_forced_clear_entry(runlog_state_t state, int run_id)
 }
 
 int
-run_set_hidden(runlog_state_t state, int run_id)
+run_set_hidden(
+        runlog_state_t state,
+        int run_id,
+        struct run_entry *ure)
 {
   if (run_id < 0 || run_id >= state->run_u) ERR_R("bad runid: %d", run_id);
-  return state->iface->set_hidden(state->cnts, run_id, 1);
+  touch_last_update_time_us(state);
+  return state->iface->set_hidden(state->cnts, run_id, 1, ure);
 }
 
 int
@@ -1941,6 +2032,7 @@ run_has_transient_user_runs(runlog_state_t state, int user_id)
 int
 run_squeeze_log(runlog_state_t state)
 {
+  touch_last_update_time_us(state);
   return state->iface->squeeze(state->cnts);
 }
 
@@ -2459,11 +2551,16 @@ run_get_pages(runlog_state_t state, int run_id)
 }
 
 int
-run_set_pages(runlog_state_t state, int run_id, int pages)
+run_set_pages(
+        runlog_state_t state,
+        int run_id,
+        int pages,
+        struct run_entry *ure)
 {
   if (run_id < 0 || run_id >= state->run_u) ERR_R("bad runid: %d", run_id);
   if (pages < 0 || pages > 255) ERR_R("bad pages: %d", pages);
-  return state->iface->set_pages(state->cnts, run_id, pages);
+  touch_last_update_time_us(state);
+  return state->iface->set_pages(state->cnts, run_id, pages, ure);
 }
 
 int
@@ -2627,6 +2724,7 @@ run_put_entry(
         runlog_state_t state,
         const struct run_entry *re)
 {
+  touch_last_update_time_us(state);
   return state->iface->put_entry(state->cnts, re);
 }
 
@@ -2635,6 +2733,7 @@ run_put_header(
         runlog_state_t state,
         const struct run_header *rh)
 {
+  touch_last_update_time_us(state);
   return state->iface->put_header(state->cnts, rh);
 }
 
@@ -3038,6 +3137,8 @@ run_set_user_stop_time(
     return -1;
   }
 
+  touch_last_update_time_us(state);
+
   return state->iface->user_run_header_set_stop_time(state->cnts, user_id, stop_time, last_change_user_id);
 }
 
@@ -3048,6 +3149,8 @@ run_set_virtual_is_checked(
         int is_checked,
         int last_change_user_id)
 {
+  touch_last_update_time_us(state);
+
   if (state->iface->user_run_header_set_is_checked) {
     return state->iface->user_run_header_set_is_checked(state->cnts, user_id, is_checked, last_change_user_id);
   } else {
@@ -3075,6 +3178,8 @@ run_set_user_duration(
     err("run_set_user_duration: not implemented");
     return -1;
   }
+
+  touch_last_update_time_us(state);
 
   return state->iface->user_run_header_set_duration(state->cnts, user_id, duration, last_change_user_id);
 }
@@ -3120,6 +3225,8 @@ run_set_run_is_checked(runlog_state_t state, int run_id, int is_checked)
   if (!state->iface->run_set_is_checked) {
     ERR_R("run_set_is_checked is not implemented");
   } else {
+    touch_last_update_time_us(state);
+
     return state->iface->run_set_is_checked(state->cnts, run_id, is_checked);
   }
 }

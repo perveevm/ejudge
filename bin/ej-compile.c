@@ -51,6 +51,12 @@
 #include "ejudge/osdeps.h"
 #include "ejudge/exec.h"
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmisleading-indentation"
+#include "flatbuf-gen/compile_heartbeat_builder.h"
+#include "flatcc/flatcc_builder.h"
+#pragma GCC diagnostic pop
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -63,8 +69,15 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <dirent.h>
+#include <sys/inotify.h>
+#include <sys/epoll.h>
+#include <sys/mman.h>
 
 enum { MAX_LOG_SIZE = 1024 * 1024, MAX_EXE_SIZE = 128 * 1024 * 1024 };
+
+enum { DEFAULT_WAIT_TIMEOUT_MS = 300000 }; // 5m
+enum { HEARTBEAT_UPDATE_MS = 30000 }; // 30s
 
 struct serve_state serve_state;
 static int initialize_mode = 0;
@@ -76,12 +89,25 @@ static int slave_mode;
 static unsigned char *compile_server_id;
 static __attribute__((unused)) unsigned char compile_server_spool_dir[PATH_MAX];
 static unsigned char compile_server_queue_dir[PATH_MAX];
+static unsigned char compile_server_queue_dir_dir[PATH_MAX];
 static unsigned char compile_server_src_dir[PATH_MAX];
+static unsigned char heartbeat_dir[PATH_MAX];
 static unsigned char *agent_name;
 static struct AgentClient *agent;
 static unsigned char *instance_id;
 static int verbose_mode;
 static unsigned char *ip_address;
+static long long last_heartbeat_update_ms;
+static long long last_handled_request_ms;
+static long long accumulated_ms;
+static long long request_count;
+static int heartbeat_mode = 1;
+static unsigned char heartbeat_file_name[PATH_MAX];
+static long long start_time_ms;
+static unsigned char pending_stop_flag; // bool
+static unsigned char pending_down_flag; // bool
+static unsigned char pending_reboot_flag; // bool
+static unsigned char *heartbeat_instance_id;
 
 struct testinfo_subst_handler_compile
 {
@@ -201,6 +227,112 @@ cleanup:
   return retval;
 }
 
+// non-recursive
+static int
+copy_all_files(
+        FILE *log_f,
+        const unsigned char *src_dir,
+        const unsigned char *dst_dir)
+{
+  unsigned char spath[PATH_MAX];
+  unsigned char dpath[PATH_MAX];
+  int retval = -1;
+  int rfd = -1;
+  int wfd = -1;
+  unsigned char buf[65536];
+  DIR *d = opendir(src_dir);
+  if (!d) {
+    err("copy_all_files: cannot open '%s': %s", src_dir, os_ErrorMsg());
+    goto cleanup;
+  }
+  struct dirent *dd;
+  while ((dd = readdir(d))) {
+    if (!strcmp(dd->d_name, ".") || !strcmp(dd->d_name, "..")) {
+      continue;
+    }
+
+    if (snprintf(spath, sizeof(spath), "%s/%s", src_dir, dd->d_name) >= (int) sizeof(spath)) {
+      err("copy_all_files: source path '%s/%s' too long", src_dir, dd->d_name);
+      goto cleanup;
+    }
+    if (snprintf(dpath, sizeof(dpath), "%s/%s", dst_dir, dd->d_name) >= (int) sizeof(dpath)) {
+      err("copy_all_files: destination path '%s/%s' too long", dst_dir, dd->d_name);
+      goto cleanup;
+    }
+
+    // symlink is ok, its content is copied
+    struct stat stb;
+    if (stat(spath, &stb) < 0) {
+      continue;
+    }
+    if (!S_ISREG(stb.st_mode)) {
+      err("copy_all_files: file '%s' is not regular", spath);
+      fprintf(log_f, "\nfile '%s' is not regular\n", spath);
+      goto cleanup;
+    }
+    int mode = (stb.st_mode & 0777) | 0600;
+    rfd = open(spath, O_RDONLY | O_NOCTTY | O_NONBLOCK);
+    if (rfd < 0) {
+      err("copy_all_files: failed to open '%s': %s", spath, os_ErrorMsg());
+      goto cleanup;
+    }
+    if (fstat(rfd, &stb) < 0) {
+      err("copy_all_files: fstat failed");
+      goto cleanup;
+    }
+    if (!S_ISREG(stb.st_mode)) {
+      err("copy_all_files: source file is not regular");
+      goto cleanup;
+    }
+    wfd = open(dpath, O_WRONLY | O_CREAT | O_TRUNC | O_NOCTTY | O_NOFOLLOW | O_NONBLOCK, 0600);
+    if (wfd < 0) {
+      err("copy_all_files: failed to open '%s': %s", dpath, os_ErrorMsg());
+      goto cleanup;
+    }
+    if (fstat(wfd, &stb) < 0) {
+      err("copy_all_files: fstat failed");
+      goto cleanup;
+    }
+    if (!S_ISREG(stb.st_mode)) {
+      err("copy_all_files: destination file is not regular");
+      goto cleanup;
+    }
+    fchmod(wfd, mode);
+
+    while (1) {
+      int rsz = read(rfd, buf, sizeof(buf));
+      if (rsz < 0) {
+        err("copy_all_files: read error: %s", os_ErrorMsg());
+        goto cleanup;
+      }
+      if (!rsz) break;
+      unsigned char *wptr = buf;
+      while (rsz > 0) {
+        int wsz = write(wfd, wptr, rsz);
+        if (wsz <= 0) {
+          err("copy_all_files: write error: %s", os_ErrorMsg());
+          goto cleanup;
+        }
+        rsz -= wsz;
+        wptr += wsz;
+      }
+    }
+
+    close(rfd); rfd = -1;
+    close(wfd); wfd = -1;
+  }
+
+  closedir(d);
+  d = NULL;
+  retval = 0;
+
+cleanup:;
+  if (rfd >= 0) close(rfd);
+  if (wfd >= 0) close(wfd);
+  if (d) closedir(d);
+  return retval;
+}
+
 static int
 invoke_compiler(
         FILE *log_f,
@@ -215,6 +347,17 @@ invoke_compiler(
 {
   const struct section_global_data *global = serve_state.global;
   tpTask tsk = 0;
+
+  if (req->extra_src_dir && req->extra_src_dir[0]) {
+    int r = copy_all_files(log_f, req->extra_src_dir, working_dir);
+    if (r < 0) {
+      err("failed to copy extra_src_dir from %s to %s",
+          req->extra_src_dir, working_dir);
+      fprintf(log_f, "\nfailed to copy extra_src_dir %s to working_dir %s\n",
+              req->extra_src_dir, working_dir);
+      return RUN_CHECK_FAILED;
+    }
+  }
 
   tsk = task_New();
   if (req->vcs_mode) {
@@ -357,6 +500,139 @@ invoke_compiler(
 }
 
 static void
+save_heartbeat_file(const unsigned char *data, size_t size)
+{
+  unsigned char path[PATH_MAX];
+  unsigned char dpath[PATH_MAX];
+  __attribute__((unused)) int r;
+  r = snprintf(path, sizeof(path), "%s/in/%s", heartbeat_dir, heartbeat_file_name);
+  r = snprintf(dpath, sizeof(dpath), "%s/dir/%s", heartbeat_dir, heartbeat_file_name);
+  int fd = -1;
+  void *mem = MAP_FAILED;
+
+  fd = open(path, O_RDWR | O_CREAT | O_TRUNC | O_NOFOLLOW | O_NONBLOCK | O_NOCTTY, 0666);
+  if (fd < 0) {
+    err("open '%s' failed: %s", path, os_ErrorMsg());
+    goto done;
+  }
+  if (ftruncate(fd, size) < 0) {
+    err("ftruncate '%s', %lld failed: %s", path, (long long) size, os_ErrorMsg());
+    goto done;
+  }
+  mem = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  if (mem == MAP_FAILED) {
+    err("mmap failed: %s", os_ErrorMsg());
+    goto done;
+  }
+  close(fd); fd = -1;
+
+  memcpy(mem, data, size);
+  munmap(mem, size); mem = MAP_FAILED;
+
+  if (rename(path, dpath) < 0) {
+    err("rename '%s'->'%s' failed: %s", path, dpath, os_ErrorMsg());
+    goto done;
+  }
+  path[0] = 0;
+
+  r = snprintf(path, sizeof(path), "%s/dir/%s@S", heartbeat_dir, heartbeat_file_name);
+  if (access(path, F_OK) >= 0) {
+    pending_stop_flag = 1;
+    r = unlink(path);
+  }
+  r = snprintf(path, sizeof(path), "%s/dir/%s@D", heartbeat_dir, heartbeat_file_name);
+  if (access(path, F_OK) >= 0) {
+    pending_down_flag = 1;
+    r = unlink(path);
+  }
+  r = snprintf(path, sizeof(path), "%s/dir/%s@R", heartbeat_dir, heartbeat_file_name);
+  if (access(path, F_OK) >= 0) {
+    pending_reboot_flag = 1;
+    r = unlink(path);
+  }
+
+done:;
+  if (path[0]) unlink(path);
+  if (fd >= 0) close(fd);
+  if (mem != MAP_FAILED) munmap(mem, size);
+}
+
+#pragma GCC push_options
+#pragma GCC optimize "no-inline"
+static void
+save_heartbeat(void)
+{
+  if (!heartbeat_mode) return;
+  if (!heartbeat_dir[0]) return;
+
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  long long current_time_ms = tv.tv_sec * 1000LL + tv.tv_usec / 1000;
+  if (last_heartbeat_update_ms + HEARTBEAT_UPDATE_MS > current_time_ms) {
+    return;
+  }
+
+  flatcc_builder_t builder;
+  flatcc_builder_init(&builder);
+  unsigned char *buffer = NULL;
+  size_t size = 0;
+
+  ej_compile_Heartbeat_start_as_root(&builder);
+
+  ej_compile_Heartbeat_timestamp_ms_add(&builder, current_time_ms);
+  ej_compile_Heartbeat_last_handled_request_ms_add(&builder, last_handled_request_ms);
+  ej_compile_Heartbeat_start_time_ms_add(&builder, start_time_ms);
+  ej_compile_Heartbeat_accumulated_ms_add(&builder, accumulated_ms);
+  ej_compile_Heartbeat_request_count_add(&builder, request_count);
+  if (heartbeat_instance_id && *heartbeat_instance_id) {
+    ej_compile_Heartbeat_instance_id_create_str(&builder, heartbeat_instance_id);
+  } else if (instance_id && *instance_id) {
+    ej_compile_Heartbeat_instance_id_create_str(&builder, instance_id);
+  }
+  if (compile_server_id && *compile_server_id) {
+    ej_compile_Heartbeat_queue_create_str(&builder, compile_server_id);
+  }
+  if (ip_address && *ip_address) {
+    ej_compile_Heartbeat_ip_address_create_str(&builder, ip_address);
+  }
+  ej_compile_Heartbeat_pid_add(&builder, getpid());
+  ej_compile_Heartbeat_end_as_root(&builder);
+
+  buffer = flatcc_builder_get_direct_buffer(&builder, &size);
+
+  if (agent) {
+    __attribute__((unused)) long long last_saved_time_ms = 0;
+
+    agent->ops->put_heartbeat(agent, heartbeat_file_name, buffer, size,
+                              &last_saved_time_ms,
+                              &pending_stop_flag, &pending_down_flag,
+                              &pending_reboot_flag);
+  } else {
+    save_heartbeat_file(buffer, size);
+  }
+
+  flatcc_builder_clear(&builder);
+  last_heartbeat_update_ms = current_time_ms;
+}
+#pragma GCC pop_options
+
+static void
+delete_heartbeat(void)
+{
+  if (!heartbeat_mode) return;
+  if (!heartbeat_dir[0]) return;
+
+  if (agent) {
+    agent->ops->delete_heartbeat(agent, heartbeat_file_name);
+  } else {
+    unsigned char path[PATH_MAX];
+    __attribute__((unused)) int r;
+    r = snprintf(path, sizeof(path), "%s/dir/%s", heartbeat_dir, heartbeat_file_name);
+    r = unlink(path);
+  }
+}
+
+static void
 handle_packet(
         FILE *log_f,
         const struct serve_state *cs,
@@ -382,7 +658,7 @@ handle_packet(
   if (req->output_only) {
     if (req->style_checker && req->style_checker[0]) {
       unsigned char src_work_name[PATH_MAX];
-      snprintf(src_work_name, sizeof(src_work_name), "%06d%s", req->run_id, "" /*lang->src_sfx*/);
+      snprintf(src_work_name, sizeof(src_work_name), "%llx", random_u64());
       unsigned char src_work_path[PATH_MAX];
       snprintf(src_work_path, sizeof(src_work_path), "%s/%s", working_dir, src_work_name);
 
@@ -473,7 +749,7 @@ handle_packet(
   }
 
   unsigned char src_work_name[PATH_MAX];
-  snprintf(src_work_name, sizeof(src_work_name), "%06d%s", req->run_id, lang->src_sfx);
+  snprintf(src_work_name, sizeof(src_work_name), "%llx%s", random_u64(), lang->src_sfx);
   unsigned char src_work_path[PATH_MAX];
   snprintf(src_work_path, sizeof(src_work_path), "%s/%s", working_dir, src_work_name);
 
@@ -497,7 +773,7 @@ handle_packet(
   }
 
   if (!req->multi_header) {
-    snprintf(exe_work_name, PATH_MAX, "%06d%s", req->run_id, lang->exe_sfx);
+    snprintf(exe_work_name, PATH_MAX, "%llx%s", random_u64(), lang->exe_sfx);
     unsigned char exe_work_path[PATH_MAX];
     snprintf(exe_work_path, sizeof(exe_work_path), "%s/%s", working_dir, exe_work_name);
 
@@ -532,7 +808,7 @@ handle_packet(
   }
 
   // multi-header mode
-  snprintf(exe_work_name, PATH_MAX, "%06d%s", req->run_id, lang->exe_sfx);
+  snprintf(exe_work_name, PATH_MAX, "%llx%s", random_u64(), lang->exe_sfx);
   unsigned char exe_work_path[PATH_MAX];
   snprintf(exe_work_path, sizeof(exe_work_path), "%s/%s", working_dir, exe_work_name);
   zf = ej_libzip_open(log_f, exe_work_path, O_CREAT | O_TRUNC | O_WRONLY);
@@ -717,7 +993,7 @@ handle_packet(
     full_s[full_z] = 0;
 
     unsigned char test_src_name[PATH_MAX];
-    snprintf(test_src_name, sizeof(test_src_name), "%06d_%03d%s", req->run_id, serial, lang->src_sfx);
+    snprintf(test_src_name, sizeof(test_src_name), "%llx%s", random_u64(), lang->src_sfx);
     unsigned char test_src_path[PATH_MAX];
     snprintf(test_src_path, sizeof(test_src_path), "%s/%s", working_dir, test_src_name);
     if (generic_write_file(full_s, full_z, 0, NULL, test_src_path, NULL) < 0) {
@@ -732,6 +1008,7 @@ handle_packet(
     xfree(full_s); full_s = NULL; full_z = 0;
 
     unsigned char test_exe_name[PATH_MAX];
+    // FIXME: random exe name?
     snprintf(test_exe_name, sizeof(test_exe_name), "%06d_%03d%s", req->run_id, serial, lang->exe_sfx);
     unsigned char test_exe_path[PATH_MAX];
     snprintf(test_exe_path, sizeof(test_exe_path), "%s/%s", working_dir, test_exe_name);
@@ -912,9 +1189,15 @@ new_loop(int parallel_mode, const unsigned char *global_log_path)
   int exe_copied = 0;
   path_t full_working_dir = { 0 };
   struct Future *future = NULL;
+  int ifd = -1;
+  int ifd_wd = -1;
+  sigset_t emptymask;
+  int efd = -1;
+
+  random_init();
+  sigemptyset(&emptymask);
 
   if (parallel_mode) {
-    random_init();
     unsigned long long u64 = random_u64();
     snprintf(full_working_dir, sizeof(full_working_dir), "%s/%016llx", global->compile_work_dir, u64);
     if (make_dir(full_working_dir, 0) < 0) {
@@ -942,6 +1225,12 @@ new_loop(int parallel_mode, const unsigned char *global_log_path)
       err("invalid agent");
       return -1;
     }
+  } else {
+    ifd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    if (ifd < 0) {
+      err("inotify_init1 failed: %s", os_ErrorMsg());
+      return -1;
+    }
   }
 
 #if defined EJUDGE_COMPILE_SPOOL_DIR
@@ -956,6 +1245,33 @@ new_loop(int parallel_mode, const unsigned char *global_log_path)
     return -1;
   }
 #endif
+
+  snprintf(compile_server_queue_dir_dir, sizeof(compile_server_queue_dir_dir),
+           "%s/dir", compile_server_queue_dir);
+
+  if (ifd >= 0) {
+    ifd_wd = inotify_add_watch(ifd, compile_server_queue_dir_dir, IN_CREATE | IN_MOVED_TO);
+    if (ifd_wd < 0) {
+      err("inotify_add_watch failed: %s", os_ErrorMsg());
+      return -1;
+    }
+
+    efd = epoll_create1(EPOLL_CLOEXEC);
+    if (efd < 0) {
+      err("epoll_create1 failed: %s", os_ErrorMsg());
+      return -1;
+    }
+
+    struct epoll_event ev =
+    {
+      .events = EPOLLIN,
+      .data.fd = ifd,
+    };
+    if (epoll_ctl(efd, EPOLL_CTL_ADD, ifd, &ev) < 0) {
+      err("epoll_ctl failed: %s", os_ErrorMsg());
+      return -1;
+    }
+  }
 
   interrupt_init();
   interrupt_setup_usr1();
@@ -974,25 +1290,47 @@ new_loop(int parallel_mode, const unsigned char *global_log_path)
       continue;
     }
 
+    save_heartbeat();
+    if (pending_stop_flag || pending_down_flag || pending_reboot_flag) {
+      break;
+    }
+
     unsigned char pkt_name[PATH_MAX];
     pkt_name[0] = 0;
     int r = 0;
+    char *pkt_ptr = NULL;
+    size_t pkt_len = 0;
+
     if (agent) {
       if (interrupt_was_usr2()) {
         interrupt_reset_usr2();
         if (future) {
-          r = agent->ops->async_wait_complete(agent, &future, pkt_name, sizeof(pkt_name));
+          r = agent->ops->async_wait_complete(agent, &future,
+                                              pkt_name, sizeof(pkt_name),
+                                              &pkt_ptr,
+                                              &pkt_len);
           if (r < 0) {
             err("async_wait_complete failed");
             break;
           }
+          if (!pkt_name[0]) {
+            continue;
+          }
         }
       } else if (!future) {
-        r = agent->ops->async_wait_init(agent, SIGUSR2, 0, pkt_name, sizeof(pkt_name), &future);
+        r = agent->ops->async_wait_init(agent, SIGUSR2, 0,
+                                        1,
+                                        pkt_name, sizeof(pkt_name), &future,
+                                        DEFAULT_WAIT_TIMEOUT_MS,
+                                        &pkt_ptr,
+                                        &pkt_len);
         //r = agent->ops->poll_queue(agent, pkt_name, sizeof(pkt_name));
         if (r < 0) {
           err("async_wait_init failed");
           break;
+        }
+        if (!pkt_name[0]) {
+          continue;
         }
       }
     } else {
@@ -1015,17 +1353,32 @@ new_loop(int parallel_mode, const unsigned char *global_log_path)
     }
 
     if (!r) {
-      int sleep_time = agent?30000:global->sleep_time;
-      interrupt_enable();
-      os_Sleep(sleep_time);
-      interrupt_disable();
+      if (agent) {
+        interrupt_enable();
+        os_Sleep(5000);
+        interrupt_disable();
+      } else {
+        struct epoll_event events[1];
+        int r = epoll_pwait(efd, events, 1, HEARTBEAT_UPDATE_MS, &emptymask);
+        if (r == 1) {
+          if (events[0].data.fd != ifd) abort();
+          // just read all the data in the ifd without any processing
+          unsigned char ibuf[4096];
+          while (1) {
+            int r = read(ifd, ibuf, sizeof(ibuf));
+            if (r <= 0) break;
+          }
+        }
+      }
       continue;
     }
 
-    char *pkt_ptr = NULL;
-    size_t pkt_len = 0;
     if (agent) {
-      r = agent->ops->get_packet(agent, pkt_name, &pkt_ptr, &pkt_len);
+      if (!pkt_ptr) {
+        r = agent->ops->get_packet(agent, pkt_name, &pkt_ptr, &pkt_len);
+      } else {
+        r = 1;
+      }
     } else {
       r = generic_read_file(&pkt_ptr, 0, &pkt_len, SAFE | REMOVE, compile_server_queue_dir, pkt_name, "");
     }
@@ -1073,9 +1426,13 @@ new_loop(int parallel_mode, const unsigned char *global_log_path)
     rpl.run_block_len = req->run_block_len;
     rpl.run_block = req->run_block; /* !!! shares memory with req */
 
+    last_handled_request_ms = rpl.ts2 * 1000LL + rpl.ts2_us / 1000;
+
     unsigned char contest_server_reply_dir[PATH_MAX];
     contest_server_reply_dir[0] = 0;
     const unsigned char *contest_server_id = NULL;
+    unsigned char contest_reply_dir[PATH_MAX];
+
 #if defined EJUDGE_COMPILE_SPOOL_DIR
     {
       if (req->contest_server_id && *req->contest_server_id) {
@@ -1098,21 +1455,21 @@ new_loop(int parallel_mode, const unsigned char *global_log_path)
         continue;
       }
     }
+    strcpy(contest_reply_dir, contest_server_reply_dir);
 #else
     if (snprintf(contest_server_reply_dir, sizeof(contest_server_reply_dir), "%s", global->compile_dir) >= sizeof(contest_server_reply_dir)) {
       rpl.run_block = NULL;
       compile_request_packet_free(req);
       continue;
     }
-#endif
 
-    unsigned char contest_reply_dir[PATH_MAX];
     snprintf(contest_reply_dir, sizeof(contest_reply_dir), "%s/%06d", contest_server_reply_dir, rpl.contest_id);
     if (make_dir(contest_reply_dir, 0777) < 0) {
       rpl.run_block = NULL;
       compile_request_packet_free(req);
       continue;
     }
+#endif
 
     unsigned char status_dir[PATH_MAX];
     snprintf(status_dir, sizeof(status_dir), "%s/status", contest_reply_dir);
@@ -1218,6 +1575,9 @@ new_loop(int parallel_mode, const unsigned char *global_log_path)
     free(src_buf); src_buf = NULL; src_len = 0;
 
     get_current_time(&rpl.ts3, &rpl.ts3_us);
+    long long current_time_ms = rpl.ts3 * 1000LL + rpl.ts3_us / 1000;
+    accumulated_ms += (current_time_ms - last_handled_request_ms);
+    ++request_count;
 
     if (rpl.status == RUN_OK && !override_exe && !exe_copied) {
       if (!exe_work_name[0]) {
@@ -1333,11 +1693,29 @@ new_loop(int parallel_mode, const unsigned char *global_log_path)
     clear_directory(full_working_dir);
   }
 
+  delete_heartbeat();
+
   if (agent) {
     agent->ops->close(agent);
   }
 
   return retval;
+}
+
+static void
+make_heartbeat_file_name(void)
+{
+  const unsigned char *basename = NULL;
+  if (compile_server_id && *compile_server_id) {
+    basename = compile_server_id;
+  } else if (ip_address && *ip_address) {
+    basename = ip_address;
+  } else {
+    basename = os_NodeName();
+  }
+
+  __attribute__((unused)) int r;
+  r = snprintf(heartbeat_file_name, sizeof(heartbeat_file_name), "%s.%d", basename, getpid());
 }
 
 static int
@@ -1410,6 +1788,9 @@ main(int argc, char *argv[])
   int     parallel_mode = 0;
   int     ejudge_xml_fd = -1;
   int     stderr_fd = -1;
+  int     disable_stack_trace = 0;
+  unsigned char *halt_command = NULL;
+  unsigned char *reboot_command = NULL;
 
 #if HAVE_SETSID - 0
   path_t  log_path;
@@ -1453,6 +1834,10 @@ main(int argc, char *argv[])
   start_set_self_args(argc, argv);
   XCALLOC(argv_restart, argc + 2);
   argv_restart[j++] = argv[0];
+
+  struct timeval stv;
+  gettimeofday(&stv, NULL);
+  start_time_ms = stv.tv_sec * 1000LL + stv.tv_usec / 1000;
 
   //if (argc == 1) goto print_usage;
   code = 1;
@@ -1539,11 +1924,29 @@ main(int argc, char *argv[])
       instance_id = xstrdup(argv[i++]);
       argv_restart[j++] = "--instance-id";
       argv_restart[j++] = argv[i - 1];
+    } else if (!strcmp(argv[i], "-hi")) {
+      if (++i >= argc) goto print_usage;
+      xfree(heartbeat_instance_id);
+      heartbeat_instance_id = xstrdup(argv[i++]);
+      argv_restart[j++] = argv[i];
+      argv_restart[j++] = argv[i - 1];
     } else if (!strcmp(argv[i], "--ip")) {
       if (++i >= argc) goto print_usage;
       xfree(ip_address);
       ip_address = xstrdup(argv[i++]);
       argv_restart[j++] = "--ip";
+      argv_restart[j++] = argv[i - 1];
+    } else if (!strcmp(argv[i], "-hc")) {
+      if (++i >= argc) goto print_usage;
+      xfree(halt_command);
+      halt_command = xstrdup(argv[i++]);
+      argv_restart[j++] = argv[i];
+      argv_restart[j++] = argv[i - 1];
+    } else if (!strcmp(argv[i], "-rc")) {
+      if (++i >= argc) goto print_usage;
+      xfree(reboot_command);
+      reboot_command = xstrdup(argv[i++]);
+      argv_restart[j++] = argv[i];
       argv_restart[j++] = argv[i - 1];
     } else if (!strcmp(argv[i], "-p")) {
       parallel_mode = 1;
@@ -1553,6 +1956,18 @@ main(int argc, char *argv[])
       verbose_mode = 1;
       ++i;
       argv_restart[j++] = "-v";
+    } else if (!strcmp(argv[i], "-nst")) {
+      disable_stack_trace = 1;
+      ++i;
+      argv_restart[j++] = argv[i];
+    } else if (!strcmp(argv[i], "-hb")) {
+      heartbeat_mode = 1;
+      ++i;
+      argv_restart[j++] = argv[i];
+    } else if (!strcmp(argv[i], "-nhb")) {
+      heartbeat_mode = 0;
+      ++i;
+      argv_restart[j++] = argv[i];
     } else if (!strcmp(argv[i], "--help")) {
       code = 0;
       goto print_usage;
@@ -1566,6 +1981,9 @@ main(int argc, char *argv[])
   if (i < argc) goto print_usage;
   argv_restart[j] = 0;
   start_set_args(argv_restart);
+  if (disable_stack_trace <= 0) {
+    start_enable_stacktrace(NULL);
+  }
 
   if (!compile_server_id || !*compile_server_id) {
     xfree(compile_server_id); compile_server_id = NULL;
@@ -1744,6 +2162,8 @@ main(int argc, char *argv[])
   }
 #endif
 
+  make_heartbeat_file_name();
+
   if (start_prepare(user, group, workdir) < 0) return 1;
 
   memset(subst_src, 0, sizeof(subst_src));
@@ -1793,7 +2213,7 @@ main(int argc, char *argv[])
   subst_dst_ptr = subst_dst;
 #endif
 
-  if (prepare(NULL, &serve_state, compile_cfg_path, prepare_flags, PREPARE_COMPILE,
+  if (prepare(ejudge_config, NULL, &serve_state, compile_cfg_path, prepare_flags, PREPARE_COMPILE,
               cpp_opts, 0, subst_src_ptr, subst_dst_ptr) < 0)
     return 1;
 #if HAVE_OPEN_MEMSTREAM - 0
@@ -1831,6 +2251,9 @@ main(int argc, char *argv[])
       return 1;
     }
     if (make_dir(compile_server_src_dir, 0777) < 0) return 1;
+
+    snprintf(heartbeat_dir, sizeof(heartbeat_dir), "%s/heartbeat", compile_server_spool_dir);
+    if (make_all_dir(heartbeat_dir, 0777) < 0) return 1;
   }
 #endif
 
@@ -1872,6 +2295,22 @@ main(int argc, char *argv[])
 #endif /* HAVE_OPEN_MEMSTREAM */
 
   if (new_loop(parallel_mode, log_path) < 0) return 1;
+
+  if (pending_down_flag) {
+    info("DOWN request from the server");
+    if (halt_command) {
+      start_shutdown(halt_command);
+    }
+  }
+  if (pending_reboot_flag) {
+    info("REBOOT request from the server");
+    if (reboot_command) {
+      start_shutdown(reboot_command);
+    }
+  }
+  if (pending_stop_flag) {
+    info("STOP request from the server");
+  }
 
   if (interrupt_restart_requested()) start_restart();
 

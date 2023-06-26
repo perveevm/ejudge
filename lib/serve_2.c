@@ -54,6 +54,9 @@
 #include "ejudge/submit_plugin.h"
 #include "ejudge/storage_plugin.h"
 #include "ejudge/metrics_contest.h"
+#include "ejudge/notify_plugin.h"
+#include "ejudge/cJSON.h"
+#include "ejudge/json_serializers.h"
 
 #include "ejudge/xalloc.h"
 #include "ejudge/logger.h"
@@ -69,6 +72,7 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <fcntl.h>
+#include <sys/mman.h>
 
 #if CONF_HAS_LIBINTL - 0 == 1
 #include <libintl.h>
@@ -94,6 +98,7 @@ serve_update_standings_file(
 
   //run_get_times(state->runlog_state, &start_time, 0, &duration, &stop_time, 0);
 
+  if (global->autoupdate_standings <= 0 && force_flag <= 0) return;
   /*
   while (1) {
     if (global->is_virtual) break;
@@ -291,6 +296,21 @@ serve_update_external_xml_log(serve_state_t state,
 {
   if (!state->global->external_xml_update_time) return;
   if (state->current_time < state->last_update_external_xml_log + state->global->external_xml_update_time) return;
+
+  long long runlog_last_update_time_us = run_get_last_update_time_us(state->runlog_state);
+  if (!state->last_update_external_xml_log_us && !runlog_last_update_time_us) {
+    // not updated yet
+
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    long long current_time_us = tv.tv_sec * 1000000LL + tv.tv_usec;
+    state->last_update_external_xml_log_us = current_time_us;
+  } else if (state->last_update_external_xml_log_us >= runlog_last_update_time_us) {
+    return;
+  } else {
+    state->last_update_external_xml_log_us = runlog_last_update_time_us;
+  }
+
   state->last_update_external_xml_log = state->current_time;
   do_update_xml_log(state, cnts, "external.xml", 1);
 }
@@ -301,6 +321,21 @@ serve_update_internal_xml_log(serve_state_t state,
 {
   if (!state->global->internal_xml_update_time) return;
   if (state->current_time < state->last_update_internal_xml_log + state->global->internal_xml_update_time) return;
+
+  long long runlog_last_update_time_us = run_get_last_update_time_us(state->runlog_state);
+  if (!state->last_update_internal_xml_log_us && !runlog_last_update_time_us) {
+    // not updated yet
+
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    long long current_time_us = tv.tv_sec * 1000000LL + tv.tv_usec;
+    state->last_update_internal_xml_log_us = current_time_us;
+  } else if (state->last_update_internal_xml_log_us >= runlog_last_update_time_us) {
+    return;
+  } else {
+    state->last_update_internal_xml_log_us = runlog_last_update_time_us;
+  }
+
   state->last_update_internal_xml_log = state->current_time;
   do_update_xml_log(state, cnts, "internal.xml", 0);
 }
@@ -518,6 +553,53 @@ serve_get_cnts_caps(serve_state_t state,
   return 0;
 }
 
+static struct compile_queue_item *
+lookup_compile_queue_item(
+        const serve_state_t state,
+        const unsigned char *queue_id)
+{
+  if (!queue_id) queue_id = "";
+  for (int i = 0; i < state->compile_queues_u; ++i) {
+    if (!strcmp(state->compile_queues[i].id, queue_id))
+      return &state->compile_queues[i];
+  }
+  return NULL;
+}
+
+static int
+do_build_compile_queue_dirs(
+        serve_state_t cs,
+        const unsigned char *id,
+        const unsigned char *queue_dir,
+        const unsigned char *src_dir,
+        const unsigned char *heartbeat_dir)
+{
+  int i;
+
+  for (i = 0; i < cs->compile_queues_u; ++i) {
+    if (!strcmp(cs->compile_queues[i].queue_dir, queue_dir)) {
+      return i;
+    }
+  }
+
+  if (cs->compile_queues_u == cs->compile_queues_a) {
+    if (!(cs->compile_queues_a *= 2)) cs->compile_queues_a = 8;
+    XREALLOC(cs->compile_queues, cs->compile_queues_a);
+  }
+
+  struct compile_queue_item *item = &cs->compile_queues[cs->compile_queues_u++];
+  memset(item, 0, sizeof(*item));
+
+  item->id = xstrdup(id);
+  item->queue_dir = xstrdup(queue_dir);
+  item->src_dir = xstrdup(src_dir);
+  if (heartbeat_dir) {
+    item->heartbeat_dir = xstrdup(heartbeat_dir);
+  }
+
+  return i;
+}
+
 static int
 do_build_compile_dirs(serve_state_t state,
                       const unsigned char *status_dir,
@@ -559,16 +641,20 @@ serve_build_compile_dirs(
     const unsigned char *compile_report_dir = NULL;
 
 #if defined EJUDGE_COMPILE_SPOOL_DIR
-    const unsigned char *compile_spool_dir = EJUDGE_COMPILE_SPOOL_DIR;
-    const unsigned char *compile_server_id = NULL;
+    __attribute__((unused)) const unsigned char *compile_spool_dir = EJUDGE_COMPILE_SPOOL_DIR;
+    __attribute__((unused)) const unsigned char *compile_server_id = NULL;
+    /*
     if (lang && lang->compile_server_id && lang->compile_server_id[0]) {
       compile_server_id = lang->compile_server_id;
     } else {
       compile_server_id = config->contest_server_id;
     }
+    */
+    // result directories always use server contest_server_id
+    compile_server_id = config->contest_server_id;
 
-    unsigned char compile_report_buf[PATH_MAX];
-    unsigned char compile_status_buf[PATH_MAX];
+    __attribute__((unused)) unsigned char compile_report_buf[PATH_MAX];
+    __attribute__((unused)) unsigned char compile_status_buf[PATH_MAX];
 
     if (lang && lang->compile_dir_index > 0) {
       compile_status_dir = lang->compile_status_dir;
@@ -577,20 +663,82 @@ serve_build_compile_dirs(
       compile_status_dir = lang->compile_status_dir;
       compile_report_dir = lang->compile_report_dir;
     } else {
+      // do not add watch dirs, because the global compile result directories are used
+      /*
       snprintf(compile_status_buf, sizeof(compile_status_buf), "%s/%s/%06d/status", compile_spool_dir, compile_server_id, state->contest_id);
       compile_status_dir = compile_status_buf;
       snprintf(compile_report_buf, sizeof(compile_report_buf), "%s/%s/%06d/report", compile_spool_dir, compile_server_id, state->contest_id);
       compile_report_dir = compile_report_buf;
+      */
     }
 #else
     compile_status_dir = lang->compile_status_dir;
     compile_report_dir = lang->compile_report_dir;
 #endif
-    do_build_compile_dirs(state, compile_status_dir, compile_report_dir);
+    if (compile_status_dir) {
+      do_build_compile_dirs(state, compile_status_dir, compile_report_dir);
+    }
+  }
+
+  // build queue dirs
+  for (i = 1; i <= state->max_lang; i++) {
+    const struct section_language_data *lang = state->langs[i];
+    if (!lang) continue;
+
+    const unsigned char *id = "";
+    const unsigned char *src_dir = NULL;
+    const unsigned char *queue_dir = NULL;
+    const unsigned char *heartbeat_dir = NULL;
+
+    unsigned char src_buf[PATH_MAX];
+    unsigned char queue_buf[PATH_MAX];
+    unsigned char heartbeat_buf[PATH_MAX];
+    __attribute__((unused)) int r;
+
+#if defined EJUDGE_COMPILE_SPOOL_DIR
+    if (lang && lang->compile_server_id && lang->compile_server_id[0]) {
+      id = lang->compile_server_id;
+    } else if (global->compile_server_id && global->compile_server_id[0]) {
+      id = global->compile_server_id;
+    } else {
+      id = config->contest_server_id;
+    }
+
+    if (lang->compile_dir_index > 0) {
+      src_dir = lang->compile_src_dir;
+      queue_dir = lang->compile_queue_dir;
+      r = snprintf(heartbeat_buf, sizeof(heartbeat_buf), "%s/../heartbeat", queue_dir);
+      heartbeat_dir = heartbeat_buf;
+    } else if (lang->compile_dir && lang->compile_dir[0] && global && global->compile_dir && strcmp(lang->compile_dir, global->compile_dir) != 0) {
+      src_dir = lang->compile_src_dir;
+      queue_dir = lang->compile_queue_dir;
+      r = snprintf(heartbeat_buf, sizeof(heartbeat_buf), "%s/../heartbeat", queue_dir);
+      heartbeat_dir = heartbeat_buf;
+    } else {
+      const unsigned char *spool_dir = EJUDGE_COMPILE_SPOOL_DIR;
+      r = snprintf(src_buf, sizeof(src_buf), "%s/%s/src", spool_dir, id);
+      src_dir = src_buf;
+      r = snprintf(queue_buf, sizeof(queue_buf), "%s/%s/queue", spool_dir, id);
+      queue_dir = queue_buf;
+      r = snprintf(heartbeat_buf, sizeof(heartbeat_buf), "%s/%s/heartbeat", spool_dir, id);
+      heartbeat_dir = heartbeat_buf;
+    }
+#else
+    src_dir = global->compile_src_dir;
+    if (lang->compile_src_dir && lang->compile_src_dir[0]) {
+      src_dir = lang->compile_src_dir;
+    }
+    queue_dir = global->compile_queue_dir;
+    if (lang->compile_queue_dir && lang->compile_queue_dir[0]) {
+      queue_dir = lang->compile_queue_dir;
+    }
+    heartbeat_dir = NULL; // disabled
+#endif
+    do_build_compile_queue_dirs(state, id, queue_dir, src_dir, heartbeat_dir);
   }
 }
 
-static int
+static __attribute__((unused)) int
 do_build_run_dirs(
         serve_state_t state,
         const unsigned char *id,
@@ -679,8 +827,11 @@ build_run_dir(
   snprintf(queue_dir, sizeof(queue_dir), "%s/queue", d1);
   snprintf(exe_dir, sizeof(exe_dir), "%s/exe", d1);
   snprintf(heartbeat_dir, sizeof(heartbeat_dir), "%s/heartbeat", d1);
-  do_build_queue_dirs(state, queue_name, queue_dir, exe_dir, heartbeat_dir);
+  do_build_queue_dirs(state, run_server_id, queue_dir, exe_dir, heartbeat_dir);
 
+  // do not create contest specific dirs, using the globals instead
+  return;
+    /*
   unsigned char d2[PATH_MAX];
   snprintf(d2, sizeof(d2), "%s/%s/%06d", EJUDGE_RUN_SPOOL_DIR, contest_server_id, cnts->id);
 
@@ -693,6 +844,7 @@ build_run_dir(
   snprintf(full_report_dir, sizeof(full_report_dir), "%s/output", d2);
   snprintf(team_report_dir, sizeof(team_report_dir), "%s/teamreports", d2);
   do_build_run_dirs(state, "", status_dir, report_dir, team_report_dir, full_report_dir);
+    */
 }
 #endif
 
@@ -1358,7 +1510,8 @@ serve_compile_request(
         int rejudge_flag,
         int vcs_mode,
         int not_ok_is_cf,
-        const struct userlist_user *user)
+        const struct userlist_user *user,
+        struct run_entry *ure)
 {
   struct compile_run_extra rx;
   struct compile_request_packet cp;
@@ -1391,6 +1544,7 @@ serve_compile_request(
   char **compiler_env = NULL;
   int lang_id = 0;
   unsigned char *custom_compile_cmd = NULL;
+  unsigned char *extra_src_dir = NULL;
 
   if (prob) {
     style_checker_cmd = prob->style_checker_cmd;
@@ -1615,11 +1769,33 @@ serve_compile_request(
       custom_compile_cmd = xstrdup(tmp);
     } else {
       char *tmp = NULL;
-      asprintf(&tmp, "%s/%s", global->checker_dir, custom_compile_cmd);
+      __attribute__((unused)) int _;
+      _ = asprintf(&tmp, "%s/%s", global->checker_dir, custom_compile_cmd);
       free(custom_compile_cmd);
       custom_compile_cmd = tmp;
     }
     cp.compile_cmd = custom_compile_cmd;
+  }
+
+  if (prob && prob->extra_src_dir && prob->extra_src_dir[0]) {
+    extra_src_dir = prepare_varsubst(state, prob->extra_src_dir, 0, prob, lang, NULL);
+    extra_src_dir = config_var_substitute_heap(extra_src_dir);
+    if (os_IsAbsolutePath(extra_src_dir)) {
+      // nothing
+    } else if (global->advanced_layout > 0) {
+      unsigned char tmp[PATH_MAX];
+      get_advanced_layout_path(tmp, sizeof(tmp),
+                               global, prob, extra_src_dir, variant);
+      free(extra_src_dir);
+      extra_src_dir = xstrdup(tmp);
+    } else {
+      char *tmp = NULL;
+      __attribute__((unused)) int _;
+      _ = asprintf(&tmp, "%s/%s", global->checker_dir, extra_src_dir);
+      free(extra_src_dir);
+      extra_src_dir = tmp;
+    }
+    cp.extra_src_dir = extra_src_dir;
   }
 
   cp.vcs_mode = vcs_mode;
@@ -1658,6 +1834,8 @@ serve_compile_request(
     const unsigned char *compile_server_id = NULL;
     if (lang && lang->compile_server_id && lang->compile_server_id[0]) {
       compile_server_id = lang->compile_server_id;
+    } else if (global->compile_server_id && global->compile_server_id[0]) {
+      compile_server_id = global->compile_server_id;
     } else {
       compile_server_id = config->contest_server_id;
     }
@@ -1759,10 +1937,11 @@ serve_compile_request(
 
   if (!no_db_flag) {
     if (run_change_status(state->runlog_state, run_id, RUN_COMPILING, 0, 1, -1,
-                          cp.judge_id, &cp.judge_uuid, 0) < 0) {
+                          cp.judge_id, &cp.judge_uuid, 0, ure) < 0) {
       errcode = -SERVE_ERR_DB;
       goto failed;
     }
+    serve_notify_run_update(config, state, ure);
   }
 
   sarray_free(comp_env_mem_2);
@@ -1776,6 +1955,7 @@ serve_compile_request(
   xfree(src_text);
   xfree(src_out_text);
   xfree(custom_compile_cmd);
+  xfree(extra_src_dir);
   return 0;
 
  failed:
@@ -1790,6 +1970,7 @@ serve_compile_request(
   xfree(src_text);
   xfree(src_out_text);
   xfree(custom_compile_cmd);
+  xfree(extra_src_dir);
   return errcode;
 }
 
@@ -1874,7 +2055,8 @@ serve_run_request(
         int store_flags,
         int not_ok_is_cf,
         const unsigned char *inp_text,
-        size_t inp_size)
+        size_t inp_size,
+        struct run_entry *ure)
 {
   int cn;
   struct section_global_data *global = state->global;
@@ -2282,7 +2464,8 @@ serve_run_request(
   srpp->container_options = xstrdup2(prob->container_options);
   if (submit_id > 0) {
     char *inp_name = NULL;
-    asprintf(&inp_name, "%s.input", pkt_base);
+    __attribute__((unused)) int _;
+    _ = asprintf(&inp_name, "%s.input", pkt_base);
     srpp->user_input_file = inp_name;
   }
 
@@ -2491,6 +2674,7 @@ serve_run_request(
   srpp->enable_extended_info = prob->enable_extended_info;
   srpp->stop_on_first_fail = prob->stop_on_first_fail;
   srpp->enable_control_socket = prob->enable_control_socket;
+  srpp->copy_exe_to_tgzdir = prob->copy_exe_to_tgzdir;
   if (prob->umask && prob->umask[0]) {
     srpp->umask = xstrdup(prob->umask);
   }
@@ -2514,6 +2698,7 @@ serve_run_request(
   if (lang && lang->run_max_rss_size > 0) {
     srpp->max_rss_size = lang->run_max_rss_size;
   }
+  srpp->checker_extra_files = sarray_copy(prob->checker_extra_files);
 
   if (tester) {
     struct super_run_in_tester_packet *srtp = srp->tester;
@@ -2564,9 +2749,11 @@ serve_run_request(
 
   /* update status */
   if (!no_db_flag) {
-    if (run_change_status(state->runlog_state, run_id, RUN_RUNNING, 0, 1, -1, judge_id, judge_uuid, 0) < 0) {
+    if (run_change_status(state->runlog_state, run_id, RUN_RUNNING, 0, 1, -1,
+                          judge_id, judge_uuid, 0, ure) < 0) {
       goto fail;
     }
+    serve_notify_run_update(config, state, ure);
   }
 
   prepare_tester_free(refined_tester);
@@ -2997,12 +3184,94 @@ serve_notify_user_run_status_change(
 }
 
 static void
+notify_submit_update(
+        const struct ejudge_cfg *config,
+        struct submit_entry *se,
+        testing_report_xml_t tr)
+{
+  if (!se->notify_driver) return;
+
+  struct notify_plugin_data *np = notify_plugin_get(config, se->notify_driver);
+  if (!np) {
+    err("notify_submit_update: failed to get notify_plugin %d",
+        se->notify_driver);
+    return;
+  }
+  if (se->notify_kind < 0 || se->notify_kind >= MIXED_ID_LAST) {
+    err("notify_submit_update: invalid se.notify_kind %d", se->notify_kind);
+    return;
+  }
+  if (!se->notify_kind) return;
+
+  unsigned char buf[64];
+  mixed_id_marshall(buf, se->notify_kind, &se->notify_queue);
+
+  cJSON *jr = cJSON_CreateObject();
+
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  long long server_time_us = tv.tv_sec * 1000000LL + tv.tv_usec;
+
+  cJSON_AddNumberToObject(jr, "server_time_us", (double) server_time_us);
+  cJSON_AddStringToObject(jr, "type", "submit");
+  cJSON_AddItemToObject(jr, "submit", json_serialize_submit(se, tr));
+  char *jrstr = cJSON_PrintUnformatted(jr);
+  cJSON_Delete(jr);
+
+  if (np->vt->notify(np, buf, jrstr) < 0) {
+    err("notify_submit_update: notify failed");
+  }
+  free(jrstr);
+}
+
+void
+serve_notify_run_update(
+        const struct ejudge_cfg *config,
+        serve_state_t cs,
+        const struct run_entry *re)
+{
+  if (!re) return;
+  if (!re->notify_driver) return;
+
+  struct notify_plugin_data *np = notify_plugin_get(config, re->notify_driver);
+  if (!np) {
+    err("notify_run_update: failed to get notify_plugin %d",
+        re->notify_driver);
+    return;
+  }
+  if (re->notify_kind < 0 || re->notify_kind >= MIXED_ID_LAST) {
+    err("notify_run_update: invalid se.notify_kind %d", re->notify_kind);
+    return;
+  }
+  if (!re->notify_kind) return;
+
+  unsigned char buf[64];
+  mixed_id_marshall(buf, re->notify_kind, &re->notify_queue);
+
+  cJSON *jr = cJSON_CreateObject();
+
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  long long server_time_us = tv.tv_sec * 1000000LL + tv.tv_usec;
+
+  cJSON_AddNumberToObject(jr, "server_time_us", (double) server_time_us);
+  cJSON_AddStringToObject(jr, "type", "run");
+  cJSON_AddItemToObject(jr, "run", json_serialize_run(cs, re));
+  char *jrstr = cJSON_PrintUnformatted(jr);
+  cJSON_Delete(jr);
+
+  if (np->vt->notify(np, buf, jrstr) < 0) {
+    err("notify_submit_update: notify failed");
+  }
+  free(jrstr);
+}
+
+static void
 read_compile_packet_input(
         struct contest_extra *extra,
         const struct ejudge_cfg *config,
         serve_state_t cs,
         const struct contest_desc *cnts,
-        const unsigned char *compile_status_dir,
         const unsigned char *compile_report_dir,
         const unsigned char *pname,
         const struct compile_reply_packet *comp_pkt)
@@ -3121,7 +3390,9 @@ read_compile_packet_input(
                                         SUBMIT_FIELD_STATUS | SUBMIT_FIELD_PROTOCOL_ID | SUBMIT_FIELD_JUDGE_UUID,
                                         comp_pkt->status,
                                         rep_se.serial_id,
-                                        NULL);
+                                        NULL,
+                                        &se);
+    notify_submit_update(config, &se, tr);
     goto done;
   }
 
@@ -3165,13 +3436,22 @@ read_compile_packet_input(
                                           flags,
                                           RUN_COMPILED,
                                           se.protocol_id,
-                                          NULL);
+                                          NULL, NULL);
   if (r < 0) {
     err("read_compile_packet_input: failed to change status");
     goto done;
   }
 
-  r = generic_read_file(&run_text, 0, &run_size, REMOVE, compile_report_dir, pname, NULL);
+  const unsigned char *exe_sfx = "";
+  const struct section_language_data *lang = NULL;
+  if (se.lang_id >= 0 && se.lang_id <= cs->max_lang) {
+    lang = cs->langs[se.lang_id];
+  }
+  if (lang) {
+    exe_sfx = lang->exe_sfx;
+  }
+
+  r = generic_read_file(&run_text, 0, &run_size, REMOVE, compile_report_dir, pname, exe_sfx);
   if (r < 0) {
     err("read_compile_packet_input: failed to read executable");
     goto done;
@@ -3206,7 +3486,8 @@ read_compile_packet_input(
                         0 /* store_flags */,
                         0 /* not_ok_is_cf */,
                         inp_se.content,
-                        inp_se.size);
+                        inp_se.size,
+                        NULL);
   if (r < 0) {
     err("read_compile_packet_input: failed to send to testing");
     goto done;
@@ -3217,7 +3498,8 @@ read_compile_packet_input(
                                           SUBMIT_FIELD_STATUS,
                                           RUN_RUNNING,
                                           0,
-                                          NULL);
+                                          NULL, &se);
+  notify_submit_update(config, &se, tr);
 
 done:;
   testing_report_free(tr);
@@ -3234,7 +3516,8 @@ serve_read_compile_packet(
         const struct contest_desc *cnts,
         const unsigned char *compile_status_dir,
         const unsigned char *compile_report_dir,
-        const unsigned char *pname)
+        const unsigned char *pname,
+        struct compile_reply_packet *comp_pkt /* ownership transferred */)
 {
   unsigned char rep_path[PATH_MAX];
   int  r, rep_flags = 0;
@@ -3242,7 +3525,6 @@ serve_read_compile_packet(
   const struct section_global_data *global = state->global;
   char *comp_pkt_buf = 0;       /* need char* for generic_read_file */
   size_t comp_pkt_size = 0;
-  struct compile_reply_packet *comp_pkt = 0;
   long report_size = 0;
   unsigned char errmsg[1024] = { 0 };
   //unsigned char *team_name = 0;
@@ -3259,15 +3541,18 @@ serve_read_compile_packet(
   size_t min_txt_size = 1;
   testing_report_xml_t testing_report = NULL;
 
-  if ((r = generic_read_file(&comp_pkt_buf, 0, &comp_pkt_size, SAFE | REMOVE,
-                             compile_status_dir, pname, "")) <= 0)
-    return r;
+  if (!comp_pkt) {
+    if ((r = generic_read_file(&comp_pkt_buf, 0, &comp_pkt_size, SAFE | REMOVE,
+                               compile_status_dir, pname, "")) <= 0)
+      return r;
 
-  if (compile_reply_packet_read(comp_pkt_size, comp_pkt_buf, &comp_pkt) < 0) {
-    /* failed to parse a compile packet */
-    /* we can't do any reasonable recovery, just drop the packet */
-    goto non_fatal_error;
+    if (compile_reply_packet_read(comp_pkt_size, comp_pkt_buf, &comp_pkt) < 0) {
+      /* failed to parse a compile packet */
+      /* we can't do any reasonable recovery, just drop the packet */
+      goto non_fatal_error;
+    }
   }
+
   if (comp_pkt->contest_id != cnts->id) {
     err("read_compile_packet: mismatched contest_id %d", comp_pkt->contest_id);
     goto non_fatal_error;
@@ -3277,7 +3562,6 @@ serve_read_compile_packet(
                               config,
                               state,
                               cnts,
-                              compile_status_dir,
                               compile_report_dir,
                               pname,
                               comp_pkt);
@@ -3417,16 +3701,20 @@ serve_read_compile_packet(
     }
 
     if (comp_pkt->status == RUN_CHECK_FAILED) {
-      if (run_change_status_4(state->runlog_state, comp_pkt->run_id, RUN_CHECK_FAILED) < 0)
+      if (run_change_status_4(state->runlog_state, comp_pkt->run_id,
+                              RUN_CHECK_FAILED, &re) < 0)
         goto non_fatal_error;
+      serve_notify_run_update(config, state, &re);
       serve_send_check_failed_email(config, cnts, comp_pkt->run_id);
       serve_telegram_check_failed(config, cnts, state, comp_pkt->run_id, &re);
       goto success;
     }
 
     if (comp_pkt->status == RUN_COMPILE_ERR || comp_pkt->status == RUN_STYLE_ERR) {
-      if (run_change_status_4(state->runlog_state, comp_pkt->run_id, comp_pkt->status) < 0)
+      if (run_change_status_4(state->runlog_state, comp_pkt->run_id,
+                              comp_pkt->status, &re) < 0)
         goto non_fatal_error;
+      serve_notify_run_update(config, state, &re);
 
       serve_update_standings_file(extra, state, cnts, 0);
       if (global->notify_status_change > 0 && !re.is_hidden && comp_extra->notify_flag) {
@@ -3555,8 +3843,9 @@ serve_read_compile_packet(
   if (comp_pkt->status == RUN_CHECK_FAILED) {
     /* if status change fails, we cannot do reasonable recovery */
     if (run_change_status_4(state->runlog_state, comp_pkt->run_id,
-                            RUN_CHECK_FAILED) < 0)
+                            RUN_CHECK_FAILED, &re) < 0)
       goto non_fatal_error;
+    serve_notify_run_update(config, state, &re);
     if (re.store_flags == STORE_FLAGS_UUID) {
       if (uuid_archive_dir_prepare(state, &re.run_uuid, DFLT_R_UUID_XML_REPORT, 0) < 0)
         goto non_fatal_error;
@@ -3578,8 +3867,9 @@ serve_read_compile_packet(
   if (comp_pkt->status == RUN_COMPILE_ERR || comp_pkt->status == RUN_STYLE_ERR) {
     /* if status change fails, we cannot do reasonable recovery */
     if (run_change_status_4(state->runlog_state, comp_pkt->run_id,
-                            comp_pkt->status) < 0)
+                            comp_pkt->status, &re) < 0)
       goto non_fatal_error;
+    serve_notify_run_update(config, state, &re);
 
     if (re.store_flags == STORE_FLAGS_UUID) {
       if (uuid_archive_dir_prepare(state, &re.run_uuid, DFLT_R_UUID_XML_REPORT, 0) < 0) {
@@ -3638,8 +3928,9 @@ prepare_run_request:
   */
   if (prob->disable_testing && prob->enable_compilation > 0) {
     if (run_change_status_4(state->runlog_state, comp_pkt->run_id,
-                            RUN_ACCEPTED) < 0)
+                            RUN_ACCEPTED, &re) < 0)
       goto non_fatal_error;
+    serve_notify_run_update(config, state, &re);
     if (global->notify_status_change > 0 && !re.is_hidden
         && comp_extra->notify_flag) {
       serve_notify_user_run_status_change(config, cnts, state, re.user_id,
@@ -3680,7 +3971,8 @@ prepare_run_request:
                         re.locale_id, compile_report_dir, comp_pkt, 0, &re.run_uuid,
                         comp_extra->rejudge_flag, comp_pkt->zip_mode, re.store_flags,
                         comp_extra->not_ok_is_cf,
-                        NULL, 0) < 0) {
+                        NULL, 0,
+                        &re) < 0) {
     snprintf(errmsg, sizeof(errmsg), "failed to write run packet\n");
     goto report_check_failed;
   }
@@ -3706,8 +3998,10 @@ prepare_run_request:
   serve_telegram_check_failed(config, cnts, state, comp_pkt->run_id, &re);
 
   /* this is error recover, so if error happens again, we cannot do anything */
-  if (run_change_status_4(state->runlog_state, comp_pkt->run_id, RUN_CHECK_FAILED) < 0)
+  if (run_change_status_4(state->runlog_state, comp_pkt->run_id,
+                          RUN_CHECK_FAILED, &re) < 0)
     goto non_fatal_error;
+  serve_notify_run_update(config, state, &re);
   report_size = strlen(errmsg);
 
   if (re.store_flags == STORE_FLAGS_UUID_BSON) {
@@ -4020,9 +4314,25 @@ read_run_packet_input(
       testing_report_to_str(&rep_data, &rep_size, 1, tr);
     }
   } else {
-    // just write protocols to the storage
     if (reply_pkt->bson_flag) {
       mime_type = MIME_TYPE_BSON;
+    }
+    // parse protocol for notification
+    if (se.notify_driver > 0) {
+      if (reply_pkt->bson_flag) {
+        tr = testing_report_parse_bson_data(rep_data, rep_size);
+      } else {
+        size_t len = strlen(rep_data);
+        if (len != rep_size) {
+          err("read_run_packet_input: invalid length of testing report");
+          goto done;
+        }
+        tr = testing_report_parse_xml(rep_data);
+      }
+      if (!tr) {
+        err("read_run_packet_input: failed to parse testing report");
+        goto done;
+      }
     }
   }
 
@@ -4037,7 +4347,8 @@ read_run_packet_input(
                                       SUBMIT_FIELD_STATUS | SUBMIT_FIELD_PROTOCOL_ID | SUBMIT_FIELD_JUDGE_UUID,
                                       reply_pkt->status,
                                       tr_se.serial_id,
-                                      NULL);
+                                      NULL, &se);
+  notify_submit_update(config, &se, tr);
 
 done:;
   free(rep_data);
@@ -4055,7 +4366,8 @@ serve_read_run_packet(
         const unsigned char *run_status_dir,
         const unsigned char *run_report_dir,
         const unsigned char *run_full_archive_dir,
-        const unsigned char *pname)
+        const unsigned char *pname,
+        struct run_reply_packet *reply_pkt /* ownership transferred */)
 {
   const struct section_global_data *global = state->global;
   path_t rep_path, full_path, cur_rep_path;
@@ -4063,7 +4375,6 @@ serve_read_run_packet(
   struct run_entry re, pe;
   char *reply_buf = 0;          /* need char* for generic_read_file */
   size_t reply_buf_size = 0;
-  struct run_reply_packet *reply_pkt = 0;
   char *audit_text = 0;
   size_t audit_text_size = 0;
   FILE *f = 0;
@@ -4081,13 +4392,16 @@ serve_read_run_packet(
   testing_report_xml_t new_tr = NULL;
 
   get_current_time(&ts8, &ts8_us);
-  if ((r = generic_read_file(&reply_buf, 0, &reply_buf_size, SAFE | REMOVE,
-                             run_status_dir, pname, "")) <= 0)
-    return r;
 
-  if (run_reply_packet_read(reply_buf_size, reply_buf, &reply_pkt) < 0)
-    goto failed;
-  xfree(reply_buf), reply_buf = 0;
+  if (!reply_pkt) {
+    if ((r = generic_read_file(&reply_buf, 0, &reply_buf_size, SAFE | REMOVE,
+                               run_status_dir, pname, "")) <= 0)
+      return r;
+
+    if (run_reply_packet_read(reply_buf_size, reply_buf, &reply_pkt) < 0)
+      goto failed;
+    xfree(reply_buf), reply_buf = 0;
+  }
 
   if (reply_pkt->contest_id != cnts->id) {
     err("read_run_packet: contest_id mismatch: %d in packet",
@@ -4223,8 +4537,9 @@ serve_read_run_packet(
   if (reply_pkt->marked_flag < 0) reply_pkt->marked_flag = 0;
   if (reply_pkt->status == RUN_CHECK_FAILED) {
     if (run_change_status_4(state->runlog_state, reply_pkt->run_id,
-                            reply_pkt->status) < 0)
+                            reply_pkt->status, &re) < 0)
       goto failed;
+    serve_notify_run_update(config, state, &re);
   } else {
     int has_user_score = 0;
     int user_status = 0;
@@ -4240,8 +4555,9 @@ serve_read_run_packet(
                             reply_pkt->status, reply_pkt->tests_passed, 1,
                             reply_pkt->score, reply_pkt->marked_flag,
                             has_user_score, user_status, user_tests_passed,
-                            user_score, reply_pkt->verdict_bits) < 0)
+                            user_score, reply_pkt->verdict_bits, &re) < 0)
       goto failed;
+    serve_notify_run_update(config, state, &re);
   }
   serve_update_standings_file(extra, state, cnts, 0);
   if (global->notify_status_change > 0 && !re.is_hidden
@@ -4403,10 +4719,12 @@ serve_read_run_packet(
       if (run_get_entry(state->runlog_state, i, &pe) < 0) continue;
       if ((pe.status == RUN_ACCEPTED || pe.status == RUN_PENDING_REVIEW)
           && pe.prob_id == re.prob_id && pe.user_id == re.user_id) {
-        run_change_status_3(state->runlog_state, i, RUN_IGNORED, 0, 1, 0, 0, 0, 0, 0, 0, 0);
+        run_change_status_3(state->runlog_state, i, RUN_IGNORED, 0, 1, 0, 0, 0, 0, 0, 0, 0, &re);
+        serve_notify_run_update(config, state, &re);
       } else if (pe.is_saved && (pe.saved_status == RUN_ACCEPTED || pe.saved_status == RUN_PENDING_REVIEW)
           && pe.prob_id == re.prob_id && pe.user_id == re.user_id) {
-        run_change_status_3(state->runlog_state, i, RUN_IGNORED, 0, 1, 0, 0, 0, 0, 0, 0, 0);
+        run_change_status_3(state->runlog_state, i, RUN_IGNORED, 0, 1, 0, 0, 0, 0, 0, 0, 0, &re);
+        serve_notify_run_update(config, state, &re);
       }
     }
   }
@@ -4604,7 +4922,8 @@ serve_judge_built_in_problem(
   /* FIXME: handle database update error */
   (void) failed_test;
   run_change_status_3(state->runlog_state, run_id, glob_status, passed_tests, 1,
-                      score, 0, 0, 0, 0, 0, 0);
+                      score, 0, 0, 0, 0, 0, 0, re);
+  serve_notify_run_update(config, state, re);
   serve_update_standings_file(extra, state, cnts, 0);
   /*
   if (global->notify_status_change > 0 && !re.is_hidden
@@ -4700,9 +5019,11 @@ serve_report_check_failed(
   }
   xfree(tr_t); tr_t = NULL;
 
-  if (run_change_status_4(state->runlog_state, run_id, RUN_CHECK_FAILED) < 0) {
+  if (run_change_status_4(state->runlog_state, run_id,
+                          RUN_CHECK_FAILED, &re) < 0) {
     err("run_change_status_4: %d, RUN_CHECK_FAILED failed\n", run_id);
   }
+  serve_notify_run_update(config, state, &re);
 }
 
 void
@@ -4793,7 +5114,8 @@ serve_rejudge_run(
                                 1 /* rejudge_flag */,
                                 re.is_vcs /* vcs_mode */,
                                 0 /* not_ok_is_cf */,
-                                user);
+                                user,
+                                NULL);
       if (r < 0) {
         serve_report_check_failed(config, cnts, state, run_id, serve_err_str(r));
         err("rejudge_run: serve_compile_request failed: %s", serve_err_str(r));
@@ -4819,7 +5141,8 @@ serve_rejudge_run(
                       re.locale_id, 0, 0, 0, &re.run_uuid,
                       1 /* rejudge_flag */, 0 /* zip_mode */, re.store_flags,
                       0 /* not_ok_is_cf */,
-                      NULL, 0);
+                      NULL, 0,
+                      &re);
     xfree(run_text);
     return;
   }
@@ -4846,7 +5169,8 @@ serve_rejudge_run(
                             1 /* rejudge_flag */,
                             re.is_vcs /* vcs_mode */,
                             0 /* not_ok_is_cf */,
-                            user);
+                            user,
+                            NULL);
   if (r < 0) {
     serve_report_check_failed(config, cnts, state, run_id, serve_err_str(r));
     err("rejudge_run: serve_compile_request failed: %s", serve_err_str(r));
@@ -5825,6 +6149,7 @@ serve_collect_virtual_stop_events(serve_state_t cs)
   time_t *user_time = 0, *new_time, *pt;
   int user_time_size = 0, new_size;
   int need_reload = 0;
+  struct run_entry upd_re;
 
   if (!cs->global->is_virtual) return 0;
 
@@ -5916,7 +6241,7 @@ serve_collect_virtual_stop_events(serve_state_t cs)
         // run after virtual stop
         if (!pe->is_hidden) {
           err("run %d: run after virtual stop, made hidden!", i);
-          run_set_hidden(cs->runlog_state, i);
+          run_set_hidden(cs->runlog_state, i, &upd_re);
           need_reload = 1;
         }
       } else if (!*pt) {
@@ -5926,7 +6251,7 @@ serve_collect_virtual_stop_events(serve_state_t cs)
         // virtual run overrun
         if (!pe->is_hidden) {
           err("run %d: virtual time run overrun, made hidden!", i);
-          run_set_hidden(cs->runlog_state, i);
+          run_set_hidden(cs->runlog_state, i, &upd_re);
           need_reload = 1;
         }
       } else {
@@ -6164,10 +6489,15 @@ serve_clear_by_mask(serve_state_t state,
 }
 
 void
-serve_ignore_by_mask(serve_state_t state,
-                     int user_id, const ej_ip_t *ip, int ssl_flag,
-                     int mask_size, unsigned long *mask,
-                     int new_status)
+serve_ignore_by_mask(
+        const struct ejudge_cfg *config,
+        serve_state_t state,
+        int user_id,
+        const ej_ip_t *ip,
+        int ssl_flag,
+        int mask_size,
+        unsigned long *mask,
+        int new_status)
 {
   int total_runs, r;
   struct run_entry re;
@@ -6203,7 +6533,7 @@ serve_ignore_by_mask(serve_state_t state,
     if (re.status == new_status) continue;
 
     re.status = new_status;
-    if (run_set_entry(state->runlog_state, r, RE_STATUS, &re) >= 0) {
+    if (run_set_entry(state->runlog_state, r, RE_STATUS, &re, &re) >= 0) {
       if (re.store_flags == STORE_FLAGS_UUID || re.store_flags == STORE_FLAGS_UUID_BSON) {
         uuid_archive_remove(state, &re.run_uuid, 1);
       } else {
@@ -6214,12 +6544,14 @@ serve_ignore_by_mask(serve_state_t state,
       }
       serve_audit_log(state, r, &re, user_id, ip, ssl_flag,
                       cmd, "ok", new_status, NULL);
+      serve_notify_run_update(config, state, &re);
     }
   }
 }
 
 void
 serve_mark_by_mask(
+        const struct ejudge_cfg *config,
         serve_state_t state,
         int user_id,
         const ej_ip_t *ip,
@@ -6256,7 +6588,8 @@ serve_mark_by_mask(
     if (re.is_marked == mark_value) continue;
 
     re.is_marked = mark_value;
-    run_set_entry(state->runlog_state, r, RE_IS_MARKED, &re);
+    run_set_entry(state->runlog_state, r, RE_IS_MARKED, &re, &re);
+    serve_notify_run_update(config, state, &re);
 
     serve_audit_log(state, r, &re, user_id, ip, ssl_flag,
                     audit_cmd, "ok", -1, NULL);
@@ -6295,7 +6628,10 @@ serve_tokenize_by_mask(
     if (re.token_count != token_count || re.token_flags != token_flags) {
       re.token_count = token_count;
       re.token_flags = token_flags;
-      run_set_entry(state->runlog_state, r, RE_TOKEN_COUNT | RE_TOKEN_FLAGS, &re);
+      run_set_entry(state->runlog_state, r, RE_TOKEN_COUNT | RE_TOKEN_FLAGS,
+                    &re, &re);
+      //FIXME:2notify
+      //serve_notify_run_update(config, state, &re);
     }
 
     serve_audit_log(state, r, &re, user_id, ip, ssl_flag,
@@ -6483,11 +6819,17 @@ serve_testing_queue_delete(
           && srp->global->judge_uuid[0]
           && ej_uuid_parse(srp->global->judge_uuid, &judge_uuid) >= 0
           && !memcmp(&re.j.judge_uuid, &judge_uuid, sizeof(re.j.judge_uuid))) {
-        run_change_status_4(state->runlog_state, srp->global->run_id, RUN_PENDING);
+        run_change_status_4(state->runlog_state, srp->global->run_id,
+                            RUN_PENDING, &re);
+        //FIXME:2notify
+        //serve_notify_run_update(config, state, &re);
       }
     } else {
       if (re.j.judge_id == srp->global->judge_id) {
-        run_change_status_4(state->runlog_state, srp->global->run_id, RUN_PENDING);
+        run_change_status_4(state->runlog_state, srp->global->run_id,
+                            RUN_PENDING, &re);
+        //FIXME:2notify
+        //serve_notify_run_update(config, state, &re);
       }
     }
   }
@@ -7194,4 +7536,121 @@ serve_invoker_down(
   snprintf(path, sizeof(path), "%s/dir/%s@D", rqi->heartbeat_dir, file2);
   int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
   close(fd);
+}
+
+void
+serve_invoker_reboot(
+        const serve_state_t state,
+        const unsigned char *queue,
+        const unsigned char *file)
+{
+  unsigned char file2[PATH_MAX];
+  unsigned char path[PATH_MAX];
+
+  const struct run_queue_item *rqi = lookup_run_queue_item(state, queue);
+  if (!rqi) return;
+  if (!rqi->heartbeat_dir || !*rqi->heartbeat_dir) return;
+
+  snprintf(file2, sizeof(file2), "%s", file);
+  for (int i = 0; file2[i]; ++i) {
+    if (file2[i] <= ' ' || file2[i] >= 0x7f || file2[i] == '/') {
+      file2[i] = '_';
+    }
+  }
+
+  snprintf(path, sizeof(path), "%s/dir/%s@R", rqi->heartbeat_dir, file2);
+  int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+  close(fd);
+}
+
+void
+serve_compiler_op(
+        const serve_state_t state,
+        const unsigned char *queue,
+        const unsigned char *file,
+        const unsigned char *op)
+{
+  unsigned char file2[PATH_MAX];
+  unsigned char path[PATH_MAX];
+
+  const struct compile_queue_item *cqi = lookup_compile_queue_item(state, queue);
+  if (!cqi) return;
+  if (!cqi->heartbeat_dir || !*cqi->heartbeat_dir) return;
+  if (!op || !*op) return;
+
+  snprintf(file2, sizeof(file2), "%s", file);
+  for (int i = 0; file2[i]; ++i) {
+    if (file2[i] <= ' ' || file2[i] >= 0x7f || file2[i] == '/') {
+      file2[i] = '_';
+    }
+  }
+
+  if (!strcmp(op, "delete")) {
+    info("DELETE for queue %s and compiler %s", queue, file);
+    snprintf(path, sizeof(path), "%s/dir/%s", cqi->heartbeat_dir, file2);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/dir/%s@D", cqi->heartbeat_dir, file2);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/dir/%s@S", cqi->heartbeat_dir, file2);
+    unlink(path);
+  } else if (!strcmp(op, "stop")) {
+    info("STOP for queue %s and compiler %s", queue, file);
+    snprintf(path, sizeof(path), "%s/dir/%s@S", cqi->heartbeat_dir, file2);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_EXCL, 0666);
+    close(fd);
+  } else if (!strcmp(op, "down")) {
+    info("DOWN for queue %s and compiler %s", queue, file);
+    snprintf(path, sizeof(path), "%s/dir/%s@D", cqi->heartbeat_dir, file2);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_EXCL, 0666);
+    close(fd);
+  } else if (!strcmp(op, "reboot")) {
+    info("REBOOT for queue %s and compiler %s", queue, file);
+    snprintf(path, sizeof(path), "%s/dir/%s@R", cqi->heartbeat_dir, file2);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_EXCL, 0666);
+    close(fd);
+  }
+}
+
+int
+serve_get_compile_reply_contest_id(const unsigned char *path)
+{
+  int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOCTTY | O_NOFOLLOW | O_NONBLOCK, 0);
+  if (fd < 0 && errno == ENOENT) {
+    return 0;
+  }
+  if (fd < 0) {
+    err("serve_get_compile_reply_contest_id: failed to open '%s': %s", path, os_ErrorMsg());
+    return -1;
+  }
+  struct stat stb;
+  if (fstat(fd, &stb)) {
+    abort();
+  }
+  if (!S_ISREG(stb.st_mode)) {
+    err("serve_get_compile_reply_contest_id: not regular file '%s'", path);
+    close(fd);
+    return -1;
+  }
+  if (stb.st_size <= 0) {
+    err("serve_get_compile_reply_contest_id: empty file '%s'", path);
+    close(fd);
+    return -1;
+  }
+  if (stb.st_size > 1024 * 128) {
+    err("serve_get_compile_reply_contest_id: file '%s' too big: %lld", path, (long long) stb.st_size);
+    close(fd);
+    return -1;
+  }
+  void *pkt_ptr = mmap(NULL, stb.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+  if (pkt_ptr == MAP_FAILED) {
+    err("serve_get_compile_reply_contest_id: file '%s' map failed: %s", path, os_ErrorMsg());
+    close(fd);
+    return -1;
+  }
+  close(fd); fd = -1;
+
+  int r = compile_reply_packet_get_contest_id(stb.st_size, pkt_ptr);
+  munmap(pkt_ptr, stb.st_size);
+
+  return r;
 }

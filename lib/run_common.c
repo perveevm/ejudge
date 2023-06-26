@@ -261,30 +261,25 @@ generate_xml_report(
   if (srgp->scoring_system_val == SCORE_OLYMPIAD) {
     tr->accepting_mode = (srgp->accepting_mode > 0);
   }
+  tr->tests_passed = reply_pkt->tests_passed;
 
   if (srgp->scoring_system_val == SCORE_OLYMPIAD && srgp->accepting_mode > 0 && reply_pkt->status != RUN_ACCEPTED) {
-    tr->tests_passed = reply_pkt->tests_passed;
     tr->failed_test = total_tests - 1;
   } else if (srgp->scoring_system_val == SCORE_ACM && reply_pkt->status != RUN_OK) {
-    tr->tests_passed = reply_pkt->tests_passed;
     tr->failed_test = total_tests - 1;
   } else if (srgp->scoring_system_val == SCORE_OLYMPIAD && srgp->accepting_mode <= 0) {
-    tr->tests_passed = reply_pkt->tests_passed;
     tr->score = reply_pkt->score;
     tr->max_score = max_score;
   } else if (srgp->scoring_system_val == SCORE_KIROV) {
-    tr->tests_passed = reply_pkt->tests_passed;
     tr->score = reply_pkt->score;
     tr->max_score = max_score;
   } else if (srgp->scoring_system_val == SCORE_MOSCOW) {
     if (reply_pkt->status != RUN_OK) {
       tr->failed_test = total_tests - 1;
     }
-    tr->tests_passed = reply_pkt->tests_passed;
     tr->score = reply_pkt->score;
     tr->max_score = max_score;
   } else {
-    tr->tests_passed = reply_pkt->tests_passed;
   }
   if (report_time_limit_ms > 0) {
     tr->time_limit_ms = report_time_limit_ms;
@@ -498,6 +493,7 @@ read_error_code(char const *path)
 {
   FILE *f;
   int   n;
+  __attribute__((unused)) int _;
 
   if (!(f = fopen(path, "r"))) {
     return 100;
@@ -506,7 +502,7 @@ read_error_code(char const *path)
     fclose(f);
     return 101;
   }
-  fscanf(f, " ");
+  _ = fscanf(f, " ");
   if (getc(f) != EOF) {
     fclose(f);
     return 102;
@@ -2844,6 +2840,8 @@ run_one_test(
   unsigned char error_file[PATH_MAX];
   unsigned char error_code[PATH_MAX];
   unsigned char arch_entry_name[PATH_MAX];
+  unsigned char local_check_cmd[PATH_MAX];
+  unsigned char exe_dir[PATH_MAX];
 
   unsigned char mem_limit_buf[PATH_MAX];
 
@@ -3106,6 +3104,16 @@ run_one_test(
   clear_directory(check_dir);
   check_free_space(check_dir, expected_free_space);
 
+  if (srpp->use_tgz > 0 && srpp->copy_exe_to_tgzdir > 0) {
+    snprintf(exe_dir, sizeof(exe_dir), "%s/%s", check_dir, tgzdir_base);
+    if (mkdir(exe_dir, 0700) < 0 && errno != EEXIST) {
+      append_msg_to_log(check_out_path, "failed to create directory '%s': %s", exe_dir, os_ErrorMsg());
+      goto check_failed;
+    }
+  } else {
+    snprintf(exe_dir, sizeof(exe_dir), "%s", check_dir);
+  }
+
   if (srgp->zip_mode > 0) {
     unsigned char zip_path[PATH_MAX];
     snprintf(zip_path, sizeof(zip_path), "%s/%s", global->run_work_dir, exe_name);
@@ -3136,7 +3144,7 @@ run_one_test(
     }
     zf->ops->close(zf); zf = NULL;
     unsigned char target_path[PATH_MAX];
-    snprintf(target_path, sizeof(target_path), "%s/%s", check_dir, exe_name);
+    snprintf(target_path, sizeof(target_path), "%s/%s", exe_dir, exe_name);
     if (generic_write_file(bytes_s, bytes_z, 0, NULL, target_path, NULL) < 0) {
       if (log_f) {
         fprintf(log_f, "cannot save file '%s'\n", target_path);
@@ -3148,14 +3156,14 @@ run_one_test(
     xfree(bytes_s);
     if (log_f) fclose(log_f);
   } else {
-    if (generic_copy_file(0, global->run_work_dir, exe_name, "", 0, check_dir, exe_name, "") < 0) {
+    if (generic_copy_file(0, global->run_work_dir, exe_name, "", 0, exe_dir, exe_name, "") < 0) {
       append_msg_to_log(check_out_path, "failed to copy %s/%s -> %s/%s", global->run_work_dir, exe_name,
-                        check_dir, exe_name);
+                        exe_dir, exe_name);
       goto check_failed;
     }
   }
 
-  snprintf(exe_path, sizeof(exe_path), "%s/%s", check_dir, exe_name);
+  snprintf(exe_path, sizeof(exe_path), "%s/%s", exe_dir, exe_name);
   make_executable(exe_path);
 
   start_cmd_name[0] = 0;
@@ -3176,7 +3184,7 @@ run_one_test(
     make_executable(start_cmd_path);
   }
 
-  if (srpp->use_tgz > 0) {
+  if (srpp->use_tgz > 0 && srpp->copy_exe_to_tgzdir <= 0) {
 #ifdef __WIN32__
     snprintf(arg0_path, sizeof(arg0_path), "%s%s..%s%s", check_dir, CONF_DIRSEP, CONF_DIRSEP, exe_name);
 #else
@@ -3464,10 +3472,10 @@ run_one_test(
   long long max_rss_size = -1LL;
   long long max_file_size = -1LL;
   if (srpp->use_info > 0) {
-    if (tstinfo.max_vm_size > 0) max_vm_size = tstinfo.max_vm_size;
-    if (tstinfo.max_stack_size > 0) max_stack_size = tstinfo.max_stack_size;
-    if (tstinfo.max_rss_size > 0) max_rss_size = tstinfo.max_rss_size;
-    if (tstinfo.max_file_size > 0) max_file_size = tstinfo.max_file_size;
+    if (tstinfo.max_vm_size >= 0) max_vm_size = tstinfo.max_vm_size;
+    if (tstinfo.max_stack_size >= 0) max_stack_size = tstinfo.max_stack_size;
+    if (tstinfo.max_rss_size >= 0) max_rss_size = tstinfo.max_rss_size;
+    if (tstinfo.max_file_size >= 0) max_file_size = tstinfo.max_file_size;
   }
   if (max_vm_size < 0 && srpp->max_vm_size > 0) max_vm_size = srpp->max_vm_size;
   if (max_stack_size < 0 && srpp->max_stack_size > 0) max_stack_size = srpp->max_stack_size;
@@ -3995,6 +4003,17 @@ run_checker:;
       output_path_to_check = output_path;
     }
   }
+
+  if (tstinfo.check_cmd && tstinfo.check_cmd[0]) {
+    if (os_IsAbsolutePath(tstinfo.check_cmd)) {
+      snprintf(local_check_cmd, sizeof(local_check_cmd), "%s", tstinfo.check_cmd);
+    } else {
+      snprintf(local_check_cmd, sizeof(local_check_cmd), "%s/%s", srpp->problem_dir, tstinfo.check_cmd);
+    }
+    mirror_file(agent, local_check_cmd, sizeof(local_check_cmd), mirror_dir);
+    check_cmd = local_check_cmd;
+  }
+
   status = invoke_checker(srgp, srpp, cur_test, cur_info,
                           check_cmd, test_src, output_path_to_check,
                           corr_src, info_src, tgzdir_src,
@@ -4368,11 +4387,16 @@ check_output_only(
     reply_pkt->failed_test = 1;
     reply_pkt->tests_passed = 0;
   }
-  if (srgp->separate_user_score > 0) {
+  if (srgp->separate_user_score > 0 && cur_info->user_status >= 0) {
     reply_pkt->has_user_score = 1;
     reply_pkt->user_status = cur_info->user_status;
     reply_pkt->user_score = cur_info->user_score;
     reply_pkt->user_tests_passed = cur_info->user_tests_passed;
+  } else {
+    reply_pkt->has_user_score = 0;
+    reply_pkt->user_status = 0;
+    reply_pkt->user_score = 0;
+    reply_pkt->user_tests_passed = 0;
   }
 
   // output file
@@ -4680,6 +4704,20 @@ run_tests(
              global->ejudge_checkers_dir, srpp->standard_checker);
   } else {
     snprintf(check_cmd, sizeof(check_cmd), "%s", srpp->check_cmd);
+  }
+  if (srpp->checker_extra_files) {
+    for (int i = 0; srpp->checker_extra_files[i]; ++i) {
+      const char *cef = srpp->checker_extra_files[i];
+      unsigned char extra_file[PATH_MAX];
+      if (os_IsAbsolutePath(cef)) {
+        snprintf(extra_file, sizeof(extra_file), "%s", cef);
+      } else {
+        unsigned char dirname[PATH_MAX];
+        os_rDirName(srpp->check_cmd, dirname, sizeof(dirname));
+        snprintf(extra_file, sizeof(extra_file), "%s/%s", dirname, cef);
+      }
+      mirror_file(agent, extra_file, sizeof(extra_file), mirror_dir);
+    }
   }
   mirror_file(agent, check_cmd, sizeof(check_cmd), mirror_dir);
 

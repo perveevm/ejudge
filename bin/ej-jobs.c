@@ -975,6 +975,7 @@ static int
 prepare_config_vars(struct AppState *as)
 {
     char buf[PATH_MAX];
+    __attribute__((unused)) int _;
 
     if (as->config->job_server_log) {
         if (os_IsAbsolutePath(as->config->job_server_log)) {
@@ -986,7 +987,7 @@ prepare_config_vars(struct AppState *as)
             as->job_server_log = xstrdup(buf);
         }
     } else {
-        asprintf((char**) &as->job_server_log, "%s/%s", as->config->var_dir, "ej-jobs.log");
+        _ = asprintf((char**) &as->job_server_log, "%s/%s", as->config->var_dir, "ej-jobs.log");
     }
 
     if (as->config->job_server_spool) {
@@ -1002,7 +1003,7 @@ prepare_config_vars(struct AppState *as)
             return -1;
         as->job_server_spool = xstrdup(buf);
     }
-    asprintf((char**) &as->job_server_spool_watch, "%s/dir", as->job_server_spool);
+    _ = asprintf((char**) &as->job_server_spool_watch, "%s/dir", as->job_server_spool);
 
     if (as->config->job_server_work) {
         if (os_IsAbsolutePath(as->config->job_server_work)) {
@@ -1019,17 +1020,17 @@ prepare_config_vars(struct AppState *as)
     }
 
 #if defined EJUDGE_LOCAL_DIR
-    asprintf((char**) &as->ejudge_socket_dir, "%s/%s",
-             EJUDGE_LOCAL_DIR, "sockets");
+    _ = asprintf((char**) &as->ejudge_socket_dir, "%s/%s",
+                 EJUDGE_LOCAL_DIR, "sockets");
 #else
     if (!as->config->var_dir || !os_IsAbsolutePath(as->config->var_dir)) {
         err("<var_dir> is not set or not an absolute path");
         return -1;
     }
-    asprintf((char**) &as->ejudge_socket_dir, "%s/%s", as->config->var_dir, "socket");
+    _ = asprintf((char**) &as->ejudge_socket_dir, "%s/%s", as->config->var_dir, "socket");
 #endif
 
-    asprintf((char **) &as->job_server_socket, "%s/%s", as->ejudge_socket_dir, "jobs");
+    _ = asprintf((char **) &as->job_server_socket, "%s/%s", as->ejudge_socket_dir, "jobs");
 
     if (make_dir(as->ejudge_socket_dir, 0) < 0) return -1;
     if (make_dir(as->job_server_work, 0) < 0) return -1;
@@ -1817,10 +1818,14 @@ int main(int argc, char *argv[])
     const unsigned char *group = NULL;
     const unsigned char *workdir = NULL;
     unsigned char *ejudge_xml_path = NULL;
+    int disable_stack_trace = 0;
 
     while (cur_arg < argc) {
         if (!strcmp(argv[cur_arg], "-D")) {
             as.daemon_mode = 1;
+            cur_arg++;
+        } else if (!strcmp(argv[cur_arg], "-nst")) {
+            disable_stack_trace = 1;
             cur_arg++;
         } else if (!strcmp(argv[cur_arg], "-R")) {
             restart_mode = 1;
@@ -1861,6 +1866,9 @@ int main(int argc, char *argv[])
     }
     argv_restart[j] = NULL;
     start_set_args(argv_restart);
+    if (disable_stack_trace <= 0) {
+        start_enable_stacktrace(NULL);
+    }
 
     int pid;
     if ((pid = start_find_process("ej-jobs", NULL, 0)) > 0) {

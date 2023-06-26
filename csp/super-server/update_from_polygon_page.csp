@@ -17,6 +17,8 @@
     unsigned char *saved_secret = NULL;
     struct sid_state *ss = phr->ss;
     int cur_page = 4;
+    int enable_api = 0;
+    int save_auth = 0;
 
 %><s:read var="contest_id" /><%
     if (contest_id <= 0) FAIL(SSERV_ERR_INV_CONTEST);
@@ -42,6 +44,8 @@
     if (!saved_key) saved_key = xstrdup("");
     if (!saved_secret) saved_secret = xstrdup("");
 
+    save_auth = strlen(saved_login) > 0 || strlen(saved_password) > 0 || strlen(saved_url) > 0 || strlen(saved_url) > 0 || strlen(saved_secret) > 0;
+    enable_api = (strlen(saved_key) > 0 && strlen(saved_secret) > 0);
 %><%@include "header.csp"
 %>
 
@@ -57,11 +61,17 @@
         <tr><td colspan="2" align="center" class="b0"><b>Polygon information</b></td></tr>
         <tr><td class="b0"><b>Login</b> *:</td><td class="b0"><s:textfield size="40" name="polygon_login" value="saved_login" checkExpr="" /></td></tr>
         <tr><td class="b0"><b>Password</b> *:</td><td class="b0"><s:password size="40" name="polygon_password" value="saved_password" /></td></tr>
-        <tr><td class="b0">Save auth info:</td><td class="b0"><input type="checkbox" name="save_auth" value="1" /></td></tr>
+        <tr><td class="b0">API key:</td><td class="b0"><s:textfield size="40" name="polygon_key" value="saved_key" checkExpr="" /></td></tr>
+        <tr><td class="b0">API secret:</td><td class="b0"><s:textfield size="40" name="polygon_secret" value="saved_secret" /></td></tr>
+        <tr><td class="b0">Use Polygon API:</td><td class="b0"><s:checkbox name="enable_api" value="1" checkedExpr="enable_api" /></td></tr>
+        <tr><td class="b0">Save auth info:</td><td class="b0"><s:checkbox name="save_auth" value="1" checkedExpr="save_auth" /></td></tr>
         <tr><td class="b0">Polygon URL:</td><td class="b0"><s:textfield size="60" name="polygon_url" value="saved_url" checkExpr="" /></td></tr>
-        <tr><td class="b0"><s:submit ac="update-from-polygon-action" label="Import" /></td></tr>
+        <tr><td class="b0">Fetch latest available packet (do not generate):</td><td class="b0"><input type="checkbox" name="fetch_latest_available" value="1" checked="checked" /></td></tr>
         <tr><td class="b0">Ignore additional solutions:</td><td class="b0"><input type="checkbox" name="ignore_solutions" value="1" checked="checked" /></td></tr>
-        <tr><td class="b0">Fetch latest available packet (do not generate):</td><td class="b0"><input type="checkbox" name="fetch_latest_available" value="1" /></td></tr>
+        <tr><td class="b0">Tests are binary data:</td><td class="b0"><input type="checkbox" name="binary_input" value="1" /></td></tr>
+        <tr><td class="b0">Embed statement in IFRAME:</td><td class="b0"><input type="checkbox" name="enable_iframe_statement" value="1" checked="checked" /></td></tr>
+        <tr><td class="b0">Verbose importer output:</td><td class="b0"><input type="checkbox" name="verbose" value="1" /></td></tr>
+        <tr><td class="b0"><s:submit ac="update-from-polygon-action" label="Update" /></td></tr>
     </table>
 </s:form>
 
@@ -72,5 +82,7 @@ cleanup:
     xfree(saved_login);
     xfree(saved_password);
     xfree(saved_url);
+    xfree(saved_key);
+    xfree(saved_secret);
     html_armor_free(&ab);
 %>

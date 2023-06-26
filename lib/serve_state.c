@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2006-2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2006-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -118,7 +118,7 @@ serve_state_destroy(
     xfree(state->pending_xml_import);
   }
 
-  if (ul_conn && state->global && cnts->id > 0) {
+  if (ul_conn && state->global && cnts && cnts->id > 0) {
     // ignore error code
     userlist_clnt_notify(ul_conn, ULS_DEL_NOTIFY, cnts->id);
   }
@@ -219,6 +219,15 @@ serve_state_destroy(
     xfree(state->compile_dirs[i].report_dir);
   }
   xfree(state->compile_dirs);
+
+  for (i = 0; i < state->compile_queues_u; ++i) {
+    struct compile_queue_item *item = &state->compile_queues[i];
+    xfree(item->id);
+    xfree(item->queue_dir);
+    xfree(item->src_dir);
+    xfree(item->heartbeat_dir);
+  }
+  xfree(state->compile_queues);
 
   for (i = 0; i < state->run_dirs_u; i++) {
     struct run_dir_item *rdi = &state->run_dirs[i];
@@ -716,7 +725,7 @@ serve_state_load_contest_config(
   state->current_time = time(0);
   state->load_time = state->current_time;
 
-  if (prepare(cnts, state, state->config_path, 0, PREPARE_SERVE, "", 1, 0, 0) < 0)
+  if (prepare(config, cnts, state, state->config_path, 0, PREPARE_SERVE, "", 1, 0, 0) < 0)
     goto failure;
   if (prepare_serve_defaults(cnts, state, NULL) < 0) goto failure;
 
@@ -799,7 +808,7 @@ serve_state_load_contest(
   extra->serve_state = state;
 
   info("loading contest %d configuration file", contest_id);
-  if (prepare(cnts, state, state->config_path, 0, PREPARE_SERVE, "", 1, 0, 0) < 0)
+  if (prepare(config, cnts, state, state->config_path, 0, PREPARE_SERVE, "", 1, 0, 0) < 0)
     goto failure;
   if (prepare_serve_defaults(cnts, state, p_cnts) < 0) goto failure;
   if (create_dirs(cnts, state, PREPARE_SERVE) < 0) goto failure;
@@ -894,7 +903,9 @@ serve_state_load_contest(
     if (contest_finish_time > 0 && contest_finish_time <= state->current_time){
       contest_finish_time = 0;
     }
-    if (run_open(state->runlog_state, config, cnts, global, 0, 0,
+    if (run_open(state->runlog_state, config, cnts, global, 0,
+                 metrics.data,
+                 0,
                  global->contest_time, cnts->sched_time,
                  contest_finish_time) < 0) goto failure;
     if (!serve_collect_virtual_stop_events(state)) break;

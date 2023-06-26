@@ -1,6 +1,6 @@
 /* -*- c -*- */
 
-/* Copyright (C) 2000-2017 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2000-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or
@@ -361,6 +361,26 @@ get_file_list(const char *partial_path, strarray_t *files)
   if (files->u > 0) {
     qsort(files->v, files->u, sizeof(files->v[0]), name_sort_func);
   }
+
+  return 0;
+}
+
+int
+get_file_list_unsorted(const char *dir_path, strarray_t *files)
+{
+  DIR           *d = NULL;
+  struct dirent *de;
+
+  files->u = 0;
+  if (!(d = opendir(dir_path))) {
+    return -1;
+  }
+  while ((de = readdir(d))) {
+    if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
+    xexpand(files);
+    files->v[files->u++] = xstrdup(de->d_name);
+  }
+  closedir(d); d = NULL;
 
   return 0;
 }
@@ -2002,4 +2022,45 @@ cleanup:;
     unlink(path);
   }
   return retval;
+}
+
+int
+fast_read_file_with_size(
+        const unsigned char *path,
+        size_t size,
+        unsigned char **p_buf)
+{
+  unsigned char *buf = malloc(size + 1);
+  buf[size] = 0;
+
+  int fd = open(path, O_RDONLY | O_NOCTTY, 0);
+  if (fd < 0) {
+    int r = errno;
+    err("%s: open '%s' failed: %s", __FUNCTION__, path, os_ErrorMsg());
+    free(buf);
+    return -r;
+  }
+  unsigned char *p = buf;
+  size_t rem = size;
+  while (rem > 0) {
+    ssize_t rr = read(fd, p, rem);
+    if (rr < 0) {
+      int r = errno;
+      err("%s: read '%s' failed: %s", __FUNCTION__, path, os_ErrorMsg());
+      free(buf);
+      close(fd);
+      return -r;
+    }
+    if (!rr) {
+      err("%s: unexpected EOF in '%s'", __FUNCTION__, path);
+      free(buf);
+      close(fd);
+      return -EINVAL;
+    }
+    p += rr;
+    rem -= rr;
+  }
+  close(fd);
+  *p_buf = buf;
+  return 1;
 }

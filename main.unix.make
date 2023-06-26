@@ -33,15 +33,17 @@ else
 $(error "unsupported configuration")
 endif
 
+BACKTRACE_LDFLAGS = -L./libbacktrace/.libs
+
 LDLIBS=${EXTRALIBS} -lz $(LIBINTL) $(LIBICONV) $(LIBLIBICONV) -lm
 CFLAGS=-I. ${EXPAT_INCL_OPT} ${CDEBUGFLAGS} ${CCOMPFLAGS} ${CEXTRAFLAGS} ${WPTRSIGN} ${NCURSESINCLUDE}
-LDFLAGS=${EXPAT_LIB_OPT} ${CDEBUGFLAGS} ${LDCOMPFLAGS} ${LDEXTRAFLAGS}
+LDFLAGS=${EXPAT_LIB_OPT} ${CDEBUGFLAGS} ${LDCOMPFLAGS} ${LDEXTRAFLAGS} ${BACKTRACE_LDFLAGS}
 CC=gcc
 LD=gcc
 EXPAT_LIB=-lexpat
 
 C_CFILES=bin/ej-compile.c version.c
-C_OBJECTS=$(C_CFILES:.c=.o) libcommon.a libplatform.a libcommon.a
+C_OBJECTS=$(C_CFILES:.c=.o) libcommon.a libplatform.a libcommon.a libflatcc.a
 
 CC_CFILES=bin/ej-compile-control.c
 CC_OBJECTS=$(CC_CFILES:.c=.o) libcommon.a libplatform.a libcommon.a
@@ -146,7 +148,7 @@ NC_CFILES = cgi-bin/new-client.c version.c
 NC_OBJECTS = $(NC_CFILES:.c=.o) libnew_server_clnt.a libcommon.a libplatform.a libcommon.a
 
 NS_CFILES= bin/ej-contests.c version.c
-NS_OBJECTS=$(NS_CFILES:.c=.o) libcommon.a libuserlist_clnt.a libplatform.a libcommon.a
+NS_OBJECTS=$(NS_CFILES:.c=.o) libcommon.a libuserlist_clnt.a libplatform.a libcommon.a libflatcc.a
 
 NSM_CFILES = bin/ejudge-contests-cmd.c version.c
 NSM_OBJECTS = $(NSM_CFILES:.c=.o) libcommon.a libnew_server_clnt.a libuserlist_clnt.a libplatform.a libcommon.a
@@ -164,7 +166,7 @@ IC_CFILES = bin/ej-import-contest.c version.c
 IC_OBJECTS = $(IC_CFILES:.c=.o) libcommon.a libplatform.a libcommon.a
 
 G_CFILES = bin/ej-page-gen.c 
-G_OBJECTS = $(G_CFILES:.c=.o) libcommon.a libplatform.a libcommon.a
+G_OBJECTS = $(G_CFILES:.c=.o) libcommon.a libplatform.a libcommon.a libflatcc.a
 
 PB_CFILES = bin/ej-parblock.c
 PB_OBJECTS = $(PB_CFILES:.c=.o) libcommon.a libplatform.a libcommon.a
@@ -187,6 +189,7 @@ release:
 	rm -fr CVS db unix userlist_clnt win32 checkers/CVS checkers/.cvsignore checkers/Makefile checkers/ChangeLog checkers/*.c checkers/*.o checkers/testinfo.h extra/CVS extra/.cvsignore extra/Makefile extra/*.c extra/*.o scripts/CVS .build .cvsignore ChangeLog OLDNEWS TODO *.c *.h *.o *.a *.make *.po makefile *.lex *.y
 
 prereq_all: version.o
+	$(MAKE) -C libbacktrace DESTDIR="${DESTDIR}" all
 	$(MAKE) -C libdwarf DESTDIR="${DESTDIR}" all
 	$(MAKE) -C reuse DESTDIR="${DESTDIR}" all
 	$(MAKE) -C cfront DESTDIR="${DESTDIR}" all
@@ -217,6 +220,7 @@ subdirs_all:
 	$(MAKE) -C plugins/auth-google DESTDIR="${DESTDIR}" all
 	$(MAKE) -C plugins/auth-vk DESTDIR="${DESTDIR}" all
 	$(MAKE) -C plugins/auth-yandex DESTDIR="${DESTDIR}" all
+	$(MAKE) -C plugins/notify-redis DESTDIR="${DESTDIR}" all
 	$(MAKE) -C csp/contests DESTDIR="${DESTDIR}" all
 	$(MAKE) -C csp/super-server DESTDIR="${DESTDIR}" all
 
@@ -266,8 +270,11 @@ local_install: ${TARGETS} ejudge-config po mo
 	cp -rpd include "${DESTDIR}${prefix}"
 	install -d "${DESTDIR}${prefix}/lib/ejudge/make"
 	install -m 0644 csp_header.make "${DESTDIR}${prefix}/lib/ejudge/make"
+	install -d "${DESTDIR}${libexecdir}/ejudge/lang"
+	install -m 0644 extra/java-classname/java-classname.jar "${DESTDIR}${libexecdir}/ejudge/lang"
 
 install: local_install
+	$(MAKE) -C libbacktrace DESTDIR="${DESTDIR}" install
 	$(MAKE) -C libdwarf DESTDIR="${DESTDIR}" install
 	$(MAKE) -C reuse DESTDIR="${DESTDIR}" install
 	$(MAKE) -C cfront DESTDIR="${DESTDIR}" install
@@ -296,6 +303,7 @@ install: local_install
 	$(MAKE) -C plugins/auth-google DESTDIR="${DESTDIR}" install
 	$(MAKE) -C plugins/auth-vk DESTDIR="${DESTDIR}" install
 	$(MAKE) -C plugins/auth-yandex DESTDIR="${DESTDIR}" install
+	$(MAKE) -C plugins/notify-redis DESTDIR="${DESTDIR}" install
 	$(MAKE) -C csp/contests DESTDIR="${DESTDIR}" install
 	$(MAKE) -C csp/super-server DESTDIR="${DESTDIR}" install
 	#if [ ! -f "${INSTALLSCRIPT}" ]; then ./ejudge-setup -b; fi
@@ -311,16 +319,16 @@ suid_install : ${SUIDBINTARGETS} ejudge-suid-setup ej-compile-control
 suid_bins : ${SUIDBINTARGETS}
 
 ej-compile$(EXESFX) : $(C_OBJECTS)
-	$(LD) $(LDFLAGS) $(C_OBJECTS) -pthread -o $@ $(LDLIBS) ${EXPAT_LIB} ${LIBZIP} ${LIBUUID} ${LIBLZMA}
+	$(LD) $(LDFLAGS) $(C_OBJECTS) -pthread -o $@ $(LDLIBS) ${EXPAT_LIB} ${LIBZIP} ${LIBUUID} ${LIBLZMA} -lbacktrace
 
 ej-compile-control : $(CC_OBJECTS)
-	$(LD) $(LDFLAGS) $(CC_OBJECTS) -o $@ $(LDLIBS) ${EXPAT_LIB}
+	$(LD) $(LDFLAGS) $(CC_OBJECTS) -o $@ $(LDLIBS) ${EXPAT_LIB} -lbacktrace
 
 ej-agent : $(CA_OBJECTS)
 	$(LD) $(LDFLAGS) $(CA_OBJECTS) -o $@ $(LDLIBS) ${EXPAT_LIB} ${LIBLZMA}
 
 ej-run${EXESFX} : $(RUN_OBJECTS)
-	$(LD) $(LDFLAGS) $(RUN_OBJECTS) -o $@ $(LDLIBS) ${EXPAT_LIB} ${LIBZIP} ${LIBUUID} $(MONGO_LIBS) $(MONGOC_LIBS)
+	$(LD) $(LDFLAGS) $(RUN_OBJECTS) -o $@ $(LDLIBS) ${EXPAT_LIB} ${LIBZIP} ${LIBUUID} $(MONGO_LIBS) $(MONGOC_LIBS) -lbacktrace
 
 ej-nwrun${EXESFX} : $(NWRUN_OBJECTS)
 	$(LD) $(LDFLAGS) $(NWRUN_OBJECTS) -o $@ $(LDLIBS) ${EXPAT_LIB} ${LIBZIP}
@@ -329,40 +337,40 @@ ej-ncheck${EXESFX} : $(NCHECK_OBJECTS)
 	$(LD) $(LDFLAGS) $(NCHECK_OBJECTS) -o $@ $(LDLIBS) ${EXPAT_LIB}
 
 ej-batch : $(T3M_OBJECTS)
-	$(LD) $(LDFLAGS) $(T3M_OBJECTS) -o $@ $(LDLIBS) -ldl ${EXPAT_LIB} ${LIBZIP} ${LIBUUID} $(MONGO_LIBS) $(MONGOC_LIBS)
+	$(LD) $(LDFLAGS) $(T3M_OBJECTS) -o $@ $(LDLIBS) -ldl ${EXPAT_LIB} ${LIBZIP} ${LIBUUID} $(MONGO_LIBS) $(MONGOC_LIBS) -lbacktrace
 
 ej-serve : $(SERVE_OBJECTS)
-	$(LD) $(LDFLAGS) $(SERVE_OBJECTS) -o $@ $(LDLIBS) -ldl ${EXPAT_LIB} ${LIBUUID} $(MONGO_LIBS) $(MONGOC_LIBS)
+	$(LD) $(LDFLAGS) $(SERVE_OBJECTS) -o $@ $(LDLIBS) -ldl ${EXPAT_LIB} ${LIBUUID} $(MONGO_LIBS) $(MONGOC_LIBS) -lbacktrace
 
 cgi-bin/serve-control${CGI_PROG_SUFFIX}: ${SC_OBJECTS}
 	${LD} ${LDFLAGS} $^ -o $@ ${LDLIBS} ${EXPAT_LIB}
 
 ej-users: ${UL_OBJECTS}
-	${LD} ${LDFLAGS} $^  libcommon.a libplatform.a -rdynamic -o $@ ${LDLIBS} -ldl ${EXPAT_LIB} ${LIBUUID}
+	${LD} ${LDFLAGS} $^  libcommon.a libplatform.a -rdynamic -o $@ ${LDLIBS} -ldl ${EXPAT_LIB} ${LIBUUID} -lbacktrace
 
 ej-users-control: ${ULC_OBJECTS}
-	${LD} ${LDFLAGS} $^  libcommon.a -rdynamic -o $@ ${LDLIBS} ${EXPAT_LIB}
+	${LD} ${LDFLAGS} $^  libcommon.a -rdynamic -o $@ ${LDLIBS} ${EXPAT_LIB} -lbacktrace
 
 ej-jobs: ${JS_OBJECTS}
-	${LD} ${LDFLAGS} $^ -pthread libcommon.a libplatform.a -rdynamic -o $@ ${LDLIBS} -ldl ${EXPAT_LIB} ${LIBCURL} ${LIBZIP} ${LIBUUID} $(MONGO_LIBS) $(MONGOC_LIBS)
+	${LD} ${LDFLAGS} $^ -pthread libcommon.a libplatform.a -rdynamic -o $@ ${LDLIBS} -ldl ${EXPAT_LIB} ${LIBCURL} ${LIBZIP} ${LIBUUID} $(MONGO_LIBS) $(MONGOC_LIBS) -lbacktrace
 
 ej-jobs-control: ${JSC_OBJECTS}
-	${LD} ${LDFLAGS} $^ libcommon.a libplatform.a -o $@ ${LDLIBS} ${EXPAT_LIB}
+	${LD} ${LDFLAGS} $^ libcommon.a libplatform.a -o $@ ${LDLIBS} ${EXPAT_LIB} -lbacktrace
 
 ejudge-jobs-cmd: ${JP_OBJECTS}
 	${LD} ${LDFLAGS} $^ libcommon.a libplatform.a -o $@ ${LDLIBS} ${EXPAT_LIB}
 
 ej-super-server: ${SS_OBJECTS}
-	${LD} ${LDFLAGS} -rdynamic $^ libcommon.a -o $@ ${LDLIBS} ${EXPAT_LIB} -ldl ${LIBUUID} $(MONGO_LIBS) $(MONGOC_LIBS)
+	${LD} ${LDFLAGS} -rdynamic $^ libcommon.a -o $@ ${LDLIBS} ${EXPAT_LIB} -ldl ${LIBUUID} $(MONGO_LIBS) $(MONGOC_LIBS) -lbacktrace
 
 ej-super-server-control: ${SSC_OBJECTS}
-	${LD} ${LDFLAGS} $^ libcommon.a -o $@ ${LDLIBS} ${EXPAT_LIB}
+	${LD} ${LDFLAGS} $^ libcommon.a -o $@ ${LDLIBS} ${EXPAT_LIB} -lbacktrace
 
 ej-super-run: ${SR_OBJECTS}
-	${LD} ${LDFLAGS} -pthread -rdynamic $^ libcommon.a -o $@ ${LDLIBS} ${EXPAT_LIB} -ldl ${LIBZIP} ${LIBUUID} $(MONGO_LIBS) $(MONGOC_LIBS) ${LIBLZMA}
+	${LD} ${LDFLAGS} -pthread -rdynamic $^ libcommon.a -o $@ ${LDLIBS} ${EXPAT_LIB} -ldl ${LIBZIP} ${LIBUUID} $(MONGO_LIBS) $(MONGOC_LIBS) ${LIBLZMA} -lbacktrace
 
 ej-super-run-control: ${SRC_OBJECTS}
-	${LD} ${LDFLAGS} -rdynamic $^ libcommon.a -o $@ ${LDLIBS} ${EXPAT_LIB} -ldl
+	${LD} ${LDFLAGS} -rdynamic $^ libcommon.a -o $@ ${LDLIBS} ${EXPAT_LIB} -ldl -lbacktrace
 
 ej-normalize: ${NRM_OBJECTS}
 	${LD} ${LDFLAGS} -rdynamic $^ libcommon.a -o $@ ${LDLIBS} ${EXPAT_LIB} -ldl
@@ -374,7 +382,7 @@ ej-import-contest: ${IC_OBJECTS}
 	${LD} ${LDFLAGS} $^ libcommon.a -o $@ ${LDLIBS} ${EXPAT_LIB} ${LIBCURL} ${LIBZIP} -ldl
 
 ej-page-gen: ${G_OBJECTS} libuserlist_clnt.a libnew_server_clnt.a
-	${LD} -pthread ${LDFLAGS} -Wl,--whole-archive $^ -o $@ ${LDLIBS} libdwarf/libdwarf/.libs/libdwarf.a -lelf ${EXPAT_LIB} ${LIBZIP} -ldl -lpanel${NCURSES_SUFFIX} -lmenu${NCURSES_SUFFIX} -lncurses${NCURSES_SUFFIX} ${LIBUUID} -Wl,--no-whole-archive $(MONGO_LIBS) $(MONGOC_LIBS) ${LIBLZMA}
+	${LD} -pthread ${LDFLAGS} -Wl,--whole-archive $^ -o $@ ${LDLIBS} libdwarf/libdwarf/.libs/libdwarf.a -lelf ${EXPAT_LIB} ${LIBZIP} -ldl -lpanel${NCURSES_SUFFIX} -lmenu${NCURSES_SUFFIX} -lncurses${NCURSES_SUFFIX} ${LIBUUID} -Wl,--no-whole-archive $(MONGO_LIBS) $(MONGOC_LIBS) ${LIBLZMA} -lbacktrace
 ej-page-gen.debug : ej-page-gen
 	objcopy --only-keep-debug $< $@
 
@@ -436,7 +444,7 @@ ejudge-change-contests: $(EMC_OBJECTS)
 	${LD} ${LDFLAGS} $^ libcommon.a libplatform.a -o $@ ${LDLIBS} ${EXPAT_LIB}
 
 ejudge-setup: ${ST_OBJECTS}
-	${LD} ${LDFLAGS} $^ libcommon.a -o $@ ${LDLIBS} ${EXPAT_LIB} -lmenu${NCURSES_SUFFIX} -lpanel${NCURSES_SUFFIX} -lncurses${NCURSES_SUFFIX}
+	${LD} ${LDFLAGS} $^ libcommon.a -o $@ ${LDLIBS} ${EXPAT_LIB} -lmenu${NCURSES_SUFFIX} -lpanel${NCURSES_SUFFIX} -lncurses${NCURSES_SUFFIX} -lbacktrace
 
 ejudge-suid-setup: ${SUT_OBJECTS}
 	${LD} ${LDFLAGS} $^ libcommon.a -o $@ ${LDLIBS} ${EXPAT_LIB}
@@ -445,22 +453,22 @@ ejudge-configure-compilers: ${ECC_OBJECTS}
 	${LD} ${LDFLAGS} $^ libcommon.a -o $@ ${LDLIBS} ${EXPAT_LIB} -lmenu${NCURSES_SUFFIX} -lpanel${NCURSES_SUFFIX} -lncurses${NCURSES_SUFFIX}
 
 ejudge-control: ${EC_OBJECTS}
-	${LD} ${LDFLAGS} $^ libcommon.a -o $@ ${LDLIBS} ${EXPAT_LIB}
+	${LD} ${LDFLAGS} $^ libcommon.a -o $@ ${LDLIBS} ${EXPAT_LIB} -lbacktrace
 
 ejudge-execute : ${EX_OBJECTS}
 	${LD} ${LDFLAGS} $^ libcommon.a libplatform.a -o $@ ${LDLIBS} ${EXPAT_LIB}
 
 cgi-bin/new-client${CGI_PROG_SUFFIX} : $(NC_OBJECTS)
-	$(LD) $(LDFLAGS) $^ -o $@ $(LDLIBS) ${EXPAT_LIB}
+	$(LD) $(LDFLAGS) -static $^ -o $@
 
 ej-contests : $(NS_OBJECTS)
-	$(LD) $(LDFLAGS) -pthread -rdynamic $(NS_OBJECTS) -o $@ $(LDLIBS) -ldl ${EXPAT_LIB} ${LIBZIP} ${LIBUUID} $(MONGO_LIBS) $(MONGOC_LIBS)
+	$(LD) $(LDFLAGS) -pthread -rdynamic $(NS_OBJECTS) -o $@ $(LDLIBS) -lbacktrace -ldl ${EXPAT_LIB} ${LIBZIP} ${LIBUUID} $(MONGO_LIBS) $(MONGOC_LIBS)
 
 ejudge-contests-cmd : $(NSM_OBJECTS)
 	$(LD) $(LDFLAGS) $(NSM_OBJECTS) -o $@ $(LDLIBS) ${EXPAT_LIB}
 
 ej-contests-control : $(NSC_OBJECTS)
-	$(LD) $(LDFLAGS) $(NSC_OBJECTS) -o $@ $(LDLIBS) ${EXPAT_LIB}
+	$(LD) $(LDFLAGS) $(NSC_OBJECTS) -o $@ $(LDLIBS) ${EXPAT_LIB} -lbacktrace
 
 tools/make-js-actions : tools/make-js-actions.o
 	$(LD) $(LDFLAGS) tools/make-js-actions.o -o $@ $(LDLIBS)
@@ -501,6 +509,7 @@ subdir_clean:
 	$(MAKE) -C plugins/auth-google DESTDIR="${DESTDIR}" clean
 	$(MAKE) -C plugins/auth-vk DESTDIR="${DESTDIR}" clean
 	$(MAKE) -C plugins/auth-yandex DESTDIR="${DESTDIR}" clean
+	$(MAKE) -C plugins/notify-redis DESTDIR="${DESTDIR}" clean
 	$(MAKE) -C csp/contests DESTDIR="${DESTDIR}" clean
 	$(MAKE) -C csp/super-server DESTDIR="${DESTDIR}" clean
 	$(MAKE) -C cfront clean
@@ -539,6 +548,7 @@ subdir_distclean :
 	$(MAKE) -C plugins/auth-google DESTDIR="${DESTDIR}" distclean
 	$(MAKE) -C plugins/auth-vk DESTDIR="${DESTDIR}" distclean
 	$(MAKE) -C plugins/auth-yandex DESTDIR="${DESTDIR}" distclean
+	$(MAKE) -C plugins/notify-redis DESTDIR="${DESTDIR}" distclean
 	$(MAKE) -C csp/contests DESTDIR="${DESTDIR}" distclean
 	$(MAKE) -C csp/super-server DESTDIR="${DESTDIR}" distclean
 	$(MAKE) -C cfront distclean
@@ -655,6 +665,9 @@ libuserlist_clnt.a: $(USERLIST_CLNT_CFILES:.c=.o)
 libnew_server_clnt.a: $(NEW_SERVER_CLNT_CFILES:.c=.o)
 	ar rcv $@ $^
 
+libflatcc.a : $(FLATCC_CFILES:.c=.o)
+	ar rcv $@ $^
+
 deps.make: cdeps ${CFILES} ${HFILES} gen/filter_expr.c gen/filter_expr.h gen/filter_scan.c $(META_C_FILES) $(META_H_FILES)
 	@./cdeps -I include ${CFILES} gen/filter_expr.c gen/filter_scan.c > deps.make
 
@@ -692,5 +705,8 @@ lib/bson_utils_new.o : lib/bson_utils_new.c
 	$(CC) $(CFLAGS) $(MONGOC_CFLAGS) -c $< -o $@
 lib/testing_report_bson.o : lib/testing_report_bson.c gen/testing_report_tags.c
 	$(CC) $(CFLAGS) $(MONGOC_CFLAGS) -c $< -o $@
+
+include/flatbuf-gen/compile_heartbeat_builder.h include/flatbuf-gen/compile_heartbeat_reader.h include/flatbuf-gen/compile_heartbeat_verifier.h include/flatbuf-gen/flatbuffers_common_builder.h include/flatbuf-gen/flatbuffers_common_reader.h : flatbuf/compile_heartbeat.fbs
+	../flatcc/bin/flatcc -cwvrg -oinclude/flatbuf-gen flatbuf/compile_heartbeat.fbs
 
 include deps.make

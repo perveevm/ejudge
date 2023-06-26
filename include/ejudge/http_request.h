@@ -31,6 +31,8 @@ struct ejudge_cfg;
 struct sid_state;
 struct userlist_clnt;
 struct cJSON;
+struct new_session_info;
+struct userlist_user;
 
 struct http_request_info
 {
@@ -86,7 +88,7 @@ struct http_request_info
   // super-serve uses that
   unsigned char *html_name;  // used by super-serve
   const unsigned char *hidden_vars;
-  struct session_info *session_extra;
+  struct new_session_info *nsi;       // cached session data
   opcap_t caps;
   opcap_t dbcaps;
   unsigned char *script_part;
@@ -117,8 +119,10 @@ struct http_request_info
   unsigned char content_type[128];
 
   time_t current_time;
+  // this time is used in priv-main-page to estimate generation time
   struct timeval timestamp1;
-  struct timeval timestamp2;
+  // microsecond precision current time
+  long long current_time_us;
 
   const struct contest_desc *cnts;
   struct contest_extra *extra;
@@ -145,6 +149,9 @@ struct http_request_info
   size_t log_z;
 
   void *extra_info;
+
+  struct userlist_user *user_info;
+  unsigned char disable_log;
 
   unsigned char data[0];
 };

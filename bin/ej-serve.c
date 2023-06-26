@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2000-2019 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2000-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -145,7 +145,7 @@ main(int argc, char *argv[])
   // initialize the current time to avoid some asserts
   serve_state.current_time = time(0);
 
-  if (prepare(NULL, &serve_state, argv[i], p_flags, PREPARE_SERVE, cpp_opts,
+  if (prepare(NULL, NULL, &serve_state, argv[i], p_flags, PREPARE_SERVE, cpp_opts,
               (cmdline_socket_fd >= 0), 0, 0) < 0) return 1;
   if (prepare_serve_defaults(NULL, &serve_state, &cur_contest) < 0) return 1;
 
@@ -171,7 +171,9 @@ main(int argc, char *argv[])
       && contest_finish_time <= serve_state.current_time) {
     contest_finish_time = 0;
   }
-  if (run_open(serve_state.runlog_state, config, cur_contest, global, 0, 0,
+  if (run_open(serve_state.runlog_state, config, cur_contest, global, 0,
+               NULL, /* metrics */
+               0,
                global->contest_time, cur_contest->sched_time,
                contest_finish_time) < 0) return 1;
   if (global->is_virtual

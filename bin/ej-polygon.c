@@ -435,7 +435,7 @@ curl_iface_get_func(struct DownloadData *data, const unsigned char *url)
 
     fprintf(data->log_f, "GET: %s\n", url);
 
-    curl_easy_setopt(data->curl, CURLOPT_ACCEPT_ENCODING, "gzip, deflate, br");
+    //curl_easy_setopt(data->curl, CURLOPT_ACCEPT_ENCODING, "gzip, deflate, br");
     //curl_easy_setopt(data->curl, CURLOPT_AUTOREFERER, 1);
     curl_easy_setopt(data->curl, CURLOPT_FOLLOWLOCATION, 1);
     curl_easy_setopt(data->curl, CURLOPT_COOKIEFILE, "");
@@ -504,7 +504,7 @@ curl_iface_login_action_func(struct DownloadData *data, struct PolygonState *ps)
     password_esc = curl_easy_escape(data->curl, data->pkt->password, 0);
     snprintf(param_buf, sizeof(param_buf), "submitted=true&login=%s&password=%s&submit=Login&fp=%s", login_esc, password_esc, ps->ccid_amp);
 
-    curl_easy_setopt(data->curl, CURLOPT_ACCEPT_ENCODING, "gzip, deflate, br");
+    //curl_easy_setopt(data->curl, CURLOPT_ACCEPT_ENCODING, "gzip, deflate, br");
     //curl_easy_setopt(data->curl, CURLOPT_AUTOREFERER, 1);
     curl_easy_setopt(data->curl, CURLOPT_FOLLOWLOCATION, 1);
     curl_easy_setopt(data->curl, CURLOPT_USERAGENT, data->pkt->user_agent);
@@ -2273,6 +2273,8 @@ save_file(
         const unsigned char *file_group,
         int *p_changed)
 {
+    __attribute__((unused)) int _;
+
     if (is_file_unchanged(path, bytes, size)) {
         if (p_changed) *p_changed = 0;
         return 0;
@@ -2313,8 +2315,8 @@ save_file(
             group = 0;
         }
     }
-    if (mode > 0) chmod(path, mode);
-    if (group > 0) chown(path, -1, group);
+    if (mode > 0) _ = chmod(path, mode);
+    if (group > 0) _ = chown(path, -1, group);
     if (p_changed) *p_changed = 1;
     return 0;
 }
@@ -2942,7 +2944,9 @@ process_polygon_zip(
     fprintf(log_f, "    checker_env: %s\n", pi->checker_env);
     fprintf(log_f, "    check_cmd: %s\n", pi->check_cmd);
     fprintf(log_f, "    test_checker_cmd: %s\n", pi->test_checker_cmd);
-    fprintf(log_f, "    solution_cmd: %s\n", pi->solution_cmd);
+    if (pkt->ignore_main_solution <= 0) {
+        fprintf(log_f, "    solution_cmd: %s\n", pi->solution_cmd);
+    }
     fprintf(log_f, "    interactor_cmd: %s\n", pi->interactor_cmd);
     fprintf(log_f, "    html_statement: %s\n", pi->html_statement_path);
 
@@ -2956,11 +2960,11 @@ process_polygon_zip(
         prob_cfg->short_name = xstrdup(pi->ejudge_short_name);
     }
     prob_cfg->internal_name = xstrdup(pi->problem_name);
-    if (problem_url && problem_url[0]) {
-        snprintf(buf, sizeof(buf), "polygon:%s", problem_url);
-        prob_cfg->extid = xstrdup(buf);
-    } else if (pi->problem_id > 0) {
+    if (pi->problem_id > 0) {
         snprintf(buf, sizeof(buf), "polygon:%d", pi->problem_id);
+        prob_cfg->extid = xstrdup(buf);
+    } else if (problem_url && problem_url[0]) {
+        snprintf(buf, sizeof(buf), "polygon:%s", problem_url);
         prob_cfg->extid = xstrdup(buf);
     }
     snprintf(buf, sizeof(buf), "%d", pi->package_rev);
@@ -3024,7 +3028,7 @@ process_polygon_zip(
     if (pi->interactor_cmd) {
         prob_cfg->interactor_cmd = xstrdup(pi->interactor_cmd);
     }
-    if (pi->solution_cmd) {
+    if (pi->solution_cmd && pkt->ignore_main_solution <= 0) {
         prob_cfg->solution_cmd = xstrdup(pi->solution_cmd);
     }
     prob_cfg->enable_testlib_mode = 1;

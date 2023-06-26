@@ -369,6 +369,9 @@ struct section_global_data
   /** directory for non-default super-run directory */
   unsigned char *super_run_dir;
 
+  /** default compile server id */
+  unsigned char *compile_server_id;
+
   /** printf pattern for the files with tests */
   unsigned char *test_pat;
   /** printf pattern for the files with correct answers */
@@ -984,6 +987,8 @@ struct section_problem_data
   ejbyteflag_t stop_on_first_fail;
   /** create a controlling socket pair for interactor */
   ejbyteflag_t enable_control_socket;
+  /** copy executable to the tgzdir for testing */
+  ejbyteflag_t copy_exe_to_tgzdir;
 
   /** enable headers/footers specific for each test */
   ejbyteflag_t enable_multi_header;
@@ -1119,6 +1124,8 @@ struct section_problem_data
   unsigned char *custom_compile_cmd;
   /** custom language name (if enable_custom language enabled) */
   unsigned char *custom_lang_name;
+  /** directory with files to be copied to the compilation directory */
+  unsigned char *extra_src_dir;
 
   /** printf pattern for the test files */
   unsigned char *test_pat;
@@ -1220,6 +1227,7 @@ struct section_problem_data
   char **lang_max_vm_size;
   char **lang_max_stack_size;
   char **lang_max_rss_size;
+  char **checker_extra_files;
 
   /** environment variables for the statement */
   ejenvlist_t statement_env;
@@ -1498,6 +1506,7 @@ struct section_tester_data
 
 int
 prepare(
+        const struct ejudge_cfg *config,
         const struct contest_desc *cnts,
         serve_state_t,
         char const *,
@@ -1529,7 +1538,8 @@ struct ejudge_cfg;
 struct section_global_data *prepare_new_global_section(int contest_id, const unsigned char *root_dir, const struct ejudge_cfg *config);
 struct generic_section_config * prepare_parse_config_file(const unsigned char *path,
                                                           int *p_cond_count);
-void prepare_set_global_defaults(struct section_global_data *global);
+void prepare_set_global_defaults(const struct ejudge_cfg *config,
+                                 struct section_global_data *global);
 
 struct generic_section_config *prepare_free_config(struct generic_section_config *cfg);
 

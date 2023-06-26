@@ -163,6 +163,7 @@ static const struct config_parse_info section_global_params[] =
   GLOBAL_PARAM(description_file, "S"),
   GLOBAL_PARAM(contest_plugin_file, "S"),
   GLOBAL_PARAM(super_run_dir, "S"),
+  GLOBAL_PARAM(compile_server_id, "S"),
   GLOBAL_PARAM(virtual_end_options, "S"),
 
   GLOBAL_PARAM(clardb_plugin, "S"),
@@ -459,6 +460,7 @@ static const struct config_parse_info section_problem_params[] =
   PROBLEM_PARAM(enable_extended_info, "L"),
   PROBLEM_PARAM(stop_on_first_fail, "L"),
   PROBLEM_PARAM(enable_control_socket, "L"),
+  PROBLEM_PARAM(copy_exe_to_tgzdir, "L"),
   PROBLEM_PARAM(hide_variant, "L"),
   PROBLEM_PARAM(autoassign_variants, "L"),
   PROBLEM_PARAM(enable_text_form, "L"),
@@ -535,6 +537,7 @@ static const struct config_parse_info section_problem_params[] =
   PROBLEM_PARAM(lang_max_vm_size, "x"),
   PROBLEM_PARAM(lang_max_stack_size, "x"),
   PROBLEM_PARAM(lang_max_rss_size, "x"),
+  PROBLEM_PARAM(checker_extra_files, "x"),
   PROBLEM_PARAM(check_cmd, "S"),
   PROBLEM_PARAM(valuer_cmd, "S"),
   PROBLEM_PARAM(interactor_cmd, "S"),
@@ -578,6 +581,7 @@ static const struct config_parse_info section_problem_params[] =
   PROBLEM_PARAM(container_options, "S"),
   PROBLEM_PARAM(custom_compile_cmd, "S"),
   PROBLEM_PARAM(custom_lang_name, "S"),
+  PROBLEM_PARAM(extra_src_dir, "S"),
 
   { 0, 0, 0, 0 }
 };
@@ -1092,6 +1096,7 @@ prepare_global_free_func(struct generic_section_config *gp)
   free_virtual_end_info(p->virtual_end_info);
   sarray_free(p->load_user_group);
   xfree(p->super_run_dir);
+  xfree(p->compile_server_id);
   xfree(p->tokens);
   xfree(p->token_info);
   xfree(p->dates_config_file);
@@ -1360,6 +1365,7 @@ prepare_problem_init_func(struct generic_section_config *gp)
   p->enable_extended_info = -1;
   p->stop_on_first_fail = -1;
   p->enable_control_socket = -1;
+  p->copy_exe_to_tgzdir = -1;
   p->hide_variant = -1;
   p->autoassign_variants = -1;
   p->enable_text_form = -1;
@@ -1448,6 +1454,7 @@ prepare_problem_free_func(struct generic_section_config *gp)
   sarray_free(p->lang_max_vm_size);
   sarray_free(p->lang_max_stack_size);
   sarray_free(p->lang_max_rss_size);
+  sarray_free(p->checker_extra_files);
   sarray_free(p->personal_deadline);
   sarray_free(p->alternative);
   sarray_free(p->statement_env);
@@ -1500,6 +1507,7 @@ prepare_problem_free_func(struct generic_section_config *gp)
   xfree(p->xml_file_path);
   xfree(p->custom_compile_cmd);
   xfree(p->custom_lang_name);
+  xfree(p->extra_src_dir);
 
   if (p->variant_num > 0 && p->xml.a) {
     for (i = 1; i <= p->variant_num; i++) {
@@ -2695,6 +2703,7 @@ prepare_insert_variant_num(
 
 static int
 set_defaults(
+        const struct ejudge_cfg *config,
         const struct contest_desc *cnts,
         const unsigned char *config_file,
         serve_state_t state,
@@ -2841,8 +2850,12 @@ set_defaults(
     g->stand_show_ok_time = DFLT_G_STAND_SHOW_OK_TIME;
   if (g->stand_show_warn_number == -1)
     g->stand_show_warn_number = DFLT_G_STAND_SHOW_WARN_NUMBER;
-  if (g->autoupdate_standings == -1)
-    g->autoupdate_standings = DFLT_G_AUTOUPDATE_STANDINGS;
+  if (g->autoupdate_standings == -1) {
+    if (config && config->disable_autoupdate_standings > 0)
+      g->autoupdate_standings = 0;
+    else
+      g->autoupdate_standings = DFLT_G_AUTOUPDATE_STANDINGS;
+  }
   if (g->use_ac_not_ok == -1)
     g->use_ac_not_ok = DFLT_G_USE_AC_NOT_OK;
   if (g->disable_auto_testing == -1)
@@ -2924,10 +2937,10 @@ set_defaults(
   if (!g->root_dir || !g->root_dir[0]) {
     usprintf(&g->root_dir, "%06d", contest_id);
   }
-  if (!os_IsAbsolutePath(g->root_dir) && ejudge_config
-      && ejudge_config->contests_home_dir
-      && os_IsAbsolutePath(ejudge_config->contests_home_dir)) {
-    usprintf(&g->root_dir, "%s/%s", ejudge_config->contests_home_dir, g->root_dir);
+  if (!os_IsAbsolutePath(g->root_dir) && config
+      && config->contests_home_dir
+      && os_IsAbsolutePath(config->contests_home_dir)) {
+    usprintf(&g->root_dir, "%s/%s", config->contests_home_dir, g->root_dir);
   }
 #if defined EJUDGE_CONTESTS_HOME_DIR
   if (!os_IsAbsolutePath(g->root_dir)) {
@@ -2941,27 +2954,27 @@ set_defaults(
 
   param_subst_2(&g->root_dir, subst_src, subst_dst);
 
-  if ((!g->clardb_plugin || !g->clardb_plugin[0]) && ejudge_config
-      && ejudge_config->default_clardb_plugin
-      && ejudge_config->default_clardb_plugin[0]) {
-    xstrdup3(&g->clardb_plugin, ejudge_config->default_clardb_plugin);
+  if ((!g->clardb_plugin || !g->clardb_plugin[0]) && config
+      && config->default_clardb_plugin
+      && config->default_clardb_plugin[0]) {
+    xstrdup3(&g->clardb_plugin, config->default_clardb_plugin);
   }
-  if ((!g->rundb_plugin || !g->rundb_plugin[0]) && ejudge_config
-      && ejudge_config->default_rundb_plugin
-      && ejudge_config->default_rundb_plugin[0]) {
-    xstrdup3(&g->rundb_plugin, ejudge_config->default_rundb_plugin);
+  if ((!g->rundb_plugin || !g->rundb_plugin[0]) && config
+      && config->default_rundb_plugin
+      && config->default_rundb_plugin[0]) {
+    xstrdup3(&g->rundb_plugin, config->default_rundb_plugin);
   }
-  if ((!g->xuser_plugin || !g->xuser_plugin[0]) && ejudge_config
-      && ejudge_config->default_xuser_plugin && ejudge_config->default_xuser_plugin[0]) {
-    xstrdup3(&g->xuser_plugin, ejudge_config->default_xuser_plugin);
+  if ((!g->xuser_plugin || !g->xuser_plugin[0]) && config
+      && config->default_xuser_plugin && config->default_xuser_plugin[0]) {
+    xstrdup3(&g->xuser_plugin, config->default_xuser_plugin);
   }
-  if ((!g->status_plugin || !g->status_plugin[0]) && ejudge_config
-      && ejudge_config->default_status_plugin && ejudge_config->default_status_plugin[0]) {
-    xstrdup3(&g->status_plugin, ejudge_config->default_status_plugin);
+  if ((!g->status_plugin || !g->status_plugin[0]) && config
+      && config->default_status_plugin && config->default_status_plugin[0]) {
+    xstrdup3(&g->status_plugin, config->default_status_plugin);
   }
-  if ((!g->variant_plugin || !g->variant_plugin[0]) && ejudge_config
-      && ejudge_config->default_variant_plugin && ejudge_config->default_variant_plugin[0]) {
-    xstrdup3(&g->variant_plugin, ejudge_config->default_variant_plugin);
+  if ((!g->variant_plugin || !g->variant_plugin[0]) && config
+      && config->default_variant_plugin && config->default_variant_plugin[0]) {
+    xstrdup3(&g->variant_plugin, config->default_variant_plugin);
   }
 
   if (!g->conf_dir || !g->conf_dir[0]) {
@@ -3500,8 +3513,8 @@ set_defaults(
         const unsigned char *ecd = g->extra_compile_dirs[lang->compile_dir_index - 1];
         if (os_IsAbsolutePath(ecd)) {
           usprintf(&lang->compile_dir, "%s/var/compile", ecd);
-        } else if (ejudge_config && ejudge_config->contests_home_dir) {
-          usprintf(&lang->compile_dir, "%s/%s/var/compile", ejudge_config->contests_home_dir, ecd);
+        } else if (config && config->contests_home_dir) {
+          usprintf(&lang->compile_dir, "%s/%s/var/compile", config->contests_home_dir, ecd);
         } else {
 #if defined EJUDGE_CONTESTS_HOME_DIR
           usprintf(&lang->compile_dir, "%s/%s/var/compile", EJUDGE_CONTESTS_HOME_DIR, ecd);
@@ -3547,11 +3560,11 @@ set_defaults(
         err("language.%d.cmd must be set", i);
         return -1;
       }
-      if (!os_IsAbsolutePath(lang->cmd) && ejudge_config && ejudge_config->compile_home_dir) {
-        usprintf(&lang->cmd, "%s/scripts/%s", ejudge_config->compile_home_dir, lang->cmd);
+      if (!os_IsAbsolutePath(lang->cmd) && config && config->compile_home_dir) {
+        usprintf(&lang->cmd, "%s/scripts/%s", config->compile_home_dir, lang->cmd);
       }
-      if (!os_IsAbsolutePath(lang->cmd) && ejudge_config && ejudge_config->contests_home_dir) {
-        usprintf(&lang->cmd, "%s/compile/scripts/%s", ejudge_config->contests_home_dir, lang->cmd);
+      if (!os_IsAbsolutePath(lang->cmd) && config && config->contests_home_dir) {
+        usprintf(&lang->cmd, "%s/compile/scripts/%s", config->contests_home_dir, lang->cmd);
       }
 #if defined EJUDGE_CONTESTS_HOME_DIR
       if (!os_IsAbsolutePath(lang->cmd)) {
@@ -3748,6 +3761,7 @@ set_defaults(
     prepare_set_prob_value(CNTSPROB_enable_extended_info, prob, aprob, g);
     prepare_set_prob_value(CNTSPROB_stop_on_first_fail, prob, aprob, g);
     prepare_set_prob_value(CNTSPROB_enable_control_socket, prob, aprob, g);
+    prepare_set_prob_value(CNTSPROB_copy_exe_to_tgzdir, prob, aprob, g);
     prepare_set_prob_value(CNTSPROB_enable_user_input, prob, aprob, g);
     prepare_set_prob_value(CNTSPROB_enable_vcs, prob, aprob, g);
     prepare_set_prob_value(CNTSPROB_enable_iframe_statement, prob, aprob, g);
@@ -4495,11 +4509,11 @@ set_defaults(
 
         if (tp->start_cmd && tp->start_cmd[0] && !os_IsAbsolutePath(tp->start_cmd)) {
           snprintf(start_path, sizeof(start_path), "%s", tp->start_cmd);
-          if (ejudge_config && ejudge_config->compile_home_dir) {
-            pathmake2(start_path, ejudge_config->compile_home_dir,
+          if (config && config->compile_home_dir) {
+            pathmake2(start_path, config->compile_home_dir,
                       "/", "scripts", "/", start_path, NULL);
-          } else if (ejudge_config && ejudge_config->contests_home_dir) {
-            pathmake2(start_path, ejudge_config->contests_home_dir,
+          } else if (config && config->contests_home_dir) {
+            pathmake2(start_path, config->contests_home_dir,
                       "/", "compile", "/", "scripts", "/", start_path, NULL);
           }
 #if defined EJUDGE_CONTESTS_HOME_DIR
@@ -4532,8 +4546,8 @@ set_defaults(
         }
         if (tp->nwrun_spool_dir && tp->nwrun_spool_dir[0]) {
           if (!os_IsAbsolutePath(tp->nwrun_spool_dir)) {
-            if (ejudge_config && ejudge_config->contests_home_dir) {
-              usprintf(&tp->nwrun_spool_dir, "%s/%s", ejudge_config->contests_home_dir, tp->nwrun_spool_dir);
+            if (config && config->contests_home_dir) {
+              usprintf(&tp->nwrun_spool_dir, "%s/%s", config->contests_home_dir, tp->nwrun_spool_dir);
             } else {
 #if defined EJUDGE_CONTESTS_HOME_DIR
               usprintf(&tp->nwrun_spool_dir, "%s/%s", EJUDGE_CONTESTS_HOME_DIR, tp->nwrun_spool_dir);
@@ -4987,6 +5001,7 @@ parse_version_string(int *pmajor, int *pminor, int *ppatch, int *pbuild)
 
 int
 prepare(
+        const struct ejudge_cfg *config,
         const struct contest_desc *cnts,
         serve_state_t state,
         char const *config_file,
@@ -5048,7 +5063,7 @@ prepare(
     return -1;
   }
   */
-  if (set_defaults(cnts, config_file, state, mode, subst_src, subst_dst) < 0) return -1;
+  if (set_defaults(config, cnts, config_file, state, mode, subst_src, subst_dst) < 0) return -1;
   return 0;
 }
 
@@ -5431,7 +5446,9 @@ create_tester_dirs(struct section_tester_data *tst)
 }
 
 void
-prepare_set_global_defaults(struct section_global_data *g)
+prepare_set_global_defaults(
+        const struct ejudge_cfg *config,
+        struct section_global_data *g)
 {
   /*
   if (!g->sleep_time && !g->serve_sleep_time) {
@@ -5449,7 +5466,12 @@ prepare_set_global_defaults(struct section_global_data *g)
   if (!g->max_clar_num) g->max_clar_num = DFLT_G_MAX_CLAR_NUM;
   if (g->board_fog_time < 0) g->board_fog_time = DFLT_G_BOARD_FOG_TIME;
   if (g->board_unfog_time < 0) g->board_unfog_time = DFLT_G_BOARD_UNFOG_TIME;
-  if (g->autoupdate_standings < 0) g->autoupdate_standings=DFLT_G_AUTOUPDATE_STANDINGS;
+  if (g->autoupdate_standings < 0) {
+    if (config && config->disable_autoupdate_standings > 0)
+      g->autoupdate_standings = 0;
+    else
+      g->autoupdate_standings = DFLT_G_AUTOUPDATE_STANDINGS;
+  }
   if (g->use_ac_not_ok < 0) g->use_ac_not_ok = DFLT_G_USE_AC_NOT_OK;
   if (g->team_enable_src_view < 0) g->team_enable_src_view=DFLT_G_TEAM_ENABLE_SRC_VIEW;
   if (g->team_enable_rep_view < 0) g->team_enable_rep_view=DFLT_G_TEAM_ENABLE_REP_VIEW;
@@ -5716,8 +5738,10 @@ prepare_new_global_section(int contest_id, const unsigned char *root_dir,
   global->max_clar_num = DFLT_G_MAX_CLAR_NUM;
   global->board_fog_time = DFLT_G_BOARD_FOG_TIME;
   global->board_unfog_time = DFLT_G_BOARD_UNFOG_TIME;
-
-  global->autoupdate_standings = DFLT_G_AUTOUPDATE_STANDINGS;
+  if (config && config->disable_autoupdate_standings > 0)
+    global->autoupdate_standings = 0;
+  else
+    global->autoupdate_standings = DFLT_G_AUTOUPDATE_STANDINGS;
   global->use_ac_not_ok = DFLT_G_USE_AC_NOT_OK;
   global->team_enable_src_view = DFLT_G_TEAM_ENABLE_SRC_VIEW;
   global->team_enable_rep_view = DFLT_G_TEAM_ENABLE_REP_VIEW;
@@ -6134,6 +6158,7 @@ prepare_copy_problem(const struct section_problem_data *in)
   xstrdup3(&out->source_footer, in->source_footer);
   xstrdup3(&out->custom_compile_cmd, in->custom_compile_cmd);
   xstrdup3(&out->custom_lang_name, in->custom_lang_name);
+  xstrdup3(&out->extra_src_dir, in->extra_src_dir);
   out->valuer_sets_marked = in->valuer_sets_marked;
   out->ignore_unmarked = in->ignore_unmarked;
   out->interactor_time_limit = in->interactor_time_limit;
@@ -6146,6 +6171,7 @@ prepare_copy_problem(const struct section_problem_data *in)
   out->enable_extended_info = in->enable_extended_info;
   out->stop_on_first_fail = in->stop_on_first_fail;
   out->enable_control_socket = in->enable_control_socket;
+  out->copy_exe_to_tgzdir = in->copy_exe_to_tgzdir;
   out->enable_user_input = in->enable_user_input;
   out->enable_vcs = in->enable_vcs;
   out->enable_iframe_statement = in->enable_iframe_statement;
@@ -6203,6 +6229,7 @@ prepare_copy_problem(const struct section_problem_data *in)
   out->lang_max_vm_size = sarray_copy(in->lang_max_vm_size);
   out->lang_max_stack_size = sarray_copy(in->lang_max_stack_size);
   out->lang_max_rss_size = sarray_copy(in->lang_max_rss_size);
+  out->checker_extra_files = sarray_copy(in->checker_extra_files);
   out->statement_env = sarray_copy(in->statement_env);
   //out->alternative = NULL;
   //out->personal_deadline = NULL;
@@ -6449,6 +6476,7 @@ prepare_set_prob_value(
   INHERIT_BOOLEAN(enable_extended_info);
   INHERIT_BOOLEAN(stop_on_first_fail);
   INHERIT_BOOLEAN(enable_control_socket);
+  INHERIT_BOOLEAN(copy_exe_to_tgzdir);
   INHERIT_BOOLEAN(enable_user_input);
   INHERIT_BOOLEAN(enable_vcs);
   INHERIT_BOOLEAN(enable_iframe_statement);
@@ -7060,6 +7088,7 @@ prepare_set_all_prob_values(
     CNTSPROB_enable_extended_info,
     CNTSPROB_stop_on_first_fail,
     CNTSPROB_enable_control_socket,
+    CNTSPROB_copy_exe_to_tgzdir,
     CNTSPROB_enable_user_input,
     CNTSPROB_enable_vcs,
     CNTSPROB_enable_iframe_statement,

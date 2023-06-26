@@ -135,7 +135,10 @@ var ej_valid_fields =
   25 : "EOLN Type",
   26 : "Storage Flags",
   27 : "Tokens",
-  28 : "Verdict Bits"
+  28 : "Verdict Bits",
+  29 : "Last Change Time",
+  30 : "External User",
+  31 : "Notification Info"
 }
 
 function ej_field_popup(field_mask)

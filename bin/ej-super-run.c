@@ -48,6 +48,10 @@
 #include <signal.h>
 #include <errno.h>
 #include <sys/time.h>
+#include <sys/inotify.h>
+#include <sys/epoll.h>
+
+enum { DEFAULT_WAIT_TIMEOUT_MS = 300000 }; // 5m
 
 struct ignored_problem_info
 {
@@ -103,8 +107,10 @@ static long long last_heartbear_save_time = 0;
 
 static unsigned char master_stop_enabled = 0;
 static unsigned char master_down_enabled = 0;
+static unsigned char master_reboot_enabled = 0;
 static unsigned char pending_stop_flag = 0;
 static unsigned char pending_down_flag = 0;
+static unsigned char pending_reboot_flag = 0;
 
 static int remap_spec_a = 0;
 static int remap_spec_u = 0;
@@ -230,9 +236,11 @@ super_run_before_tests(struct run_listener *gself, int test_no)
 
   super_run_status_save(agent, super_run_heartbeat_path, status_file_name, &rs,
                         current_time_ms, &last_heartbear_save_time, HEARTBEAT_SAVE_INTERVAL_MS,
-                        &pending_stop_flag, &pending_down_flag);
+                        &pending_stop_flag, &pending_down_flag,
+                        &pending_reboot_flag);
   if (!master_stop_enabled) pending_stop_flag = 0;
   if (!master_down_enabled) pending_down_flag = 0;
+  if (!master_reboot_enabled) pending_reboot_flag = 0;
 }
 
 static const struct run_listener_ops super_run_listener_ops =
@@ -243,11 +251,11 @@ static const struct run_listener_ops super_run_listener_ops =
 static int
 handle_packet(
         serve_state_t state,
-        const unsigned char *pkt_name)
+        const unsigned char *pkt_name,
+        char *srp_b,
+        size_t srp_z)
 {
   int r;
-  char *srp_b = 0;
-  size_t srp_z = 0;
   struct super_run_in_packet *srp = NULL;
   struct super_run_in_global_packet *srgp = NULL;
   struct super_run_in_problem_packet *srpp = NULL;
@@ -281,10 +289,14 @@ handle_packet(
   run_listener.b.ops = &super_run_listener_ops;
 
   if (agent) {
-    r = agent->ops->get_packet(agent, pkt_name, &srp_b, &srp_z);
-    if (r < 0) {
-      err("agent get_packet failed");
-      goto cleanup;
+    if (!srp_b) {
+      r = agent->ops->get_packet(agent, pkt_name, &srp_b, &srp_z);
+      if (r < 0) {
+        err("agent get_packet failed");
+        goto cleanup;
+      }
+    } else {
+      r = 1;
     }
   } else {
     r = generic_read_file(&srp_b, 0, &srp_z, SAFE | REMOVE, super_run_spool_path, pkt_name, "");
@@ -461,10 +473,10 @@ handle_packet(
   }
 
 #if defined EJUDGE_RUN_SPOOL_DIR
-  snprintf(full_report_dir, sizeof(full_report_dir), "%s/%s/%06d/report", EJUDGE_RUN_SPOOL_DIR, srgp->contest_server_id, srgp->contest_id);
-  snprintf(full_status_dir, sizeof(full_status_dir), "%s/%s/%06d/status", EJUDGE_RUN_SPOOL_DIR, srgp->contest_server_id, srgp->contest_id);
+  snprintf(full_report_dir, sizeof(full_report_dir), "%s/%s/report", EJUDGE_RUN_SPOOL_DIR, srgp->contest_server_id);
+  snprintf(full_status_dir, sizeof(full_status_dir), "%s/%s/status", EJUDGE_RUN_SPOOL_DIR, srgp->contest_server_id);
   if (srgp->enable_full_archive > 0) {
-    snprintf(full_full_dir, sizeof(full_full_dir), "%s/%s/%06d/output", EJUDGE_RUN_SPOOL_DIR, srgp->contest_server_id, srgp->contest_id);
+    snprintf(full_full_dir, sizeof(full_full_dir), "%s/%s/output", EJUDGE_RUN_SPOOL_DIR, srgp->contest_server_id);
   }
 #else
   if (srgp->reply_report_dir && srgp->reply_report_dir[0]) {
@@ -626,9 +638,11 @@ report_waiting_state(long long current_time_ms, long long last_check_time_ms)
   rs.status = SRS_WAITING;
   super_run_status_save(agent, super_run_heartbeat_path, status_file_name, &rs,
                         current_time_ms, &last_heartbear_save_time, HEARTBEAT_SAVE_INTERVAL_MS,
-                        &pending_stop_flag, &pending_down_flag);
+                        &pending_stop_flag, &pending_down_flag,
+                        &pending_reboot_flag);
   if (!master_stop_enabled) pending_stop_flag = 0;
   if (!master_down_enabled) pending_down_flag = 0;
+  if (!master_reboot_enabled) pending_reboot_flag = 0;
 }
 
 static int
@@ -645,6 +659,14 @@ do_loop(
   long long last_handled_ms = 0;
   long long current_time_ms = 0;
   struct Future *future = NULL;
+  char *pkt_data = NULL;
+  size_t pkt_size = 0;
+  int ifd = -1;
+  int efd = -1;
+  int ifd_wd = -1;
+  sigset_t emptymask;
+
+  sigemptyset(&emptymask);
 
   if (agent_name && *agent_name) {
     if (!strncmp(agent_name, "ssh:", 4)) {
@@ -664,6 +686,36 @@ do_loop(
       }
     } else {
       err("invalid agent");
+      return -1;
+    }
+  } else {
+    ifd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    if (ifd < 0) {
+      err("inotify_init1 failed: %s", os_ErrorMsg());
+      return -1;
+    }
+
+    unsigned char srspd[PATH_MAX];
+    snprintf(srspd, sizeof(srspd), "%s/dir", super_run_spool_path);
+    ifd_wd = inotify_add_watch(ifd, srspd, IN_CREATE | IN_MOVED_TO);
+    if (ifd_wd < 0) {
+      err("inotify_add_watch failed: %s", os_ErrorMsg());
+      return -1;
+    }
+
+    efd = epoll_create1(EPOLL_CLOEXEC);
+    if (efd < 0) {
+      err("epoll_create1 failed: %s", os_ErrorMsg());
+      return -1;
+    }
+
+    struct epoll_event ev =
+    {
+      .events = EPOLLIN,
+      .data.fd = ifd,
+    };
+    if (epoll_ctl(efd, EPOLL_CTL_ADD, ifd, &ev) < 0) {
+      err("epoll_ctl failed: %s", os_ErrorMsg());
       return -1;
     }
   }
@@ -701,6 +753,7 @@ do_loop(
 
     if (pending_stop_flag) break;
     if (pending_down_flag) break;
+    if (pending_reboot_flag) break;
     if (interrupt_was_usr1()) {
       if (daemon_mode) {
         start_open_log(super_run_log_path);
@@ -720,14 +773,27 @@ do_loop(
       if (interrupt_was_usr2()) {
         interrupt_reset_usr2();
         if (future) {
-          r = agent->ops->async_wait_complete(agent, &future, pkt_name, sizeof(pkt_name));
+          r = agent->ops->async_wait_complete(agent, &future,
+                                              pkt_name, sizeof(pkt_name),
+                                              &pkt_data,
+                                              &pkt_size);
           if (r < 0) {
             err("async_wait_complete failed");
             break;
           }
+          if (!pkt_name[0]) {
+            free(pkt_data); pkt_data = NULL;
+            pkt_size = 0;
+            continue;
+          }
         }
       } else if (!future) {
-        r = agent->ops->async_wait_init(agent, SIGUSR2, 1, pkt_name, sizeof(pkt_name), &future);
+        r = agent->ops->async_wait_init(agent, SIGUSR2, 1,
+                                        1,
+                                        pkt_name, sizeof(pkt_name), &future,
+                                        DEFAULT_WAIT_TIMEOUT_MS,
+                                        &pkt_data,
+                                        &pkt_size);
         if (r < 0) {
           err("async_wait_init failed");
           break;
@@ -754,22 +820,42 @@ do_loop(
       interrupt_enable();
       os_Sleep(sleep_time);
       interrupt_disable();
+      free(pkt_data); pkt_data = NULL;
+      pkt_size = 0;
       continue;
     }
 
     if (!r) {
+      free(pkt_data); pkt_data = NULL;
+      pkt_size = 0;
+
       gettimeofday(&ctv, NULL);
       current_time_ms = ((long long) ctv.tv_sec) * 1000 + ctv.tv_usec / 1000;
       report_waiting_state(current_time_ms, last_handled_ms);
 
-      int sleep_time = agent?30000:global->sleep_time;
-      interrupt_enable();
-      os_Sleep(sleep_time);
-      interrupt_disable();
+      if (efd >= 0) {
+        struct epoll_event events[1];
+        int r = epoll_pwait(efd, events, 1, 30000, &emptymask);
+        if (r == 1) {
+          if (events[0].data.fd != ifd) abort();
+          // just read all the data in the ifd without any processing
+          unsigned char ibuf[4096];
+          while (1) {
+            int r = read(ifd, ibuf, sizeof(ibuf));
+            if (r <= 0) break;
+          }
+        }
+      } else {
+        interrupt_enable();
+        os_Sleep(5000);
+        interrupt_disable();
+      }
       continue;
     }
 
-    r = handle_packet(state, pkt_name);
+    r = handle_packet(state, pkt_name, pkt_data, pkt_size);
+    pkt_data = NULL;
+    pkt_size = 0;
     if (!r) {
       if (agent) {
         //agent->ops->add_ignored(agent, pkt_name);
@@ -1357,6 +1443,8 @@ main(int argc, char *argv[])
   const unsigned char *user = NULL, *group = NULL, *workdir = NULL;
   int halt_timeout = 0, halt_requested = 0;
   unsigned char *halt_command = NULL;
+  unsigned char *reboot_command = NULL;
+  int disable_stack_trace = 0;
 
   signal(SIGPIPE, SIG_IGN);
 
@@ -1391,6 +1479,9 @@ main(int argc, char *argv[])
       ++cur_arg;
     } else if (!strcmp(argv[cur_arg], "-R")) {
       restart_mode = 1;
+      ++cur_arg;
+    } else if (!strcmp(argv[cur_arg], "-nst")) {
+      disable_stack_trace = 1;
       ++cur_arg;
     } else if (!strcmp(argv[cur_arg], "-s")) {
       if (cur_arg + 1 >= argc) fatal("argument expected for -s");
@@ -1467,6 +1558,13 @@ main(int argc, char *argv[])
       argv_restart[argc_restart++] = argv[cur_arg];
       argv_restart[argc_restart++] = argv[cur_arg + 1];
       cur_arg += 2;
+    } else if (!strcmp(argv[cur_arg], "-rc")) {
+      if (cur_arg + 1 >= argc) fatal("argument expected for -rc");
+      xfree(reboot_command); reboot_command = NULL;
+      reboot_command = xstrdup(argv[cur_arg + 1]);
+      argv_restart[argc_restart++] = argv[cur_arg];
+      argv_restart[argc_restart++] = argv[cur_arg + 1];
+      cur_arg += 2;
     } else if (!strcmp(argv[cur_arg], "-hi")) {
       if (cur_arg + 1 >= argc) fatal("argument expected for -hi");
       xfree(super_run_id); super_run_id = NULL;
@@ -1521,9 +1619,15 @@ main(int argc, char *argv[])
 
   argv_restart[argc_restart] = NULL;
   start_set_args(argv_restart);
+  if (disable_stack_trace <= 0) {
+    start_enable_stacktrace(NULL);
+  }
 
   if (halt_command) {
     master_down_enabled = 1;
+  }
+  if (reboot_command) {
+    master_reboot_enabled = 1;
   }
   master_stop_enabled = 1;
 
@@ -1679,9 +1783,17 @@ main(int argc, char *argv[])
     retval = 1;
   }
 
-  if (halt_requested || pending_down_flag) {
-    info("halt timeout");
+  if (halt_requested) {
+    info("DOWN due to timeout");
     start_shutdown(halt_command);
+  }
+  if (pending_down_flag) {
+    info("DOWN request from the server");
+    start_shutdown(halt_command);
+  }
+  if (pending_reboot_flag) {
+    info("REBOOT request from the server");
+    start_shutdown(reboot_command);
   }
 
   if (interrupt_restart_requested()) start_restart();

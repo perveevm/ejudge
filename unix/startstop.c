@@ -37,9 +37,22 @@
 #include <sys/time.h>
 #include <sys/stat.h>
 
+#include "libbacktrace/backtrace.h"
+
 static path_t self_exe;
 static char **self_argv;
 static sigset_t init_sigmask;
+
+static struct backtrace_state *backtrace_state_var = NULL;
+
+static void
+fatal_signal_handler(int signo)
+{
+  fprintf(stderr, "Fatal signal %d received:\n", signo);
+  backtrace_print (backtrace_state_var, 0, stderr);
+  signal(signo, SIG_DFL);
+  raise(signo);
+}
 
 void
 start_set_self_args(int argc, char *argv[])
@@ -56,6 +69,20 @@ start_set_self_args(int argc, char *argv[])
   self_argv = argv;
   self_argv[0] = self_exe;
   sigprocmask(SIG_SETMASK, 0, &init_sigmask);
+}
+
+void
+start_enable_stacktrace(const char *process_name)
+{
+  if (!process_name) {
+    process_name = self_argv[0];
+  }
+  backtrace_state_var = backtrace_create_state(process_name, 0, NULL, NULL);
+  sigaction(SIGSEGV, &(struct sigaction) { .sa_handler = fatal_signal_handler }, NULL);
+  sigaction(SIGILL, &(struct sigaction) { .sa_handler = fatal_signal_handler }, NULL);
+  sigaction(SIGBUS, &(struct sigaction) { .sa_handler = fatal_signal_handler }, NULL);
+  sigaction(SIGFPE, &(struct sigaction) { .sa_handler = fatal_signal_handler }, NULL);
+  sigaction(SIGABRT, &(struct sigaction) { .sa_handler = fatal_signal_handler }, NULL);
 }
 
 int
@@ -280,6 +307,7 @@ int
 start_open_log(const unsigned char *log_path)
 {
   int log_fd = -1;
+  __attribute__((unused)) int _;
 
   if (!log_path) log_path = "/dev/null";
   if ((log_fd = open(log_path, O_WRONLY | O_CREAT | O_APPEND | O_LARGEFILE, 0600)) < 0) {
@@ -290,7 +318,7 @@ start_open_log(const unsigned char *log_path)
   if (open("/dev/null", O_RDONLY) < 0) return -1;
   close(1);
   if (open("/dev/null", O_WRONLY) < 0) return -1;
-  close(2); dup(log_fd); close(log_fd);
+  close(2); _ = dup(log_fd); close(log_fd);
   return 0;
 }
 
