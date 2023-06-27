@@ -2156,7 +2156,7 @@ main(int argc, char *argv[])
       return 1;
     }
     if (access(EJUDGE_COMPILE_SPOOL_DIR, X_OK | W_OK | R_OK) < 0) {
-      fprintf(stderr, "%s: compile spool '%s' has insufficient permissions\n", argv[0], EJUDGE_COMPILE_SPOOL_DIR);
+      fprintf(stderr, "%s: compile spool '%s' has insufficient permissions %d\n", argv[0], EJUDGE_COMPILE_SPOOL_DIR, getuid());
       return 1;
     }
   }
