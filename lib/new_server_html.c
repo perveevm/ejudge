@@ -14571,9 +14571,9 @@ unpriv_xml_update_answer(
 
   if (global->is_virtual) {
     start_time = run_get_virtual_start_time(cs->runlog_state, phr->user_id);
-    if (cs->upsolving_mode)
-      stop_time = run_get_stop_time(cs->runlog_state, phr->user_id, cs->current_time);
-    else
+    // if (cs->upsolving_mode)
+    //   stop_time = run_get_stop_time(cs->runlog_state, phr->user_id, cs->current_time);
+    // else
       stop_time = run_get_virtual_stop_time(cs->runlog_state, phr->user_id,
                                             cs->current_time);
   } else {
