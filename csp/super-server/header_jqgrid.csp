@@ -38,7 +38,7 @@
 <body>
 <div id="main-cont"><div id="container">
 <div id="header">
-<div id="logo"><img src="<s:config name="style-prefix" />logo3.png" alt="logo"/></div>
+<div id="logo"><img src="<s:config name="style-prefix" />logo1.svg" width="100px" alt="logo"/></div>
 <h1><%
     if (title) {
 %><s:v escape="false" value="title" /><%
