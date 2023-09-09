@@ -4,9 +4,9 @@
 <link rel="stylesheet" href="<s:config name="style-prefix" />jquery-ui.css">
 <script src="<s:config name="style-prefix" />jquery-3.6.0.js"></script>
 <script src="<s:config name="style-prefix" />jquery-ui.js"></script>
-<link rel="stylesheet" href="https://ejudge.strategy48.ru/katex.min.css">
-<script src="https://ejudge.strategy48.ru/katex.min.js"></script>
-<script src="https://ejudge.strategy48.ru/auto-render.min.js"></script>
+<link rel="stylesheet" href="/ejudge/katex.min.css">
+<script src="/ejudge/katex.min.js"></script>
+<script src="/ejudge/auto-render.min.js"></script>
 <script>
     document.addEventListener("DOMContentLoaded", function() {
         renderMathInElement(document.body, {
@@ -42,9 +42,9 @@
 </script>
 <link rel="stylesheet" href="<s:config name="style-prefix" />unpriv.css" type="text/css" />
 <link rel="stylesheet" href="<s:config name="style-prefix" />unpriv3.css" type="text/css" />
-<link rel="stylesheet" href="https://ejudge.strategy48.ru/problem-statement.css" type="text/css">
-<script type="text/javascript" src="https://ejudge.strategy48.ru/clipboard.min.js"></script>
-<script type="text/javascript" src="https://ejudge.strategy48.ru/autosize.min.js"></script>
+<link rel="stylesheet" href="/ejudge/problem-statement.css" type="text/css">
+<script type="text/javascript" src="/ejudge/clipboard.min.js"></script>
+<script type="text/javascript" src="/ejudge/autosize.min.js"></script>
 <script type="text/javascript">
     let filterClipboardText = function (text, lineCount) { // Because of unexpected bug in prettyprint or Clipboard lib.
         lineCount = lineCount || 0;

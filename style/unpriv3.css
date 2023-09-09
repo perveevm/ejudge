@@ -55,7 +55,7 @@ h4 {
 body {
 	/*background-color: #f0f0f0;*/
 	/*background: url("/ejudge-site/ejudge/grad_grey_d.jpg") repeat-x #555555;*/
-	background: linear-gradient(rgba(0, 0, 0, .2), rgba(0, 0, 0, .2)), url('https://ejudge.strategy48.ru/bg.png') repeat;
+	background: linear-gradient(rgba(0, 0, 0, .2), rgba(0, 0, 0, .2)), url('/ejudge/bg.png') repeat;
 	z-index: 0;
 }
 
