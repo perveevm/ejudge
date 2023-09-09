@@ -6648,7 +6648,7 @@ priv_upsolving_operation(
     if (!cs->upsolving_mode) break;
     // do not allow disabling upsolving for virtual contests
     // if (cs->global->is_virtual > 0) break;
-    run_stop_contest(cs->runlog_state, cs->current_time);
+    // run_stop_contest(cs->runlog_state, cs->current_time);
     serve_invoke_stop_script(cs);
     cs->upsolving_mode = 0;
     cs->upsolving_freeze_standings = 0;
