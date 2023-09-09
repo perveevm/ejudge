@@ -6647,7 +6647,7 @@ priv_upsolving_operation(
   case NEW_SRV_ACTION_UPSOLVING_CONFIG_3: // stop upsolving
     if (!cs->upsolving_mode) break;
     // do not allow disabling upsolving for virtual contests
-    if (cs->global->is_virtual > 0) break;
+    // if (cs->global->is_virtual > 0) break;
     run_stop_contest(cs->runlog_state, cs->current_time);
     serve_invoke_stop_script(cs);
     cs->upsolving_mode = 0;
@@ -12037,7 +12037,7 @@ unpriv_submit_run(
   if (cs->clients_suspended) {
     FAIL2(NEW_SRV_ERR_CLIENTS_SUSPENDED);
   }
-  if (!start_time && !cs->upsolving_mode) {
+  if (!start_time) {
     FAIL2(NEW_SRV_ERR_CONTEST_NOT_STARTED);
   }
   if (stop_time && !cs->upsolving_mode) {
@@ -12832,7 +12832,7 @@ ns_submit_run_input(
       err_num = NEW_SRV_ERR_CLIENTS_SUSPENDED;
       goto done;
     }
-    if (start_time <= 0 && !cs->upsolving_mode) {
+    if (start_time <= 0) {
       err_num = NEW_SRV_ERR_CONTEST_NOT_STARTED;
       goto done;
     }
@@ -14749,9 +14749,9 @@ unpriv_get_file(
   // check, that this problem may be viewed
   if (global->is_virtual) {
     start_time = run_get_virtual_start_time(cs->runlog_state, phr->user_id);
-    if (cs->upsolving_mode)
-      stop_time = run_get_stop_time(cs->runlog_state, phr->user_id, cs->current_time);
-    else
+    // if (cs->upsolving_mode)
+    //   stop_time = run_get_stop_time(cs->runlog_state, phr->user_id, cs->current_time);
+    // else
       stop_time = run_get_virtual_stop_time(cs->runlog_state, phr->user_id,
                                             cs->current_time);
   } else {
