@@ -31,7 +31,7 @@
 %></td><td class="b0"><s:submit ac="view-problem-submit" label="Select problem" /></td></tr></table>
 </s:form>
 <%
-    } /* 14 */ else if (start_time > 0 && (stop_time <= 0 || cs->upsolving_mode) && prob_id > 0) {
+    } /* 14 */ else if (start_time > 0 /*&& (stop_time <= 0 || cs->upsolving_mode)*/ && prob_id > 0) {
       // ----(0) active problem code begins here
       prob = cs->probs[prob_id];
 
