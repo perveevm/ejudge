@@ -64,7 +64,7 @@ write_copyright_short(FILE *out_f)
 {
   fprintf(out_f,
           "<p class=\"ejudge_copyright\"><a href=\"%s\">ejudge %s (%s)</a>.</p>\n"
-          "<p class=\"ejudge_copyright\">Copyright &copy; %s Alexander Chernov.</p>\n",
+          "<p class=\"ejudge_copyright\">Copyright &copy; %s Alexander Chernov. Modified by Mike Perveev.</p>\n",
           "https://ejudge.ru",
           compile_version, compile_date, "2000-2023");
 }
