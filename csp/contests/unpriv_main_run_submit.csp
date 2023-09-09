@@ -22,7 +22,7 @@
       is_viewable = (pinfo[prob_id].status & PROB_STATUS_VIEWABLE) != 0;
     }
 
-    if (start_time > 0 && (stop_time <= 0 || cs->upsolving_mode) && !prob_id) {
+    if (start_time > 0 /*&& (stop_time <= 0 || cs->upsolving_mode)*/ && !prob_id) {
 %><div class="h2-long"><h2><s:_>View the problem statement and send a submission</s:_></h2></div>
 <s:form>
 <table class="b0">
