@@ -126,8 +126,6 @@
 <%@include "unpriv_separator.csp"
 %>
 
-<br/>
-<br/>
 <%
   if (cnts && cnts->enable_oauth) {
 %>
@@ -165,8 +163,6 @@
 <%
   }
 %>
-<br/>
-<br/>
 <%
   watched_file_update(&extra->welcome, cnts->welcome_file, cur_time);
   if (extra->welcome.text && extra->welcome.text[0]) {
