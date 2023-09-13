@@ -2770,7 +2770,7 @@ msgid "Other"
 msgstr "Прочее"
 
 msgid "Output"
-msgstr "Результат работы"
+msgstr "Выходные данные"
 
 msgid "Output error"
 msgstr "Ошибка вывода"
@@ -2779,7 +2779,7 @@ msgid "Output file name"
 msgstr "Имя выходного файла"
 
 msgid "Output format"
-msgstr "Формат результата"
+msgstr "Формат выходных данных"
 
 msgid "Output in"
 msgstr "Результат работы в файле"
