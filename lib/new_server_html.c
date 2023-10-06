@@ -12213,13 +12213,13 @@ unpriv_submit_run(
     if (testing_report_bson_available()) store_flags = STORE_FLAGS_UUID_BSON;
   }
   int is_hidden = 0;
-  if (cs->upsolving_mode) {
-    if (start_time <= 0 || cs->current_time < start_time) {
-      is_hidden = 1;
-    } else if (stop_time > 0 && cs->current_time >= stop_time) {
-      is_hidden = 1;
-    }
-  }
+  // if (cs->upsolving_mode) {
+  //   if (start_time <= 0 || cs->current_time < start_time) {
+  //     is_hidden = 1;
+  //   } else if (stop_time > 0 && cs->current_time >= stop_time) {
+  //     is_hidden = 1;
+  //   }
+  // }
   run_id = run_add_record(cs->runlog_state,
                           &precise_time,
                           run_size, shaval, &run_uuid,
