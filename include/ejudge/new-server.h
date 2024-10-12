@@ -3,7 +3,7 @@
 #ifndef __NEW_SERVER_H__
 #define __NEW_SERVER_H__
 
-/* Copyright (C) 2006-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2006-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -159,7 +159,7 @@ ns_invalidate_session(
 
 void ns_unload_contests(void);
 
-int  ns_loop_callback(struct server_framework_state *state);
+int  ns_loop_callback(struct server_framework_state *state, const struct ejudge_cfg *);
 void ns_post_select_callback(struct server_framework_state *state);
 
 unsigned char *
@@ -438,6 +438,7 @@ enum
 
 void
 ns_download_runs(
+        struct http_request_info *phr,
         const struct contest_desc *cnts,
         const serve_state_t cs,
         FILE *fout,
@@ -448,6 +449,7 @@ ns_download_runs(
         int use_problem_extid,
         int use_problem_dir,
         const unsigned char *problem_dir_prefix,
+        int enable_hidden,
         size_t run_mask_size,
         unsigned long *run_mask);
 
@@ -468,7 +470,8 @@ int
 ns_write_user_run_status(
         const serve_state_t cs,
         FILE *fout,
-        int run_id);
+        int run_id,
+        int separate_user_score);
 void
 ns_write_olympiads_user_runs(
         struct http_request_info *phr,
@@ -519,6 +522,7 @@ ns_get_user_problems_summary(
         int accepting_mode,
         time_t start_time,
         time_t stop_time,
+        time_t point_in_time,
         const ej_ip_t *ip,
         struct UserProblemInfo *pinfo); /* user problem info */
 
@@ -984,5 +988,34 @@ ns_run_dir_ready(
         const unsigned char *data_dir,
         const unsigned char *data2_dir,
         void *user);
+void
+ns_load_problem_plugin(
+        serve_state_t cs,
+        struct problem_extra_info *extra,
+        const struct section_problem_data *prob);
+
+void
+ns_postponed_callback(
+        const struct ejudge_cfg *config,
+        struct server_framework_state *state,
+        const unsigned char *dir1,
+        const unsigned char *dir2,
+        long long cur_time_us,
+        long long *p_update_time_us,
+        void *user);
+
+unsigned char *
+ns_get_vcs_snapshot_url(
+        const serve_state_t cs,
+        struct http_request_info *phr,
+        int contest_id,
+        int user_id,
+        int prob_id,
+        const unsigned char *src);
+
+struct archive_download_job *
+ns_get_archive_download_job(
+        struct server_framework_state *state,
+        const unsigned char *job_id);
 
 #endif /* __NEW_SERVER_H__ */

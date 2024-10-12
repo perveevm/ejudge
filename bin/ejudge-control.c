@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2006-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2006-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -192,7 +192,9 @@ command_start(
         const char *timeout_str,
         const char *shutdown_script,
         const char *ip_address,
-        const char *reboot_script)
+        const char *reboot_script,
+        const char *lang_id_map,
+        const char *local_cache)
 {
   tTask *tsk = 0;
   path_t path;
@@ -312,6 +314,14 @@ command_start(
       task_AddArg(tsk, "-rc");
       task_AddArg(tsk, reboot_script);
     }
+    if (lang_id_map && *lang_id_map) {
+      task_AddArg(tsk, "--lang-id-map");
+      task_AddArg(tsk, lang_id_map);
+    }
+    if (local_cache && *local_cache) {
+      task_AddArg(tsk, "--local-cache");
+      task_AddArg(tsk, local_cache);
+    }
     if (verbose_mode) {
       task_AddArg(tsk, "-v");
     }
@@ -373,6 +383,10 @@ command_start(
       if (mirror && *mirror) {
         task_AddArg(tsk, "-m");
         task_AddArg(tsk, mirror);
+      }
+      if (local_cache && *local_cache) {
+        task_AddArg(tsk, "--local-cache");
+        task_AddArg(tsk, local_cache);
       }
       if (enable_heartbeat > 0) {
         task_AddArg(tsk, "-hb");
@@ -642,6 +656,8 @@ main(int argc, char *argv[])
   const char *reboot_script = NULL;
   int date_suffix_flag = 0;
   const char *ip_address = NULL;
+  const char *lang_id_map = NULL;
+  const char *local_cache = NULL;
 
   logger_set_level(-1, LOG_WARNING);
   program_name = os_GetBasename(argv[0]);
@@ -698,6 +714,14 @@ main(int argc, char *argv[])
     } else if (!strcmp(argv[i], "-rc")) {
       if (i + 1 >= argc) startup_error("argument expected for `-rc'");
       reboot_script = argv[i + 1];
+      i += 2;
+    } else if (!strcmp(argv[i], "--lang-id-map")) {
+      if (i + 1 >= argc) startup_error("argument expected for `--lang-id-map'");
+      lang_id_map = argv[i + 1];
+      i += 2;
+    } else if (!strcmp(argv[i], "--local-cache")) {
+      if (i + 1 >= argc) startup_error("argument expected for `--local-cache'");
+      local_cache = argv[i + 1];
       i += 2;
     } else if (!strcmp(argv[i], "-v")) {
       verbose_mode = 1;
@@ -791,13 +815,13 @@ main(int argc, char *argv[])
 
   if (!(config = ejudge_cfg_parse(ejudge_xml_path, 0))) return 1;
 
-  parallelism = ejudge_cfg_get_host_option_int(config, host_names, "parallelism", 1, 0);
-  if (parallelism <= 0 || parallelism > 128) {
+  parallelism = ejudge_cfg_get_host_option_int(config, host_names, "parallelism", 1, -1);
+  if (parallelism < 0 || parallelism > 128) {
     startup_error("invalid value of parallelism host option");
   }
 
-  compile_parallelism = ejudge_cfg_get_host_option_int(config, host_names, "compile_parallelism", 1, 0);
-  if (compile_parallelism <= 0 || compile_parallelism > 128) {
+  compile_parallelism = ejudge_cfg_get_host_option_int(config, host_names, "compile_parallelism", 1, -1);
+  if (compile_parallelism < 0 || compile_parallelism > 128) {
     startup_error("invalid value of compile_parallelism host option");
   }
 
@@ -808,7 +832,7 @@ main(int argc, char *argv[])
                       agent, instance_id, queue, verbose_mode,
                       mirror, enable_heartbeat, disable_heartbeat,
                       timeout_str, shutdown_script, ip_address,
-                      reboot_script) < 0)
+                      reboot_script, lang_id_map, local_cache) < 0)
       r = 1;
   } else if (!strcmp(command, "stop")) {
     // ej-agents are not stopped if not asked explicitly

@@ -2,7 +2,7 @@
 #ifndef __SUPER_RUN_PACKET_H__
 #define __SUPER_RUN_PACKET_H__
 
-/* Copyright (C) 2012-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2012-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or
@@ -91,6 +91,17 @@ struct super_run_in_global_packet
   ejintbool_t bson_available;
   unsigned char *lang_container_options;
   ejintbool_t not_ok_is_cf;
+  int prepended_size;
+  int cached_on_remote;
+  unsigned char *src_sfx;
+  unsigned char *src_file;
+  ejintbool_t enable_ejudge_env;
+  unsigned char *clean_up_cmd;
+  unsigned char *run_env_file;
+  unsigned char *clean_up_env_file;
+  ejintbool_t has_run_props;
+  unsigned char *prop_file;
+  unsigned char *prop_sfx;
 
   int scoring_system_val META_ATTRIB((meta_hidden));
 };
@@ -113,6 +124,7 @@ struct super_run_in_problem_packet
   ejintbool_t combined_stdin;
   ejintbool_t combined_stdout;
   ejintbool_t ignore_exit_code;
+  ejintbool_t ignore_term_signal;
   ejintbool_t binary_input;
   ejintbool_t binary_output;
   int real_time_limit_ms;
@@ -146,6 +158,7 @@ struct super_run_in_problem_packet
   unsigned char *test_score_list;
   unsigned char *score_tests;
   unsigned char *standard_checker;
+  unsigned char *standard_valuer;
   ejintbool_t valuer_sets_marked;
   int interactor_time_limit_ms;
   int interactor_real_time_limit_ms;
@@ -160,12 +173,14 @@ struct super_run_in_problem_packet
   ejenvlist_t valuer_env;
   ejenvlist_t interactor_env;
   ejenvlist_t test_checker_env;
+  ejenvlist_t test_generator_env;
   ejenvlist_t init_env;
   ejenvlist_t start_env;
   unsigned char *check_cmd;
   unsigned char *valuer_cmd;
   unsigned char *interactor_cmd;
   unsigned char *test_checker_cmd;
+  unsigned char *test_generator_cmd;
   unsigned char *init_cmd;
   unsigned char *start_cmd;
   unsigned char *solution_cmd;
@@ -192,6 +207,8 @@ struct super_run_in_problem_packet
   int test_count;
   ejintbool_t copy_exe_to_tgzdir;
   char **checker_extra_files;
+  ejintbool_t disable_vm_size_limit;
+  ejintbool_t enable_group_merge;
 
   int type_val META_ATTRIB((meta_hidden));
 };
@@ -213,6 +230,7 @@ struct super_run_in_tester_packet
   ejintbool_t enable_memory_limit_error;
   unsigned char *kill_signal;
   ejintbool_t clear_env;
+  ejintbool_t enable_ejudge_env;
   int time_limit_adjustment_ms;
   unsigned char *errorcode_file;
   unsigned char *error_file;

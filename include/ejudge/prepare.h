@@ -2,7 +2,7 @@
 #ifndef __PREPARE_H__
 #define __PREPARE_H__
 
-/* Copyright (C) 2000-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2000-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -145,7 +145,7 @@ struct virtual_end_info_s
   int checker_comment_mode;
 };
 
-/* sizeof(struct section_global_data) == 1208/1920 */
+/* sizeof(struct section_global_data) == ?/2000 */
 struct section_global_data
 {
   struct generic_section_config g META_ATTRIB((meta_hidden));
@@ -284,6 +284,15 @@ struct section_global_data
   ejintbool_t start_on_first_login;
   /** enable restarting of virtual contest */
   ejintbool_t enable_virtual_restart;
+
+  /** try to preserve the original line numbers in scripts */
+  ejintbool_t preserve_line_numbers;
+
+  /** enable executable file cacheing on the remote agent side */
+  ejintbool_t enable_remote_cache;
+
+  /** enable extended running properties produced by compilation */
+  ejintbool_t enable_run_props;
 
   /** @deprecated the name of the contest */
   unsigned char *name;
@@ -807,9 +816,17 @@ struct section_global_data
   int max_submit_num;
   /** max size of submits and data */
   ejintsize_t max_submit_total;
+
+  /** import language specifications from the corresponding compile.cfg */
+  ejintbool_t enable_language_import;
+  /** additional specifications for language imports */
+  char **language_import;
+
+  /** specification of the notification destination */
+  unsigned char *notification_spec;
 };
 
-/* sizeof(struct section_problem_data) == 820/1280 */
+/* sizeof(struct section_problem_data) == ?/1392 */
 struct section_problem_data
 {
   struct generic_section_config g META_ATTRIB((meta_hidden));   // 32 bytes
@@ -870,6 +887,8 @@ struct section_problem_data
   ejbyteflag_t binary;
   /** do not treat non-zero exit code as run-time error */
   ejbyteflag_t ignore_exit_code;
+  /** do not report "runtime error" if program is terminated by a signal */
+  ejbyteflag_t ignore_term_signal;
   /** for KIROV contests: handle problem in the olympiad mode*/
   ejbyteflag_t olympiad_mode;
 
@@ -907,7 +926,6 @@ struct section_problem_data
   /** use a working directory from the tgz archive */
   ejbyteflag_t use_tgz;
 
-
   /** accept solutions that do not pass all accepting tests */
   ejbyteflag_t accept_partial;
   /** participants cannot submit this problem */
@@ -916,6 +934,8 @@ struct section_problem_data
   ejbyteflag_t disable_tab;
   /** do show problem statement after problem expiration */
   ejbyteflag_t unrestricted_statement;
+  /** ignore IP restrictions for statements */
+  ejbyteflag_t statement_ignore_ip;
   /** for compatibility with old configs */
   ejbyteflag_t restricted_statement;
   /** enable submit for rejected problems even after deadline */
@@ -1004,6 +1024,12 @@ struct section_problem_data
 
   ejbyteflag_t enable_iframe_statement;
 
+  ejbyteflag_t enable_src_for_testing;
+
+  ejbyteflag_t disable_vm_size_limit;
+
+  ejbyteflag_t enable_group_merge;
+
   // padding to 8-byte boundary
   //unsigned char _pad1[1];
 
@@ -1051,6 +1077,8 @@ struct section_problem_data
   unsigned char *group_name;
   /** internal problem name */
   unsigned char *internal_name;
+  /** plugin entry point */
+  unsigned char *plugin_entry_name;
   /** problem UUID */
   unsigned char *uuid;
   /** problem directory (relative to problems or absolute) */
@@ -1126,6 +1154,8 @@ struct section_problem_data
   unsigned char *custom_lang_name;
   /** directory with files to be copied to the compilation directory */
   unsigned char *extra_src_dir;
+  /** standard valuer program */
+  unsigned char *standard_valuer;
 
   /** printf pattern for the test files */
   unsigned char *test_pat;
@@ -1191,6 +1221,8 @@ struct section_problem_data
   ejenvlist_t style_checker_env;
   /** environment variables for the test checker */
   ejenvlist_t test_checker_env;
+  /** environment variables for test generator */
+  ejenvlist_t test_generator_env;
   /** environment variables for the init-style interactor */
   ejenvlist_t init_env;
   /** environment variables for the program itself */
@@ -1205,6 +1237,8 @@ struct section_problem_data
   unsigned char *style_checker_cmd;
   /** test checker program */
   unsigned char *test_checker_cmd;
+  /** test generator program */
+  unsigned char *test_generator_cmd;
   /** start/stop init-style interactor */
   unsigned char *init_cmd;
   /** proxy to start the program being tested */
@@ -1250,16 +1284,19 @@ struct section_problem_data
   unsigned char *open_tests;
   int open_tests_count META_ATTRIB((meta_private));
   int *open_tests_val META_ATTRIB((meta_private));
+  int *open_tests_group META_ATTRIB((meta_private));
 
   /** test visibility in the final final mode */
   unsigned char *final_open_tests;
   int final_open_tests_count META_ATTRIB((meta_private));
   int *final_open_tests_val META_ATTRIB((meta_private));
+  int *final_open_tests_group META_ATTRIB((meta_private));
 
   /** test visibility purchasable by tokens */
   unsigned char *token_open_tests;
   int token_open_tests_count META_ATTRIB((meta_private));
   int *token_open_tests_val META_ATTRIB((meta_private));
+  int *token_open_tests_group META_ATTRIB((meta_private));
 
   /** max virtual size limit  */
   ej_size64_t max_vm_size;
@@ -1293,7 +1330,7 @@ struct section_problem_data
   /** external score view */
   char **score_view;
   int *score_view_score META_ATTRIB((meta_private));
-  char **score_view_text;
+  char **score_view_text META_ATTRIB((meta_private));
 
   /** full path to xml_file */
   unsigned char *xml_file_path META_ATTRIB((meta_private));
@@ -1307,7 +1344,7 @@ struct section_problem_data
   } xml META_ATTRIB((meta_hidden));
 };
 
-/* sizeof(struct section_language_data) == 312/400 */
+/* sizeof(struct section_language_data) == ?/472 */
 struct section_language_data
 {
   struct generic_section_config g META_ATTRIB((meta_hidden));
@@ -1364,6 +1401,16 @@ struct section_language_data
   ejintbool_t disable_testing;
   /** enable custom compilation script */
   ejintbool_t enable_custom;
+  /** pass ejudge-specific environment to the running program */
+  ejintbool_t enable_ejudge_env;
+  /** to preserve the original line numbers in scripts */
+  ejintbool_t preserve_line_numbers;
+  /** disable this language by the default import */
+  ejintbool_t default_disabled;
+  /** enable this language (overrides default_disabled) */
+  ejintbool_t enabled;
+  /** disable automatic update of this language (by ejudge-configure-compilers) */
+  ejintbool_t disable_auto_update;
 
   /** max virtual size limit  */
   ej_size64_t max_vm_size;
@@ -1400,8 +1447,19 @@ struct section_language_data
   unsigned char *compile_server_id;
   /** suffix to use for multi-header setup */
   unsigned char *multi_header_suffix;
-  /** additional container options -- appended to the problem container_options */
+  /** additional container options for testing -- appended to the problem container_options */
   unsigned char *container_options;
+  /** additional container options for compilation */
+  unsigned char *compiler_container_options;
+  /** language-specific clean-up command */
+  unsigned char *clean_up_cmd;
+  /** additional run environment in file */
+  unsigned char *run_env_file;
+  /** additional clean_up environment in file */
+  unsigned char *clean_up_env_file;
+
+  /** compiler version */
+  unsigned char *version;
 
   unsigned char *unhandled_vars;
   /** disabled by configuration script */
@@ -1468,6 +1526,8 @@ struct section_tester_data
   int time_limit_adjustment;
   /** have priority over `time_limit_adjustment' */
   int time_limit_adj_millis;
+  /** export all ejudge-specific environment to the tested program */
+  ejintbool_t enable_ejudge_env;
 
   unsigned char *run_dir;
   unsigned char *run_queue_dir;
@@ -1577,7 +1637,8 @@ prepare_unparse_global(
         const struct contest_desc *cnts,
         struct section_global_data *global,
         const unsigned char *compile_dir,
-        int need_variant_map);
+        int need_variant_map,
+        int compile_mode);
 void prepare_unparse_unhandled_global(FILE *f,
                                       const struct section_global_data *global);
 int prepare_check_forbidden_global(FILE *f, const struct section_global_data *global);
@@ -1586,9 +1647,11 @@ void
 prepare_unparse_lang(
         FILE *f,
         const struct section_language_data *lang,
+        int lang_id,
         const unsigned char *long_name,
         const unsigned char *options,
-        const unsigned char *libs);
+        const unsigned char *libs,
+        int skip_suffixes);
 void prepare_unparse_unhandled_lang(FILE *f,
                                     const struct section_language_data *lang);
 int prepare_check_forbidden_lang(FILE *f, const struct section_language_data *lang);
@@ -1679,6 +1742,7 @@ prepare_parse_open_tests(
         FILE *flog,
         const unsigned char *str,
         int **p_vals,
+        int **p_groups,
         int *p_count);
 
 int
@@ -1710,19 +1774,92 @@ prepare_copy_dates(
 
 unsigned char *
 prepare_varsubst(
-        serve_state_t state,
         unsigned char *in_str,
         int free_flag,
+        const struct section_global_data *global,
         const struct section_problem_data *prob,
         const struct section_language_data *lang,
         const struct section_tester_data *tester);
 
 char **
 prepare_sarray_varsubst(
-        serve_state_t state,
+        const struct section_global_data *global,
         const struct section_problem_data *prob,
         const struct section_language_data *lang,
         const struct section_tester_data *tester,
         char **a1);
+
+int
+prepare_problem(
+        const struct ejudge_cfg *config,
+        const struct contest_desc *cnts,
+        struct section_global_data *g,
+        int abstr_count,
+        struct section_problem_data **abstr_probs,
+        struct section_problem_data *prob);
+
+void
+prepare_copy_language(
+        struct section_language_data *out,
+        const struct section_language_data *in);
+
+void
+prepare_merge_language(
+        struct section_language_data *out,
+        const struct section_language_data *imp,
+        const struct section_language_data *lang);
+void
+prepare_language_set_defaults(struct section_language_data *lang);
+
+/**
+exported configuration of a compilation server
+*/
+struct compile_server_config
+{
+  unsigned char *id;
+  struct generic_section_config *cfg;
+  struct section_global_data *global;
+  struct section_language_data **langs;
+  unsigned char *errors;
+  int max_lang;
+};
+
+void
+compile_server_config_free(struct compile_server_config *);
+
+int
+compile_server_load(
+        struct compile_server_config *csc,
+        FILE *log_f,
+        const unsigned char *spool_dir);
+
+/**
+a collection of compilation server configs
+*/
+struct compile_server_configs
+{
+  struct compile_server_config *v;
+  size_t u, a;
+};
+
+void
+compile_servers_config_init(struct compile_server_configs *cscs);
+void
+compile_servers_config_free(struct compile_server_configs *cscs);
+struct compile_server_config *
+compile_servers_get(
+        struct compile_server_configs *cscs,
+        const unsigned char *id);
+int
+compile_servers_arrange(
+        struct compile_server_configs *cscs,
+        FILE *log_f,
+        int *p_max_lang,
+        struct section_language_data ***p_langs);
+int
+compile_servers_collect(
+        struct compile_server_configs *cscs,
+        FILE *log_f,
+        const unsigned char *spool_dir);
 
 #endif /* __PREPARE_H__ */

@@ -3,7 +3,7 @@
 #ifndef __SUPER_PROTO_H__
 #define __SUPER_PROTO_H__
 
-/* Copyright (C) 2004-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2004-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -395,6 +395,10 @@ enum
   SSERV_CMD_EDIT_SESSIONS_PAGE,
   SSERV_CMD_CLEAR_SESSION,
 
+  SSERV_CMD_LANG_AJAX_ACTION,
+
+  SSERV_CMD_LOGIN_ACTION_JSON,
+
   SSERV_CMD_LAST,
 };
 
@@ -552,6 +556,7 @@ struct prot_super_pkt_set_param
 struct prot_super_pkt_http_request
 {
   struct prot_super_packet b;
+  int api_mode;
   int arg_num;
   int env_num;
   int param_num;

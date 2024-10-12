@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2005-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2005-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -102,7 +102,8 @@ prepare_unparse_global(
         const struct contest_desc *cnts,
         struct section_global_data *global,
         const unsigned char *compile_dir,
-        int need_variant_map)
+        int need_variant_map,
+        int compile_mode)
 {
   struct html_armor_buffer ab = HTML_ARMOR_INITIALIZER;
   path_t compile_spool_dir, tmp1, tmp2, contests_home_dir;
@@ -124,6 +125,19 @@ prepare_unparse_global(
   };
   unsigned char nbuf[64];
   unsigned char size_buf[256];
+
+  if (compile_mode) {
+    // TODO: add compile-related global vars
+    do_str(f, &ab, "root_dir", global->root_dir);
+    do_str(f, &ab, "lang_config_dir", global->lang_config_dir);
+    if (global->sleep_time > 0)
+      fprintf(f, "sleep_time = %d\n", global->sleep_time);
+    if (global->cr_serialization_key > 0)
+      fprintf(f, "cr_serialization_key = %d\n", global->cr_serialization_key);
+
+    html_armor_free(&ab);
+    return;
+  }
 
   /*
   fprintf(f, "contest_id = %d\n", global->contest_id);
@@ -284,6 +298,12 @@ prepare_unparse_global(
     unparse_bool(f, "start_on_first_login", global->start_on_first_login);
   if (global->enable_virtual_restart > 0)
     unparse_bool(f, "enable_virtual_restart", global->enable_virtual_restart);
+  if (global->preserve_line_numbers > 0)
+    unparse_bool(f, "preserve_line_numbers", global->preserve_line_numbers);
+  if (global->enable_remote_cache > 0)
+    unparse_bool(f, "enable_remote_cache", global->enable_remote_cache);
+  if (global->enable_run_props > 0)
+    unparse_bool(f, "enable_run_props", global->enable_run_props);
   if (global->virtual_end_options && global->virtual_end_options[0])
     fprintf(f, "virtual_end_options = \"%s\"\n", CARMOR(global->virtual_end_options));
   fprintf(f, "\n");
@@ -562,6 +582,20 @@ prepare_unparse_global(
     fprintf(f, "\n");
   }
 
+  if (global->notification_spec && global->notification_spec[0]) {
+    do_str(f, &ab, "notification_spec", global->notification_spec);
+    fprintf(f, "\n");
+  }
+
+  if (global->enable_language_import > 0) {
+    unparse_bool(f, "enable_language_import", global->enable_language_import);
+    do_xstr(f, &ab, "language_import", global->language_import);
+    fprintf(f, "\n");
+  }
+  //GLOBAL_PARAM(compile_server_id, "S"),
+  do_str(f, &ab, "compile_server_id", global->compile_server_id);
+  fprintf(f, "\n");
+
   if (global->unhandled_vars) fprintf(f, "%s\n", global->unhandled_vars);
 
   html_armor_free(&ab);
@@ -648,9 +682,6 @@ prepare_unparse_unhandled_global(FILE *f, const struct section_global_data *glob
 
   //GLOBAL_PARAM(super_run_dir, "S"),
   do_str(f, &ab, "super_run_dir", global->super_run_dir);
-
-  //GLOBAL_PARAM(compile_server_id, "S"),
-  do_str(f, &ab, "compile_server_id", global->compile_server_id);
 
   //GLOBAL_PARAM(tests_to_accept, "d"),
   if (global->tests_to_accept >= 0
@@ -859,18 +890,24 @@ void
 prepare_unparse_lang(
         FILE *f,
         const struct section_language_data *lang,
+        int lang_id,
         const unsigned char *long_name,
         const unsigned char *options,
-        const unsigned char *libs)
+        const unsigned char *libs,
+        int skip_suffixes)
 {
   struct html_armor_buffer ab = HTML_ARMOR_INITIALIZER;
   int i, flag = 0, lib_flag = 0;
   unsigned char size_buf[256];
 
   fprintf(f, "[language]\n");
-  fprintf(f, "id = %d\n", lang->id);
-  if (lang->compile_id && lang->compile_id != lang->id)
-    fprintf(f, "compile_id = %d\n", lang->compile_id);
+  if (lang_id > 0) {
+    fprintf(f, "id = %d\n", lang_id);
+  } else if (lang->id > 0) {
+    fprintf(f, "id = %d\n", lang->id);
+    if (lang->compile_id && lang->compile_id != lang->id)
+      fprintf(f, "compile_id = %d\n", lang->compile_id);
+  }
   if (lang->compile_dir_index > 0) {
     fprintf(f, "compile_dir_index = %d\n", lang->compile_dir_index);
   }
@@ -890,33 +927,47 @@ prepare_unparse_lang(
   }
   if (lang->arch && lang->arch[0])
     fprintf(f, "arch = \"%s\"\n", CARMOR(lang->arch));
-  fprintf(f, "src_sfx = \"%s\"\n", CARMOR(lang->src_sfx));
-  if (lang->exe_sfx[0])
-    fprintf(f, "exe_sfx = \"%s\"\n", CARMOR(lang->exe_sfx));
+  if (!skip_suffixes) {
+    fprintf(f, "src_sfx = \"%s\"\n", CARMOR(lang->src_sfx));
+    if (lang->exe_sfx[0])
+      fprintf(f, "exe_sfx = \"%s\"\n", CARMOR(lang->exe_sfx));
+  }
   /*
   if (lang->key[0])
     fprintf(f, "key = \"%s\"\n", CARMOR(lang->key));
-  if (lang->cmd[0])
-    fprintf(f, "cmd = \"%s\"\n", CARMOR(lang->cmd));
   */
-  if (lang->disabled)
+  if (lang_id <= 0) {
+    if (lang->cmd && lang->cmd[0])
+      fprintf(f, "cmd = \"%s\"\n", CARMOR(lang->cmd));
+  }
+  if (lang->disabled > 0)
     unparse_bool(f, "disabled", lang->disabled);
-  if (lang->insecure)
+  if (lang->insecure > 0)
     unparse_bool(f, "insecure", lang->insecure);
-  if (lang->disable_security)
+  if (lang->disable_security > 0)
     unparse_bool(f, "disable_security", lang->disable_security);
-  if (lang->enable_suid_run)
+  if (lang->enable_suid_run > 0)
     unparse_bool(f, "enable_suid_run", lang->enable_suid_run);
   if (lang->is_dos > 0)
     unparse_bool(f, "is_dos", lang->is_dos);
-  if (lang->binary)
+  if (lang->binary > 0)
     unparse_bool(f, "binary", lang->binary);
-  if (lang->disable_auto_testing)
+  if (lang->disable_auto_testing > 0)
     unparse_bool(f, "disable_auto_testing", lang->disable_auto_testing);
-  if (lang->disable_testing)
+  if (lang->disable_testing > 0)
     unparse_bool(f, "disable_testing", lang->disable_testing);
   if (lang->enable_custom > 0)
     unparse_bool(f, "enable_custom", lang->enable_custom);
+  if (lang->enable_ejudge_env > 0)
+    unparse_bool(f, "enable_ejudge_env", lang->enable_ejudge_env);
+  if (lang->preserve_line_numbers > 0)
+    unparse_bool(f, "preserve_line_numbers", lang->preserve_line_numbers);
+  if (lang->default_disabled > 0)
+    unparse_bool(f, "default_disabled", lang->default_disabled);
+  if (lang->enabled > 0)
+    unparse_bool(f, "enabled", lang->enabled);
+  if (lang->disable_auto_update > 0)
+    unparse_bool(f, "disable_auto_update", lang->disable_auto_update);
   if (lang->content_type && lang->content_type[0]) {
     fprintf(f, "content_type = \"%s\"\n", CARMOR(lang->content_type));
   }
@@ -969,6 +1020,21 @@ prepare_unparse_lang(
   do_xstr(f, &ab, "style_checker_env", lang->style_checker_env);
   if (lang->container_options && *lang->container_options) {
     fprintf(f, "container_options = \"%s\"\n", CARMOR(lang->container_options));
+  }
+  if (lang->compiler_container_options && *lang->compiler_container_options) {
+    fprintf(f, "compiler_container_options = \"%s\"\n", CARMOR(lang->compiler_container_options));
+  }
+  if (lang->clean_up_cmd && *lang->clean_up_cmd) {
+    fprintf(f, "clean_up_cmd = \"%s\"\n", CARMOR(lang->clean_up_cmd));
+  }
+  if (lang->run_env_file && *lang->run_env_file) {
+    fprintf(f, "run_env_file = \"%s\"\n", CARMOR(lang->run_env_file));
+  }
+  if (lang->clean_up_env_file && *lang->clean_up_env_file) {
+    fprintf(f, "clean_up_env_file = \"%s\"\n", CARMOR(lang->clean_up_env_file));
+  }
+  if (lang->version && *lang->version) {
+    fprintf(f, "version = \"%s\"\n", CARMOR(lang->version));
   }
   fprintf(f, "\n");
 
@@ -1053,6 +1119,9 @@ prepare_unparse_prob(
   if (!prob->abstract && prob->internal_name) {
     fprintf(f, "internal_name = \"%s\"\n", CARMOR(prob->internal_name));
   }
+  if (!prob->abstract && prob->plugin_entry_name) {
+    fprintf(f, "plugin_entry_name = \"%s\"\n", CARMOR(prob->plugin_entry_name));
+  }
   if (!prob->abstract && prob->uuid && prob->uuid[0]) {
     fprintf(f, "uuid = \"%s\"\n", CARMOR(prob->uuid));
   }
@@ -1123,6 +1192,9 @@ prepare_unparse_prob(
   if ((prob->abstract && prob->ignore_exit_code == 1)
       || (!prob->abstract && prob->ignore_exit_code >= 0))
     unparse_bool(f, "ignore_exit_code", prob->ignore_exit_code);
+  if ((prob->abstract && prob->ignore_term_signal == 1)
+      || (!prob->abstract && prob->ignore_term_signal >= 0))
+    unparse_bool(f, "ignore_term_signal", prob->ignore_term_signal);
   if ((prob->abstract && prob->olympiad_mode == 1)
       || (!prob->abstract && prob->olympiad_mode >= 0))
     unparse_bool(f, "olympiad_mode", prob->olympiad_mode);
@@ -1436,6 +1508,8 @@ prepare_unparse_prob(
   if (prob->check_cmd && prob->check_cmd[0])
     fprintf(f, "check_cmd = \"%s\"\n", CARMOR(prob->check_cmd));
   do_xstr(f, &ab, "checker_env", prob->checker_env);
+  if (prob->standard_valuer)
+    fprintf(f, "standard_valuer = \"%s\"\n", CARMOR(prob->standard_valuer));
   if (prob->valuer_cmd)
     fprintf(f, "valuer_cmd = \"%s\"\n", CARMOR(prob->valuer_cmd));
   do_xstr(f, &ab, "valuer_env", prob->valuer_env);
@@ -1456,6 +1530,9 @@ prepare_unparse_prob(
   if (prob->test_checker_cmd && prob->test_checker_cmd[0]) {
     fprintf(f,"test_checker_cmd = \"%s\"\n", CARMOR(prob->test_checker_cmd));
   }
+  if (prob->test_generator_cmd && prob->test_generator_cmd[0]) {
+    fprintf(f,"test_generator_cmd = \"%s\"\n", CARMOR(prob->test_generator_cmd));
+  }
   if (prob->init_cmd && prob->init_cmd[0]) {
     fprintf(f,"init_cmd = \"%s\"\n", CARMOR(prob->init_cmd));
   }
@@ -1475,6 +1552,7 @@ prepare_unparse_prob(
     fprintf(f,"vcs_compile_cmd = \"%s\"\n", CARMOR(prob->vcs_compile_cmd));
   }
   do_xstr(f, &ab, "test_checker_env", prob->test_checker_env);
+  do_xstr(f, &ab, "test_generator_env", prob->test_generator_env);
   do_xstr(f, &ab, "init_env", prob->init_env);
   do_xstr(f, &ab, "start_env", prob->start_env);
   do_xstr(f, &ab, "lang_time_adj", prob->lang_time_adj);
@@ -1538,6 +1616,8 @@ prepare_unparse_prob(
     unparse_bool(f, "disable_tab", prob->disable_tab);
   if (prob->unrestricted_statement >= 0)
     unparse_bool(f, "unrestricted_statement", prob->unrestricted_statement);
+  if (prob->statement_ignore_ip >= 0)
+    unparse_bool(f, "statement_ignore_ip", prob->statement_ignore_ip);
   if (prob->enable_submit_after_reject >= 0)
     unparse_bool(f, "enable_submit_after_reject", prob->enable_submit_after_reject);
   if (prob->hide_file_names >= 0)
@@ -1638,6 +1718,18 @@ prepare_unparse_prob(
       || (!prob->abstract && prob->enable_iframe_statement >= 0)) {
     unparse_bool(f, "enable_iframe_statement", prob->enable_iframe_statement);
   }
+  if ((prob->abstract > 0 && prob->enable_src_for_testing > 0)
+      || (!prob->abstract && prob->enable_src_for_testing >= 0)) {
+    unparse_bool(f, "enable_src_for_testing", prob->enable_src_for_testing);
+  }
+  if ((prob->abstract > 0 && prob->disable_vm_size_limit > 0)
+      || (!prob->abstract && prob->disable_vm_size_limit >= 0)) {
+    unparse_bool(f, "disable_vm_size_limit", prob->disable_vm_size_limit);
+  }
+  if ((prob->abstract > 0 && prob->enable_group_merge > 0)
+      || (!prob->abstract && prob->enable_group_merge >= 0)) {
+    unparse_bool(f, "enable_group_merge", prob->enable_group_merge);
+  }
   if (prob->stand_ignore_score >= 0
       && ((prob->abstract && prob->stand_ignore_score) || !prob->abstract))
       unparse_bool(f, "stand_ignore_score", prob->stand_ignore_score);
@@ -1697,6 +1789,9 @@ prepare_unparse_actual_prob(
     fprintf(f, "long_name = \"%s\"\n", CARMOR(prob->long_name));
   }
   if (prob->internal_name) fprintf(f, "internal_name = \"%s\"\n", CARMOR(prob->internal_name));
+  if (prob->plugin_entry_name) {
+    fprintf(f, "plugin_entry_name = \"%s\"\n", CARMOR(prob->plugin_entry_name));
+  }
   if (prob->uuid && prob->uuid[0]) fprintf(f, "uuid = \"%s\"\n", CARMOR(prob->uuid));
   if (prob->problem_dir && prob->problem_dir[0]) fprintf(f, "problem_dir = \"%s\"\n", CARMOR(prob->problem_dir));
   fprintf(f, "type = \"%s\"\n", problem_unparse_type(prob->type));
@@ -1737,6 +1832,8 @@ prepare_unparse_actual_prob(
     unparse_bool(f, "binary", prob->binary);
   if (prob->ignore_exit_code > 0)
     unparse_bool(f, "ignore_exit_code", prob->ignore_exit_code);
+  if (prob->ignore_term_signal > 0)
+    unparse_bool(f, "ignore_term_signal", prob->ignore_term_signal);
   if (prob->olympiad_mode > 0)
     unparse_bool(f, "olympiad_mode", prob->olympiad_mode);
   if (prob->score_latest > 0)
@@ -1906,6 +2003,8 @@ prepare_unparse_actual_prob(
   if (!prob->standard_checker && (show_paths || (global && global->advanced_layout > 0)) && prob->check_cmd)
     fprintf(f, "check_cmd = \"%s\"\n", CARMOR(prob->check_cmd));
   do_xstr(f, &ab, "checker_env", prob->checker_env);
+  if (prob->standard_valuer)
+    fprintf(f, "standard_valuer = \"%s\"\n", CARMOR(prob->standard_valuer));
   if ((show_paths || (global && global->advanced_layout > 0)) && prob->valuer_cmd)
     fprintf(f, "valuer_cmd = \"%s\"\n", CARMOR(prob->valuer_cmd));
   do_xstr(f, &ab, "valuer_env", prob->valuer_env);
@@ -1922,6 +2021,9 @@ prepare_unparse_actual_prob(
   do_xstr(f, &ab, "lang_compiler_container_options", prob->lang_compiler_container_options);
   if ((show_paths || (global && global->advanced_layout > 0)) && prob->test_checker_cmd && prob->test_checker_cmd[0]) {
     fprintf(f,"test_checker_cmd = \"%s\"\n", CARMOR(prob->test_checker_cmd));
+  }
+  if ((show_paths || (global && global->advanced_layout > 0)) && prob->test_generator_cmd && prob->test_generator_cmd[0]) {
+    fprintf(f,"test_generator_cmd = \"%s\"\n", CARMOR(prob->test_generator_cmd));
   }
   if ((show_paths || (global && global->advanced_layout > 0)) && prob->init_cmd && prob->init_cmd[0]) {
     fprintf(f,"init_cmd = \"%s\"\n", CARMOR(prob->init_cmd));
@@ -1942,6 +2044,7 @@ prepare_unparse_actual_prob(
     fprintf(f,"vcs_compile_cmd = \"%s\"\n", CARMOR(prob->vcs_compile_cmd));
   }
   do_xstr(f, &ab, "test_checker_env", prob->test_checker_env);
+  do_xstr(f, &ab, "test_generator_env", prob->test_generator_env);
   do_xstr(f, &ab, "init_env", prob->init_env);
   do_xstr(f, &ab, "start_env", prob->start_env);
   do_xstr(f, &ab, "lang_time_adj", prob->lang_time_adj);
@@ -2004,6 +2107,8 @@ prepare_unparse_actual_prob(
     unparse_bool(f, "disable_tab", prob->disable_tab);
   if (prob->unrestricted_statement > 0)
     unparse_bool(f, "unrestricted_statement", prob->unrestricted_statement);
+  if (prob->statement_ignore_ip > 0)
+    unparse_bool(f, "statement_ignore_ip", prob->statement_ignore_ip);
   if (prob->enable_submit_after_reject > 0)
     unparse_bool(f, "enable_submit_after_reject", prob->enable_submit_after_reject);
   if (prob->hide_file_names > 0)
@@ -2080,6 +2185,12 @@ prepare_unparse_actual_prob(
     unparse_bool(f, "enable_vcs", prob->enable_vcs);
   if (prob->enable_iframe_statement > 0)
     unparse_bool(f, "enable_iframe_statement", prob->enable_iframe_statement);
+  if (prob->enable_src_for_testing > 0)
+    unparse_bool(f, "enable_src_for_testing", prob->enable_src_for_testing);
+  if (prob->disable_vm_size_limit > 0)
+    unparse_bool(f, "disable_vm_size_limit", prob->disable_vm_size_limit);
+  if (prob->enable_group_merge > 0)
+    unparse_bool(f, "enable_group_merge", prob->enable_group_merge);
   if (prob->stand_ignore_score > 0)
     unparse_bool(f, "stand_ignore_score", prob->stand_ignore_score);
   if (prob->stand_last_column > 0)
@@ -2546,6 +2657,9 @@ generate_abstract_tester(
     if (atst->clear_env > 0) {
       unparse_bool(f, "clear_env", atst->clear_env);
     }
+    if (atst->enable_ejudge_env > 0) {
+      unparse_bool(f, "enable_ejudge_env", atst->enable_ejudge_env);
+    }
     do_xstr(f, &ab, "start_env", atst->start_env);
   }
 
@@ -2771,6 +2885,7 @@ prepare_unparse_testers(
     prepare_set_prob_value(CNTSPROB_binary_input, tmp_prob, abstr, global);
     prepare_set_prob_value(CNTSPROB_binary, tmp_prob, abstr, global);
     prepare_set_prob_value(CNTSPROB_ignore_exit_code, tmp_prob, abstr, global);
+    prepare_set_prob_value(CNTSPROB_ignore_term_signal, tmp_prob, abstr, global);
     /*
     prepare_set_prob_value(CNTSPROB_MAX_VM_SIZE, tmp_prob, abstr, global);
     prepare_set_prob_value(CNTSPROB_MAX_STACK_SIZE, tmp_prob, abstr, global);
@@ -3119,6 +3234,12 @@ prob_instr(
   if (tmp_prob->test_checker_cmd && tmp_prob->test_checker_cmd[0]) {
     fprintf(f, "<p><b>Tests checker:</b></p>\n");
     handle_file(f, global, tmp_prob, tmp_prob->test_checker_cmd, 1);
+  }
+
+  prepare_set_prob_value(CNTSPROB_test_generator_cmd, tmp_prob, abstr, global);
+  if (tmp_prob->test_generator_cmd && tmp_prob->test_generator_cmd[0]) {
+    fprintf(f, "<p><b>Tests generator:</b></p>\n");
+    handle_file(f, global, tmp_prob, tmp_prob->test_generator_cmd, 1);
   }
 
   prepare_set_prob_value(CNTSPROB_init_cmd, tmp_prob, abstr, global);

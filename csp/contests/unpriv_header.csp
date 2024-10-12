@@ -21,6 +21,19 @@
     });
 </script>
 <script type="text/javascript" src="<s:config name="style-prefix" />unpriv.js"></script>
+<script>
+MathJax = {
+  chtml: {
+    scale: 1,
+    mtextInheritFont: true
+  },
+  options: {
+    enableMenu: false
+  }
+};
+</script>
+<script type="text/javascript" id="MathJax-script" async src="<s:config name="style-prefix" />mathjax/tex-mml-chtml.js">
+</script>
 <script type="text/javascript">
   var SID="<s:v value="phr->session_id" />";
   var NEW_SRV_ACTION_JSON_USER_STATE=<s:ac ac="json-user-state" />;
@@ -42,162 +55,7 @@
 </script>
 <link rel="stylesheet" href="<s:config name="style-prefix" />unpriv.css" type="text/css" />
 <link rel="stylesheet" href="<s:config name="style-prefix" />unpriv3.css" type="text/css" />
-<link rel="stylesheet" href="https://ejudge.strategy48.ru/problem-statement.css" type="text/css">
-<script type="text/javascript" src="https://ejudge.strategy48.ru/clipboard.min.js"></script>
-<script type="text/javascript" src="https://ejudge.strategy48.ru/autosize.min.js"></script>
-<script type="text/javascript">
-    let filterClipboardText = function (text, lineCount) { // Because of unexpected bug in prettyprint or Clipboard lib.
-        lineCount = lineCount || 0;
-        let result = "";
-        let lineBreakCount = 0;
-        for (let i = 0; i < text.length; i++) {
-            const c = text.charAt(i);
-            const cur = c.charCodeAt(0);
-            if (cur === 160 && i > 0 && i + 1 < text.length) {
-                const prev = text.charAt(i - 1).charCodeAt(0);
-                const next = text.charAt(i + 1).charCodeAt(0);
-                if ((prev === 10 || prev === 13) && (next === 10 || next === 13)) {
-                    continue;
-                }
-            }
-            result += c;
-            if (c === '\n') {
-                lineBreakCount++;
-            }
-        }
-        if (lineBreakCount < lineCount) {
-            result += '\n';
-        }
-        return result;
-    };
 
-    let showMessage = function (message) {
-        $.jGrowl(message, {position: 'bottom-right', life: 2000});
-    };
-
-    $(document).ready(function () {
-        window.changedTests = new Set();
-
-        function endsWith(string, suffix) {
-            return string.indexOf(suffix, string.length - suffix.length) !== -1;
-        }
-
-        const inputFileDiv = $("div.input-file");
-        const inputFile = inputFileDiv.text();
-        const outputFileDiv = $("div.output-file");
-        const outputFile = outputFileDiv.text();
-
-
-        if (!endsWith(inputFile, "стандартный ввод")
-            && !endsWith(inputFile, "standard input")) {
-            inputFileDiv.attr("style", "font-weight: bold");
-        }
-
-        if (!endsWith(outputFile, "стандартный вывод")
-            && !endsWith(outputFile, "standard output")) {
-            outputFileDiv.attr("style", "font-weight: bold");
-        }
-
-        const titleDiv = $("div.header div.title");
-
-
-
-        String.prototype.replaceAll = function (search, replace) {
-            return this.split(search).join(replace);
-        };
-
-        $(".sample-test .title").each(function () {
-            const preId = ("id" + Math.random()).replaceAll(".", "0");
-            const cpyId = ("id" + Math.random()).replaceAll(".", "0");
-
-            $(this).parent().find("pre").attr("id", preId);
-            const $copy = $("<div title='Скопировать' data-clipboard-target='#" + preId + "' id='" + cpyId + "' class='input-output-copier'>Скопировать</div>");
-            $(this).append($copy);
-
-            const clipboard = new Clipboard('#' + cpyId, {
-                text: function (trigger) {
-                    const pre = document.querySelector('#' + preId);
-                    const lines = pre.querySelectorAll(".test-example-line");
-                    return filterClipboardText(pre.innerText, lines.length);
-                }
-            });
-
-            const isInput = $(this).parent().hasClass("input");
-
-            clipboard.on('success', function (e) {
-                if (isInput) {
-                    showMessage("Входные данные были скопированы в буфер обмена");
-                } else {
-                    showMessage("Выходные данные были скопированы в буфер обмена");
-                }
-                e.clearSelection();
-            });
-        });
-
-        $(".test-form-item input").change(function () {
-            addPendingSubmissionMessage($($(this).closest("form")), "Вы изменили ответ, не забудьте его отправить, если вы хотите сохранить изменения");
-            const index = $(this).closest(".problemindexholder").attr("problemindex");
-            let test = "";
-            $(this).closest("form input").each(function () {
-                const test_ = $(this).attr("name");
-                if (test_ && test_.substring(0, 4) === "test") {
-                    test = test_;
-                }
-            });
-            if (index.length > 0 && test.length > 0) {
-                const indexTest = index + "::" + test;
-                window.changedTests.add(indexTest);
-            }
-        });
-
-        $(window).on('beforeunload', function () {
-            if (window.changedTests.size > 0) {
-                return 'Dialog text here';
-            }
-        });
-
-        autosize($('.test-explanation textarea'));
-
-        $(".test-example-line").hover(function() {
-            $(this).attr("class").split(" ").forEach((clazz) => {
-                if (clazz.substr(0, "test-example-line-".length) === "test-example-line-") {
-                    let end = clazz.substr("test-example-line-".length);
-                    if (end !== "even" && end !== "odd" && end !== "0") {
-                        let top = 1E20;
-                        let left = 1E20;
-                        let problem = $(this).closest(".problemindexholder");
-                        $(this).closest(".input").find("." + clazz).css("background-color", "#FFFDE7").each(function() {
-                            top = Math.min(top, $(this).offset().top);
-                            left = Math.min(left, $(this).offset().left);
-                        });
-                        let testCaseMarker = problem.find(".testCaseMarker_" + end);
-                        if (testCaseMarker.length === 0) {
-                            const html = "<div class=\"testCaseMarker testCaseMarker_" + end + " notice\"></div>";
-                            problem.append($(html));
-                            testCaseMarker = problem.find(".testCaseMarker_" + end);
-                        }
-                        if (testCaseMarker) {
-                            testCaseMarker.show()
-                                    .offset({top, left: left - 20})
-                                    .text(end);
-                        }
-                    }
-                }
-            });
-        }, function() {
-            $(this).attr("class").split(" ").forEach((clazz) => {
-                if (clazz.substr(0, "test-example-line-".length) === "test-example-line-") {
-                    let end = clazz.substr("test-example-line-".length);
-                    if (end !== "even" && end !== "odd" && end !== "0") {
-                        $("." + clazz).css("background-color", "");
-                        $(this).closest(".problemindexholder").find(".testCaseMarker_" + end).hide();
-                    }
-                }
-            });
-        });
-
-    });
-</script>
 <%
 #ifdef INCLUDE_PRISM
 %>

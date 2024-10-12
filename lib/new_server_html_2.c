@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2006-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2006-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -25,6 +25,7 @@
 #include "ejudge/html.h"
 #include "ejudge/clarlog.h"
 #include "ejudge/base64.h"
+#include "ejudge/runlog.h"
 #include "ejudge/xml_utils.h"
 #include "ejudge/archive_paths.h"
 #include "ejudge/fileutl.h"
@@ -53,6 +54,9 @@
 #include "ejudge/super_run_status.h"
 #include "ejudge/compile_heartbeat.h"
 #include "ejudge/mixed_id.h"
+#include "ejudge/userprob_plugin.h"
+#include "ejudge/random.h"
+#include "ejudge/ulid.h"
 
 #include "flatbuf-gen/compile_heartbeat_reader.h"
 
@@ -60,6 +64,7 @@
 #include "ejudge/logger.h"
 #include "ejudge/osdeps.h"
 
+#include <stdio.h>
 #include <zlib.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -67,6 +72,7 @@
 #include <sys/wait.h>
 #include <ctype.h>
 #include <dirent.h>
+#include <fcntl.h>
 
 #if CONF_HAS_LIBINTL - 0 == 1
 #include <libintl.h>
@@ -144,6 +150,9 @@ ns_write_priv_all_runs(
   long long run_fields;
 
   time_t effective_time, *p_eff_time;
+  int group_count;
+  int group_scores[EJ_MAX_TEST_GROUP];
+  int total_group_score;
 
   if (!u) u = user_filter_info_allocate(cs, phr->user_id, phr->session_id);
 
@@ -469,8 +478,11 @@ ns_write_priv_all_runs(
     if (run_fields & (1 << RUN_VIEW_EXT_USER)) {
       fprintf(f, "<th%s>%s</th>", cl, "External User");
     }
-    if (run_fields & (1 << RUN_VIEW_NOTIFY)) {
+    if (run_fields & (1LL << RUN_VIEW_NOTIFY)) {
       fprintf(f, "<th%s>%s</th>", cl, "Notify Info");
+    }
+    if (run_fields & (1LL << RUN_VIEW_GROUP_SCORES)) {
+      fprintf(f, "<th%s>%s</th>", cl, "Group Scores");
     }
     /*
     if (phr->role == USER_ROLE_ADMIN) {
@@ -615,7 +627,10 @@ ns_write_priv_all_runs(
         if (run_fields & (1 << RUN_VIEW_EXT_USER)) {
           fprintf(f, "<td%s>&nbsp;</td>", cl);
         }
-        if (run_fields & (1 << RUN_VIEW_NOTIFY)) {
+        if (run_fields & (1LL << RUN_VIEW_NOTIFY)) {
+          fprintf(f, "<td%s>&nbsp;</td>", cl);
+        }
+        if (run_fields & (1LL << RUN_VIEW_GROUP_SCORES)) {
           fprintf(f, "<td%s>&nbsp;</td>", cl);
         }
         fprintf(f, "<td%s>&nbsp;</td>", cl);
@@ -734,7 +749,10 @@ ns_write_priv_all_runs(
         if (run_fields & (1 << RUN_VIEW_EXT_USER)) {
           fprintf(f, "<td%s>&nbsp;</td>", cl);
         }
-        if (run_fields & (1 << RUN_VIEW_NOTIFY)) {
+        if (run_fields & (1LL << RUN_VIEW_NOTIFY)) {
+          fprintf(f, "<td%s>&nbsp;</td>", cl);
+        }
+        if (run_fields & (1LL << RUN_VIEW_GROUP_SCORES)) {
           fprintf(f, "<td%s>&nbsp;</td>", cl);
         }
 
@@ -771,16 +789,28 @@ ns_write_priv_all_runs(
 
       attempts = 0; disq_attempts = 0; ce_attempts = 0;
       effective_time = 0; p_eff_time = NULL;
+      total_group_score = -1;
       if (prob && prob->enable_submit_after_reject > 0)
         p_eff_time = &effective_time;
       if (global->score_system == SCORE_KIROV && !pe->is_hidden) {
-        int ice = 0, cep = -1;
+        int ice = 0, cep = -1, egm = 0;
         if (prob) {
           ice = prob->ignore_compile_errors;
           cep = prob->compile_error_penalty;
+          egm = prob->enable_group_merge;
         }
         run_get_attempts(cs->runlog_state, rid, &attempts, &disq_attempts, &ce_attempts,
-                         p_eff_time, ice, cep);
+                         p_eff_time, ice, cep, egm,
+                         &group_count, group_scores);
+        if (egm > 0) {
+          for (int i = 0; i < group_count; ++i) {
+            if (group_scores[i] >= 0) {
+              total_group_score += group_scores[i];
+            } else {
+              total_group_score -= group_scores[i];
+            }
+          }
+        }
       }
       run_time = pe->time;
       imported_str = "";
@@ -930,8 +960,9 @@ ns_write_priv_all_runs(
       }
       write_html_run_status(cs, f, start_time, pe, 0, 1, attempts, disq_attempts, ce_attempts,
                             prev_successes, "b1", 0,
-                            enable_js_status_menu, run_fields, effective_time, cur_test);
-      super_run_status_vector_free(&srsv, 0);
+                            enable_js_status_menu, run_fields, effective_time,
+                            total_group_score, cur_test);
+      super_run_status_vector_free(&srsv, 0);                      
 
       if (run_fields & (1 << RUN_VIEW_SCORE_ADJ)) {
         fprintf(f, "<td%s>%d</td>", cl, pe->score_adj);
@@ -977,13 +1008,31 @@ ns_write_priv_all_runs(
           fprintf(f, "<td%s>&nbsp;</td>", cl);
         }
       }
-      if (run_fields & (1 << RUN_VIEW_NOTIFY)) {
+      if (run_fields & (1LL << RUN_VIEW_NOTIFY)) {
         if (pe->notify_driver > 0
             && pe->notify_kind > 0 && pe->notify_kind < MIXED_ID_LAST) {
           fprintf(f, "<td%s>%d:%s</td>", cl,
                   pe->notify_driver,
                   ARMOR(mixed_id_marshall(durstr, pe->notify_kind,
                                           &pe->notify_queue)));
+        } else {
+          fprintf(f, "<td%s>&nbsp;</td>", cl);
+        }
+      }
+      if (run_fields & (1LL << RUN_VIEW_GROUP_SCORES)) {
+        if (pe->group_scores) {
+          const int *p = run_get_group_scores(cs->runlog_state, pe->group_scores);
+          if (p) {
+            int count = *p++;
+            fprintf(f, "<td%s>", cl);
+            for (int i = 0; i < count; ++i) {
+              if (i > 0) putc_unlocked(' ', f);
+              fprintf(f, "%d", p[i]);
+            }
+            fprintf(f, "</td>");
+          } else {
+            fprintf(f, "<td%s>&nbsp;</td>", cl);
+          }
         } else {
           fprintf(f, "<td%s>&nbsp;</td>", cl);
         }
@@ -1724,6 +1773,8 @@ ns_priv_edit_clar_action(
   }
   if (mask <= 0) goto cleanup;
 
+  info("audit:%s:%d:%d:%d", phr->action_str, phr->user_id, phr->contest_id, clar_id);
+
   if (clar_modify_record(cs->clarlog_state, clar_id, mask, &new_clar) < 0) {
     FAIL(NEW_SRV_ERR_DATABASE_FAILED);
   }
@@ -1748,7 +1799,7 @@ ns_priv_edit_run_action(
   const struct section_global_data *global = cs->global;
   int retval = 0, r;
   int run_id = -1;
-  struct run_entry info, new_info;
+  struct run_entry old_info, new_info;
   const unsigned char *s = NULL;
   int mask = 0;
   int new_is_readonly = 0, value = 0;
@@ -1767,10 +1818,10 @@ ns_priv_edit_run_action(
       || run_id < 0 || run_id >= run_get_total(cs->runlog_state)) {
     FAIL(NEW_SRV_ERR_INV_RUN_ID);
   }
-  if (run_get_entry(cs->runlog_state, run_id, &info) < 0) {
+  if (run_get_entry(cs->runlog_state, run_id, &old_info) < 0) {
     FAIL(NEW_SRV_ERR_INV_RUN_ID);
   }
-  if (!run_is_normal_status(info.status)) {
+  if (!run_is_normal_status(old_info.status)) {
     FAIL(NEW_SRV_ERR_INV_RUN_ID);
   }
 
@@ -1780,7 +1831,7 @@ ns_priv_edit_run_action(
   s = NULL;
 
   if (global->is_virtual) {
-    start_time = run_get_virtual_start_time(cs->runlog_state, info.user_id);
+    start_time = run_get_virtual_start_time(cs->runlog_state, old_info.user_id);
   } else {
     start_time = run_get_start_time(cs->runlog_state);
   }
@@ -1789,8 +1840,8 @@ ns_priv_edit_run_action(
   // FIXME: handle special "recheck file attributes" option
 
   if (hr_cgi_param(phr, "is_readonly", &s) > 0) new_is_readonly = 1;
-  if (info.is_readonly > 0 && new_is_readonly) goto cleanup;
-  if (info.is_readonly > 0 && !new_is_readonly) {
+  if (old_info.is_readonly > 0 && new_is_readonly) goto cleanup;
+  if (old_info.is_readonly > 0 && !new_is_readonly) {
     new_info.is_readonly = 0;
     mask |= RE_IS_READONLY;
     if (run_set_entry(cs->runlog_state, run_id, mask, &new_info, &new_info) < 0)
@@ -1798,7 +1849,7 @@ ns_priv_edit_run_action(
     serve_notify_run_update(phr->config, cs, &new_info);
     goto cleanup;
   }
-  if (info.is_readonly != new_is_readonly) {
+  if (old_info.is_readonly != new_is_readonly) {
     new_info.is_readonly = new_is_readonly;
     mask |= RE_IS_READONLY;
   }
@@ -1807,7 +1858,7 @@ ns_priv_edit_run_action(
     fprintf(log_f, "invalid 'user' field value\n");
     FAIL(NEW_SRV_ERR_INV_PARAM);
   }
-  if (info.user_id != value) {
+  if (old_info.user_id != value) {
     new_info.user_id = value;
     mask |= RE_USER_ID;
   }
@@ -1817,7 +1868,7 @@ ns_priv_edit_run_action(
     fprintf(log_f, "invalid 'prob' field value\n");
     FAIL(NEW_SRV_ERR_INV_PARAM);
   }
-  if (info.prob_id != value) {
+  if (old_info.prob_id != value) {
     if (value > cs->max_prob || !cs->probs[value]) {
       fprintf(log_f, "invalid 'prob' field value\n");
       FAIL(NEW_SRV_ERR_INV_PARAM);
@@ -1825,7 +1876,7 @@ ns_priv_edit_run_action(
     new_info.prob_id = value;
     mask |= RE_PROB_ID;
   } else {
-    new_info.prob_id = info.prob_id;
+    new_info.prob_id = old_info.prob_id;
   }
 
   const struct section_problem_data *prob = NULL;
@@ -1839,12 +1890,12 @@ ns_priv_edit_run_action(
       fprintf(log_f, "invalid 'variant' field value\n");
       FAIL(NEW_SRV_ERR_INV_PARAM);
       */
-      if (info.variant > 0) {
+      if (old_info.variant > 0) {
         new_info.variant = 0;
         mask |= RE_VARIANT;
       }
     } else {
-      if (info.variant != value) {
+      if (old_info.variant != value) {
         if (value > prob->variant_num) {
           fprintf(log_f, "invalid 'variant' field value\n");
           FAIL(NEW_SRV_ERR_INV_PARAM);
@@ -1860,7 +1911,7 @@ ns_priv_edit_run_action(
     fprintf(log_f, "invalid 'lang' field value\n");
     FAIL(NEW_SRV_ERR_INV_PARAM);
   }
-  if (info.lang_id != value) {
+  if (old_info.lang_id != value) {
     if (prob && prob->type == PROB_TYPE_STANDARD) {
       if (value <= 0 || value > cs->max_lang || !cs->langs[value]) {
         fprintf(log_f, "invalid 'lang' field value\n");
@@ -1875,7 +1926,7 @@ ns_priv_edit_run_action(
     new_info.lang_id = value;
     mask |= RE_LANG_ID;
   } else {
-    new_info.lang_id = info.lang_id;
+    new_info.lang_id = old_info.lang_id;
   }
 
   value = -1;
@@ -1884,11 +1935,11 @@ ns_priv_edit_run_action(
     fprintf(log_f, "invalid 'eoln_type' field value\n");
     FAIL(NEW_SRV_ERR_INV_PARAM);
   }
-  if (info.eoln_type != value) {
+  if (old_info.eoln_type != value) {
     new_info.eoln_type = value;
     mask |= RE_EOLN_TYPE;
   } else {
-    new_info.eoln_type = info.eoln_type;
+    new_info.eoln_type = old_info.eoln_type;
   }
 
   const struct section_language_data *lang = NULL;
@@ -1904,9 +1955,9 @@ ns_priv_edit_run_action(
   }
   if (value == RUN_REJUDGE || value == RUN_FULL_REJUDGE) {
     need_rejudge = value;
-    value = info.status;
+    value = old_info.status;
   }
-  if (info.status != value) {
+  if (old_info.status != value) {
     // FIXME: handle rejudge request
     if (!run_is_normal_status(value)) {
       fprintf(log_f, "invalid 'status' field value\n");
@@ -1915,7 +1966,7 @@ ns_priv_edit_run_action(
     new_info.status = value;
     mask |= RE_STATUS;
   } else {
-    new_info.status = info.status;
+    new_info.status = old_info.status;
   }
 
   value = -1;
@@ -1923,7 +1974,7 @@ ns_priv_edit_run_action(
     fprintf(log_f, "invalid 'test' field value\n");
     FAIL(NEW_SRV_ERR_INV_PARAM);
   }
-  if (info.test != value || info.passed_mode <= 0) {
+  if (old_info.test != value || old_info.passed_mode <= 0) {
     new_info.test = value;
     new_info.passed_mode = 1;
     mask |= RE_TEST | RE_PASSED_MODE;
@@ -1932,7 +1983,7 @@ ns_priv_edit_run_action(
   if (global->score_system == SCORE_KIROV || global->score_system == SCORE_OLYMPIAD) {
     ++value;
   }
-  if (info._test != value) {
+  if (old_info._test != value) {
     if (value < 0 || value > 100000) {
       fprintf(log_f, "invalid 'test' field value\n");
       FAIL(NEW_SRV_ERR_INV_PARAM);
@@ -1984,7 +2035,7 @@ ns_priv_edit_run_action(
       fprintf(log_f, "invalid 'score' field value\n");
       FAIL(NEW_SRV_ERR_INV_PARAM);
     }
-    if (info.score != value) {
+    if (old_info.score != value) {
       if (!prob) {
         fprintf(log_f, "invalid 'prob' field value\n");
         FAIL(NEW_SRV_ERR_INV_PARAM);
@@ -2042,7 +2093,7 @@ ns_priv_edit_run_action(
       fprintf(log_f, "invalid 'score_adj' field value\n");
       FAIL(NEW_SRV_ERR_INV_PARAM);
     }
-    if (value > -100000 && info.score_adj != value) {
+    if (value > -100000 && old_info.score_adj != value) {
       if (value <= -100000 || value >= 100000) {
         fprintf(log_f, "invalid 'score_adj' field value\n");
         FAIL(NEW_SRV_ERR_INV_PARAM);
@@ -2054,7 +2105,7 @@ ns_priv_edit_run_action(
 
   value = 0;
   if (hr_cgi_param(phr, "is_marked", &s) > 0) value = 1;
-  if (info.is_marked != value) {
+  if (old_info.is_marked != value) {
     new_info.is_marked = value;
     mask |= RE_IS_MARKED;
   }
@@ -2080,7 +2131,7 @@ ns_priv_edit_run_action(
   if (global->separate_user_score > 0) {
     value = 0;
     if (hr_cgi_param(phr, "is_saved", &s) > 0) value = 1;
-    if (info.is_saved != value) {
+    if (old_info.is_saved != value) {
       new_info.is_saved = value;
       mask |= RE_IS_SAVED;
       if (!value) {
@@ -2090,7 +2141,7 @@ ns_priv_edit_run_action(
         mask |= RE_SAVED_STATUS | RE_SAVED_TEST | RE_SAVED_SCORE;
       }
     } else {
-      new_info.is_saved = info.is_saved;
+      new_info.is_saved = old_info.is_saved;
     }
     if (new_info.is_saved) {
       value = -1;
@@ -2098,7 +2149,7 @@ ns_priv_edit_run_action(
         fprintf(log_f, "invalid 'saved_status' field value\n");
         FAIL(NEW_SRV_ERR_INV_PARAM);
       }
-      if (info.saved_status != value || !info.is_saved) {
+      if (old_info.saved_status != value || !old_info.is_saved) {
         if (!run_is_normal_status(value)) {
           fprintf(log_f, "invalid 'saved_status' field value\n");
           FAIL(NEW_SRV_ERR_INV_PARAM);
@@ -2106,7 +2157,7 @@ ns_priv_edit_run_action(
         new_info.saved_status = value;
         mask |= RE_SAVED_STATUS;
       } else {
-        new_info.saved_status = info.saved_status;
+        new_info.saved_status = old_info.saved_status;
       }
 
       value = -1;
@@ -2114,7 +2165,7 @@ ns_priv_edit_run_action(
         fprintf(log_f, "invalid 'saved_test' field value\n");
         FAIL(NEW_SRV_ERR_INV_PARAM);
       }
-      if (info.saved_test != value || !info.is_saved) {
+      if (old_info.saved_test != value || !old_info.is_saved) {
         if (global->score_system == SCORE_KIROV || global->score_system == SCORE_OLYMPIAD) {
           ++value;
         }
@@ -2163,7 +2214,7 @@ ns_priv_edit_run_action(
           fprintf(log_f, "invalid 'saved_score' field value\n");
           FAIL(NEW_SRV_ERR_INV_PARAM);
         }
-        if (info.saved_score != value || !info.is_saved) {
+        if (old_info.saved_score != value || !old_info.is_saved) {
           if (!prob) {
             fprintf(log_f, "invalid 'prob' field value\n");
             FAIL(NEW_SRV_ERR_INV_PARAM);
@@ -2230,14 +2281,14 @@ ns_priv_edit_run_action(
     FAIL(NEW_SRV_ERR_INV_PARAM);
   }
   ej_ip_t ipv6;
-  run_entry_to_ipv6(&info, &ipv6);
+  run_entry_to_ipv6(&old_info, &ipv6);
   if (ipv6cmp(&new_ip, &ipv6) != 0) {
     ipv6_to_run_entry(&new_ip, &new_info);
     mask |= RE_IP;
   }
   value = 0;
   if (hr_cgi_param(phr, "ssl_flag", &s) > 0) value = 1;
-  if (info.ssl_flag != value) {
+  if (old_info.ssl_flag != value) {
     new_info.ssl_flag = value;
     mask |= RE_SSL_FLAG;
   }
@@ -2247,7 +2298,7 @@ ns_priv_edit_run_action(
     fprintf(log_f, "invalid 'size' field value\n");
     FAIL(NEW_SRV_ERR_INV_PARAM);
   }
-  if (info.size != value) {
+  if (old_info.size != value) {
     if (value >= (1 * 1024 * 1024 * 1024)) {
       fprintf(log_f, "invalid 'size' field value\n");
       FAIL(NEW_SRV_ERR_INV_PARAM);
@@ -2267,7 +2318,7 @@ ns_priv_edit_run_action(
       fprintf(log_f, "invalid 'sha1' field value\n");
       FAIL(NEW_SRV_ERR_INV_PARAM);
     }
-    if (r > 0 && memcmp(info.h.sha1, new_sha1, sizeof(info.h.sha1)) != 0) {
+    if (r > 0 && memcmp(old_info.h.sha1, new_sha1, sizeof(old_info.h.sha1)) != 0) {
       memcpy(new_info.h.sha1, new_sha1, sizeof(new_info.h.sha1));
       mask |= RE_SHA1;
     }
@@ -2285,12 +2336,12 @@ ns_priv_edit_run_action(
       fprintf(log_f, "invalid 'uuid' field value\n");
       FAIL(NEW_SRV_ERR_INV_PARAM);
     }
-    if (memcmp(&info.run_uuid, &new_uuid, sizeof(info.run_uuid)) != 0) {
+    if (memcmp(&old_info.run_uuid, &new_uuid, sizeof(old_info.run_uuid)) != 0) {
       memcpy(&new_info.run_uuid, &new_uuid, sizeof(new_info.run_uuid));
       mask |= RE_RUN_UUID;
     }
   } else if (r > 0) {
-    if (info.run_uuid.v[0] || info.run_uuid.v[1] || info.run_uuid.v[2] || info.run_uuid.v[3]) {
+    if (old_info.run_uuid.v[0] || old_info.run_uuid.v[1] || old_info.run_uuid.v[2] || old_info.run_uuid.v[3]) {
       new_info.run_uuid.v[0] = 0;
       new_info.run_uuid.v[1] = 0;
       new_info.run_uuid.v[2] = 0;
@@ -2311,7 +2362,7 @@ ns_priv_edit_run_action(
         fprintf(log_f, "invalid 'mime_type' field value\n");
         FAIL(NEW_SRV_ERR_INV_PARAM);
       }
-      if (info.mime_type != value) {
+      if (old_info.mime_type != value) {
         new_info.mime_type = value;
         mask |= RE_MIME_TYPE;
       }
@@ -2320,8 +2371,8 @@ ns_priv_edit_run_action(
 
   value = 0;
   if (hr_cgi_param(phr, "is_hidden", &s) > 0) value = 1;
-  if (info.is_hidden != value) {
-    if (!value && info.time < start_time) {
+  if (old_info.is_hidden != value) {
+    if (!value && old_info.time < start_time) {
       fprintf(log_f, "is_hidden flag cannot be cleared because time < start_time");
       FAIL(NEW_SRV_ERR_INV_PARAM);
     }
@@ -2331,7 +2382,7 @@ ns_priv_edit_run_action(
 
   value = 0;
   if (hr_cgi_param(phr, "is_imported", &s) > 0) value = 1;
-  if (info.is_imported != value) {
+  if (old_info.is_imported != value) {
     // check availability of operation
     new_info.is_imported = value;
     mask |= RE_IS_IMPORTED;
@@ -2342,7 +2393,7 @@ ns_priv_edit_run_action(
     fprintf(log_f, "invalid 'locale_id' field value\n");
     FAIL(NEW_SRV_ERR_INV_PARAM);
   }
-  if (value >= 0 && info.locale_id != value) {
+  if (value >= 0 && old_info.locale_id != value) {
     if (value != 0 && value != 1) {
       fprintf(log_f, "invalid 'locale_id' field value\n");
       FAIL(NEW_SRV_ERR_INV_PARAM);
@@ -2356,7 +2407,7 @@ ns_priv_edit_run_action(
     fprintf(log_f, "invalid 'pages' field value\n");
     FAIL(NEW_SRV_ERR_INV_PARAM);
   }
-  if (value >= 0 && info.pages != value) {
+  if (value >= 0 && old_info.pages != value) {
     if (value > 100000) {
       fprintf(log_f, "invalid 'pages' field value\n");
       FAIL(NEW_SRV_ERR_INV_PARAM);
@@ -2366,11 +2417,14 @@ ns_priv_edit_run_action(
   }
 
   if (!mask) goto cleanup;
+
+  info("audit:%s:%d:%d:%d", phr->action_str, phr->user_id, phr->contest_id, run_id);
+
   if (run_set_entry(cs->runlog_state, run_id, mask, &new_info, &new_info) < 0)
     FAIL(NEW_SRV_ERR_RUNLOG_UPDATE_FAILED);
   serve_notify_run_update(phr->config, cs, &new_info);
 
-  serve_audit_log(cs, run_id, &info, phr->user_id, &phr->ip, phr->ssl_flag,
+  serve_audit_log(cs, run_id, &old_info, phr->user_id, &phr->ip, phr->ssl_flag,
                   "edit-run", "ok", -1,
                   "  mask: 0x%08x", mask);
 
@@ -3082,8 +3136,451 @@ ns_reset_stand_filter(
   serve_state_destroy_stand_expr(u);
 }
 
+static const unsigned char safe_filename_chars[] =
+{
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, '!', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ',', '-', '.', 0,
+  '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', 0, 0, '=', 0, 0,
+  '@', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
+  'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '[', 0, ']', '^', '_',
+  0, 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o',
+  'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 0, 0, 0, '~', 0,
+  '\x80', '\x81', '\x82', '\x83', '\x84', '\x85', '\x86', '\x87', '\x88', '\x89', '\x8a', '\x8b', '\x8c', '\x8d', '\x8e', '\x8f',
+  '\x90', '\x91', '\x92', '\x93', '\x94', '\x95', '\x96', '\x97', '\x98', '\x99', '\x9a', '\x9b', '\x9c', '\x9d', '\x9e', '\x9f',
+  '\xa0', '\xa1', '\xa2', '\xa3', '\xa4', '\xa5', '\xa6', '\xa7', '\xa8', '\xa9', '\xaa', '\xab', '\xac', '\xad', '\xae', '\xaf',
+  '\xb0', '\xb1', '\xb2', '\xb3', '\xb4', '\xb5', '\xb6', '\xb7', '\xb8', '\xb9', '\xba', '\xbb', '\xbc', '\xbd', '\xbe', '\xbf',
+  '\xc0', '\xc1', '\xc2', '\xc3', '\xc4', '\xc5', '\xc6', '\xc7', '\xc8', '\xc9', '\xca', '\xcb', '\xcc', '\xcd', '\xce', '\xcf',
+  '\xd0', '\xd1', '\xd2', '\xd3', '\xd4', '\xd5', '\xd6', '\xd7', '\xd8', '\xd9', '\xda', '\xdb', '\xdc', '\xdd', '\xde', '\xdf',
+  '\xe0', '\xe1', '\xe2', '\xe3', '\xe4', '\xe5', '\xe6', '\xe7', '\xe8', '\xe9', '\xea', '\xeb', '\xec', '\xed', '\xee', '\xef',
+  '\xf0', '\xf1', '\xf2', '\xf3', '\xf4', '\xf5', '\xf6', '\xf7', '\xf8', '\xf9', '\xfa', '\xfb', '\xfc', '\xfd', '\xfe', '\xff',
+};
+
+static const unsigned char *
+filename_escape_string(
+        const unsigned char *filename,
+        unsigned char **p_alloc_str)
+{
+  size_t esc_count = 0;
+  size_t char_count = 0;
+
+  const unsigned char *p = filename;
+  for (; *p; ++p) {
+    if (safe_filename_chars[*p]) {
+      ++char_count;
+    } else {
+      ++esc_count;
+    }
+  }
+
+  if (!esc_count) {
+    // no escaping required
+    return filename;
+  }
+
+  unsigned char *out = xmalloc(char_count + esc_count * 3 + 1);
+  p = filename;
+  unsigned char *q = out;
+  for (; *p; ++p) {
+    if (safe_filename_chars[*p]) {
+      *q++ = *p;
+    } else {
+      sprintf(q, "%%%02x", *p);
+      q += 3;
+    }
+  }
+  *q = 0;
+  xfree(*p_alloc_str);
+  *p_alloc_str = out;
+  return out;
+}
+
+static void
+adj_destroy_func(struct server_framework_job *sfj)
+{
+  struct archive_download_job *adj = (struct archive_download_job *) sfj;
+
+  xfree(adj->job_id);
+  xfree(adj->tgzname);
+  xfree(adj->tgzdir);
+  xfree(adj->tgzpath);
+  xfree(adj->dirname);
+  xfree(adj->dirpath);
+  xfree(adj->b.title);
+  xfree(adj->problem_dir_prefix);
+  if (adj->log_f) fclose(adj->log_f);
+  free(adj->log_s);
+  xfree(adj->runs);
+  memset(adj, 0, sizeof(*adj));
+  xfree(adj);
+}
+
+static int
+adj_process_run(
+        struct archive_download_job *adj,
+        const struct contest_desc *cnts,
+        struct contest_extra *extra)
+{
+  int retval = -1;
+  serve_state_t cs = NULL;
+  int run_id;
+  struct run_entry info = {};
+  unsigned char login_buf[64];
+  unsigned char name_buf[64];
+  unsigned char prob_buf[64];
+  unsigned char lang_buf[64];
+  const unsigned char *login_ptr = NULL;
+  const unsigned char *name_ptr = NULL;
+  const unsigned char *prob_ptr = NULL;
+  const unsigned char *lang_ptr = NULL;
+  const unsigned char *suff_ptr = NULL;
+  unsigned char *login_alloc = NULL;
+  unsigned char *name_alloc = NULL;
+  unsigned char *prob_alloc = NULL;
+  unsigned char *lang_alloc = NULL;
+  const struct section_problem_data *prob = NULL;
+  unsigned char prob_dir_buf[PATH_MAX];
+  const struct section_language_data *lang = NULL;
+  unsigned char dir4[PATH_MAX];
+  unsigned char dir4a[PATH_MAX];
+  unsigned char target_dir[PATH_MAX];
+  char *fn_s = NULL;
+  size_t fn_z = 0;
+  FILE *fn_f = NULL;
+  const unsigned char *sep = NULL;
+  unsigned char target_path[PATH_MAX];
+  int srcflags;
+  unsigned char srcpath[PATH_MAX];
+
+  cs = extra->serve_state;
+
+  if (adj->cur_ind >= adj->run_u) {
+    return 0;
+  }
+  run_id = adj->runs[adj->cur_ind++];
+
+  if (run_get_entry(cs->runlog_state, run_id, &info) < 0) {
+    fprintf(adj->log_f, "invalid run_id %d\n", run_id);
+    goto cleanup;
+  }
+
+  if (!(login_ptr = teamdb_get_login(cs->teamdb_state, info.user_id))) {
+    snprintf(login_buf, sizeof(login_buf), "!user_%d", info.user_id);
+    login_ptr = login_buf;
+  } else {
+    login_ptr = filename_escape_string(login_ptr, &login_alloc);
+  }
+  if (!(name_ptr = teamdb_get_name_2(cs->teamdb_state, info.user_id))) {
+    snprintf(name_buf, sizeof(name_buf), "!user_%d", info.user_id);
+    name_ptr = name_buf;
+  } else {
+    name_ptr = filename_escape_string(name_ptr, &name_alloc);
+  }
+
+  if (info.prob_id > 0 && info.prob_id <= cs->max_prob) {
+    prob = cs->probs[info.prob_id];
+  }
+  if (prob) {
+    if (adj->use_problem_dir > 0 && prob->problem_dir && prob->problem_dir[0]) {
+      prob_ptr = prob->problem_dir;
+      if (adj->problem_dir_prefix_len > 0 && !strncmp(prob_ptr, adj->problem_dir_prefix, adj->problem_dir_prefix_len)) {
+        prob_ptr += adj->problem_dir_prefix_len;
+      }
+      snprintf(prob_dir_buf, sizeof(prob_dir_buf), "%s", prob_ptr);
+      for (int i = 0; prob_dir_buf[i]; ++i) {
+        if (prob_dir_buf[i] == '/') {
+          prob_dir_buf[i] = '.';
+        }
+      }
+      prob_ptr = prob_dir_buf;
+      while (*prob_ptr == '.') ++prob_ptr;
+    } else if (adj->use_problem_extid && prob->extid && prob->extid[0]) {
+      prob_ptr = filename_escape_string(prob->extid, &prob_alloc);
+    } else {
+      prob_ptr = filename_escape_string(prob->short_name, &prob_alloc);
+    }
+  } else {
+    snprintf(prob_buf, sizeof(prob_buf), "!prob_%d", info.prob_id);
+    prob_ptr = prob_buf;
+  }
+
+  if (info.lang_id > 0 && info.lang_id <= cs->max_lang) {
+    lang = cs->langs[info.lang_id];
+  }
+  if (lang) {
+    lang_ptr = filename_escape_string(lang->short_name, &lang_alloc);
+    suff_ptr = lang->src_sfx;
+  } else if (info.lang_id) {
+    snprintf(lang_buf, sizeof(lang_buf), "!lang_%d", info.lang_id);
+    lang_ptr = lang_buf;
+    suff_ptr = "";
+  } else {
+    lang_buf[0] = 0;
+    lang_ptr = lang_buf;
+    suff_ptr = mime_type_get_suffix(info.mime_type);
+  }
+
+  // create necessary directories
+  dir4[0] = 0;
+  dir4a[0] = 0;
+  switch (adj->dir_struct) {
+  case 0:// /<File> (no directory structure)
+    break;
+  case 1:// /<Problem>/<File>
+    snprintf(dir4, sizeof(dir4), "%s", prob_ptr);
+    break;
+  case 2:// /<User_Id>/<File>
+    snprintf(dir4, sizeof(dir4), "%d", info.user_id);
+    break;
+  case 3:// /<User_Login>/<File>
+    snprintf(dir4, sizeof(dir4), "%s", login_ptr);
+    break;
+  case 4:// /<Problem>/<User_Id>/<File>
+    snprintf(dir4, sizeof(dir4), "%s", prob_ptr);
+    snprintf(dir4a, sizeof(dir4a), "%d", info.user_id);
+    break;
+  case 5:// /<Problem>/<User_Login>/<File>
+    snprintf(dir4, sizeof(dir4), "%s", prob_ptr);
+    snprintf(dir4a, sizeof(dir4a), "%s", login_ptr);
+    break;
+  case 6:// /<User_Id>/<Problem>/<File>
+    snprintf(dir4, sizeof(dir4), "%d", info.user_id);
+    snprintf(dir4a, sizeof(dir4a), "%s", prob_ptr);
+    break;
+  case 7:// /<User_Login>/<Problem>/<File>
+    snprintf(dir4, sizeof(dir4), "%s", login_ptr);
+    snprintf(dir4a, sizeof(dir4a), "%s", prob_ptr);
+    break;
+  case 8:// /<User_Name>/<File>
+    snprintf(dir4, sizeof(dir4), "%s", name_ptr);
+    break;
+  case 9:// /<Problem>/<User_Name>/<File>
+    snprintf(dir4, sizeof(dir4), "%s", prob_ptr);
+    snprintf(dir4a, sizeof(dir4a), "%s", name_ptr);
+    break;
+  case 10:// /<User_Name>/<Problem>/<File>
+    snprintf(dir4, sizeof(dir4), "%s", name_ptr);
+    snprintf(dir4a, sizeof(dir4a), "%s", prob_ptr);
+    break;
+  default:
+    abort();
+  }
+
+  if (dir4[0]) {
+    snprintf(target_dir, sizeof(target_dir), "%s/%s", adj->dirpath, dir4);
+    errno = 0;
+    if (mkdir(target_dir, 0775) < 0 && errno != EEXIST) {
+      fprintf(adj->log_f, "directory '%s' creation failed: %s\n", target_dir, os_ErrorMsg());
+      goto cleanup;
+    }
+    if (dir4a[0]) {
+      snprintf(target_dir, sizeof(target_dir), "%s/%s/%s", adj->dirpath, dir4, dir4a);
+      errno = 0;
+      if (mkdir(target_dir, 0775) < 0 && errno != EEXIST) {
+        fprintf(adj->log_f, "directory '%s' creation failed: %s\n", target_dir, os_ErrorMsg());
+        goto cleanup;
+      }
+    }
+  } else {
+    snprintf(target_dir, sizeof(target_dir), "%s", adj->dirpath);
+  }
+
+  fn_f = open_memstream(&fn_s, &fn_z);
+  sep = "";
+  if ((adj->file_name_mask & NS_FILE_PATTERN_CONTEST)) {
+    fprintf(fn_f, "%s%d", sep, cnts->id);
+    sep = "-";
+  }
+  if ((adj->file_name_mask & NS_FILE_PATTERN_RUN)) {
+    fprintf(fn_f, "%s%06d", sep, run_id);
+    sep = "-";
+  }
+  if ((adj->file_name_mask & NS_FILE_PATTERN_UID)) {
+    fprintf(fn_f, "%s%d", sep, info.user_id);
+    sep = "-";
+  }
+  if ((adj->file_name_mask & NS_FILE_PATTERN_LOGIN)) {
+    fprintf(fn_f, "%s%s", sep, login_ptr);
+    sep = "-";
+  }
+  if ((adj->file_name_mask & NS_FILE_PATTERN_NAME)) {
+    fprintf(fn_f, "%s%s", sep, name_ptr);
+    sep = "-";
+  }
+  if ((adj->file_name_mask & NS_FILE_PATTERN_PROB)) {
+    fprintf(fn_f, "%s%s", sep, prob_ptr);
+    sep = "-";
+  }
+  if ((adj->file_name_mask & NS_FILE_PATTERN_LANG)) {
+    fprintf(fn_f, "%s%s", sep, lang_ptr);
+    sep = "-";
+  }
+  if ((adj->file_name_mask & NS_FILE_PATTERN_TIME)) {
+    time_t ttm = info.time;
+    struct tm rtm = {};
+    localtime_r(&ttm, &rtm);
+    fprintf(fn_f, "%s%04d%02d%02d%02d%02d%02d", sep, rtm.tm_year + 1900, rtm.tm_mon + 1, rtm.tm_mday,
+            rtm.tm_hour, rtm.tm_min, rtm.tm_sec);
+    sep = "-";
+  }
+  if ((adj->file_name_mask & NS_FILE_PATTERN_SUFFIX)) {
+    fprintf(fn_f, "%s", suff_ptr);
+  }
+  fclose(fn_f); fn_f = NULL;
+  for (unsigned char *ptr = (unsigned char *) fn_s; *ptr; ++ptr) {
+    if (*ptr <= ' ') *ptr = '_';
+  }
+  snprintf(target_path, sizeof(target_path), "%s/%s", target_dir, fn_s);
+
+  srcflags = serve_make_source_read_path(cs, srcpath, sizeof(srcpath), &info);
+  if (srcflags < 0) {
+    fprintf(adj->log_f, "source file for run %d does not exist\n", run_id);
+    goto cleanup;
+  }
+  if (generic_copy_file(srcflags, 0, srcpath, "", 0, 0, target_path, "") < 0) {
+    fprintf(adj->log_f, "failed to copy '%s' -> '%s'\n", srcpath, target_path);
+    goto cleanup;
+  }
+
+  retval = 0;
+
+cleanup:;
+  if (fn_f) fclose(fn_f);
+  xfree(login_alloc);
+  xfree(name_alloc);
+  xfree(prob_alloc);
+  xfree(lang_alloc);
+  xfree(fn_s);
+
+  return retval;
+}
+
+static int
+adj_run_func(
+        struct server_framework_job *sfj,
+        const struct contest_desc *cnts,
+        struct contest_extra *extra,
+        int *p_tick_value, int max_value)
+{
+  struct archive_download_job *adj = (struct archive_download_job *) sfj;
+
+  if (adj->stage == ADJ_COPYING) {
+    while (1) {
+      if (adj_process_run(adj, cnts, extra) < 0) {
+        adj->stage = ADJ_FINISHED;
+        return 0;
+      }
+      if (adj->cur_ind >= adj->run_u) {
+        adj->stage = ADJ_STARTING_TAR;
+        *p_tick_value = max_value;
+        return 0;
+      }
+      if (++(*p_tick_value) == max_value) {
+        return 0;
+      }
+    }
+  }
+  if (adj->stage == ADJ_STARTING_TAR) {
+    adj->pid = fork();
+    if (adj->pid < 0) {
+      err("adj_run_func: fork failed: %s", os_ErrorMsg());
+      fprintf(adj->log_f, "fork failed(): %s\n", os_ErrorMsg());
+      adj->stage = ADJ_FINISHED;
+      return 0;
+    }
+    if (!adj->pid) {
+      int fd0 = open("/dev/null", O_RDONLY, 0);
+      if (fd0 < 0) {
+        err("adj_run_func: open /dev/null failed: %s", os_ErrorMsg());
+        _exit(1);
+      }
+      if (dup2(fd0, 0) < 0) {
+        err("adj_run_func: dup2 to 0 failed: %s", os_ErrorMsg());
+        _exit(1);
+      }
+      if (dup2(2, 1) < 0) {
+        err("adj_run_func: dup2 to 1 failed: %s", os_ErrorMsg());
+        _exit(1);
+      }
+      if (chdir(adj->tgzdir) < 0) {
+        err("chdir to %s failed: %s", adj->tgzdir, os_ErrorMsg());
+        _exit(1);
+      }
+      // get the max fd num
+      int max_opened_fd = -1;
+      DIR *d = opendir("/proc/self/fd");
+      if (!d) {
+        err("adj_run_func: failed to open /proc/self/fd: %s", os_ErrorMsg());
+        _exit(1);
+      }
+      struct dirent *dd;
+      while ((dd = readdir(d))) {
+        char *eptr = NULL;
+        errno = 0;
+        long v = strtol(dd->d_name, &eptr, 10);
+        if (!errno && !*eptr && eptr != dd->d_name && v >= 0
+            && (int) v == v && (int) v > max_opened_fd) {
+          max_opened_fd = (int) v;
+        }
+      }
+      closedir(d);
+      for (int ff = 3; ff <= max_opened_fd; ++ff) {
+        close(ff);
+      }
+      execl("/bin/tar", "/bin/tar", "cfz", adj->tgzname, adj->dirname, NULL);
+      err("adj_run_func: execl /bin/tar failed: %s", os_ErrorMsg());
+      _exit(1);
+    }
+    adj->stage = ADJ_WAITING_FOR_TAR;
+    return 0;
+  }
+  if (adj->stage == ADJ_WAITING_FOR_TAR) {
+    int status = 0;
+    if (waitpid(adj->pid, &status, WNOHANG) != adj->pid) {
+      return 0;
+    }
+    if (WIFEXITED(status)) {
+      if (!WEXITSTATUS(status)) {
+        adj->is_success = 1;
+      } else {
+        fprintf(adj->log_f, "/bin/tar exited with code %d\n", WEXITSTATUS(status));
+      }
+    } else if (WIFSIGNALED(status)) {
+      fprintf(adj->log_f, "/bin/tar terminated with signal %d\n", WTERMSIG(status));
+    }
+    adj->stage = ADJ_FINISHED;
+    return 0;
+  }
+
+  return 0;
+}
+
+static unsigned char *
+adj_get_status_func(struct server_framework_job *sfj)
+{
+  return NULL;
+}
+
+const struct server_framework_job_funcs NS_ARCHIVE_DOWNLOAD_JOB_VT =
+{
+  adj_destroy_func,
+  adj_run_func,
+  adj_get_status_func,
+};
+
+static struct archive_download_job *
+adj_create(void)
+{
+  struct archive_download_job *adj = NULL;
+
+  XCALLOC(adj, 1);
+  adj->b.vt = &NS_ARCHIVE_DOWNLOAD_JOB_VT;
+  return adj;
+}
+
 void
 ns_download_runs(
+        struct http_request_info *phr,
         const struct contest_desc *cnts,
         const serve_state_t cs,
         FILE *fout,
@@ -3094,6 +3591,7 @@ ns_download_runs(
         int use_problem_extid,
         int use_problem_dir,
         const unsigned char *problem_dir_prefix,
+        int enable_hidden,
         size_t run_mask_size,
         unsigned long *run_mask)
 {
@@ -3104,31 +3602,14 @@ ns_download_runs(
   int serial = 0;
   struct tm *ptm;
   path_t dir2 = { 0 };
-  int need_remove = 0;
   path_t name3, dir3;
-  int pid, p, status;
   path_t tgzname, tgzpath;
-  char *file_bytes = 0;
-  size_t file_size = 0;
   int total_runs, run_id;
   struct run_entry info;
-  path_t dir4, dir4a, dir5;
-  unsigned char prob_buf[1024], *prob_ptr;
-  unsigned char login_buf[1024], *login_ptr;
-  unsigned char name_buf[1024];
-  unsigned char lang_buf[1024], *lang_ptr;
-  unsigned char prob_dir_buf[1024];
-  const unsigned char *name_ptr;
-  const unsigned char *suff_ptr;
-  unsigned char *file_name_str = 0;
-  size_t file_name_size = 0, file_name_exp_len;
-  unsigned char *sep, *ptr;
-  path_t dstpath, srcpath;
-  int srcflags;
-  int problem_dir_prefix_len = 0;
-
-  file_name_size = 1024;
-  file_name_str = (unsigned char*) xmalloc(file_name_size);
+  struct archive_download_job *adj = adj_create();
+  unsigned char job_id_bytes[16];
+  unsigned char job_id_str[32];
+  unsigned char url_extra[64];
 
   if ((s = getenv("TMPDIR"))) {
     snprintf(tmpdir, sizeof(tmpdir), "%s", s);
@@ -3140,10 +3621,6 @@ ns_download_runs(
 #endif
   if (!tmpdir[0]) {
     snprintf(tmpdir, sizeof(tmpdir), "%s", "/tmp");
-  }
-
-  if (problem_dir_prefix) {
-    problem_dir_prefix_len = strlen(problem_dir_prefix);
   }
 
   ptm = localtime(&cur_time);
@@ -3160,7 +3637,7 @@ ns_download_runs(
     }
     serial++;
   }
-  need_remove = 0;
+
 
   snprintf(name3, sizeof(name3), "contest_%d_%04d%02d%02d%02d%02d%02d",
            cnts->id,
@@ -3173,6 +3650,31 @@ ns_download_runs(
   }
   snprintf(tgzname, sizeof(tgzname), "%s.tgz", name3);
   snprintf(tgzpath, sizeof(tgzpath), "%s/%s", dir2, tgzname);
+
+  random_init();
+  random_bytes(job_id_bytes, sizeof(job_id_bytes));
+  ulid_marshall(job_id_str, job_id_bytes);
+
+  adj->job_id = xstrdup(job_id_str);
+  adj->config = phr->config;
+  adj->tgzdir = xstrdup(dir2);
+  adj->tgzname = xstrdup(tgzname);
+  adj->tgzpath = xstrdup(tgzpath);
+  adj->dirname = xstrdup(name3);
+  adj->dirpath = xstrdup(dir3);
+  adj->log_f = open_memstream(&adj->log_s, &adj->log_z);
+  adj->use_problem_dir = use_problem_dir;
+  adj->use_problem_extid = use_problem_extid;
+  adj->dir_struct = dir_struct;
+  adj->file_name_mask = file_name_mask;
+  if (problem_dir_prefix) {
+    adj->problem_dir_prefix = xstrdup(problem_dir_prefix);
+    adj->problem_dir_prefix_len = strlen(problem_dir_prefix);
+  }
+  adj->stage = ADJ_COPYING;
+  adj->b.contest_id = cnts->id;
+  adj->b.title = xstrdup("Create tar archive of runs");
+  adj->b.prio = 0;
 
   total_runs = run_get_total(cs->runlog_state);
   for (run_id = 0; run_id < total_runs; run_id++) {
@@ -3192,207 +3694,70 @@ ns_download_runs(
         && info.status != RUN_PENDING && info.status != RUN_DISQUALIFIED)
       continue;
     if (!run_is_normal_or_transient_status(info.status)) continue;
-    if (info.is_hidden) continue;
+    if (enable_hidden <= 0 && info.is_hidden) continue;
 
-    if (!(login_ptr = teamdb_get_login(cs->teamdb_state, info.user_id))) {
-      snprintf(login_buf, sizeof(login_buf), "!user_%d", info.user_id);
-      login_ptr = login_buf;
+    if (adj->run_a == adj->run_u) {
+      if (!(adj->run_a *= 2)) adj->run_a = 64;
+      XREALLOC(adj->runs, adj->run_a);
     }
-    if (!(name_ptr = teamdb_get_name_2(cs->teamdb_state, info.user_id))) {
-      snprintf(name_buf, sizeof(name_buf), "!user_%d", info.user_id);
-      name_ptr = name_buf;
-    } else {
-      //filename_armor_bytes(name_buf, sizeof(name_buf), name_ptr, strlen(name_ptr));
-      //name_ptr = name_buf;
-    }
-    if (info.prob_id > 0 && info.prob_id <= cs->max_prob
-        && cs->probs[info.prob_id]) {
-      if (use_problem_dir && cs->probs[info.prob_id]->problem_dir && cs->probs[info.prob_id]->problem_dir[0]) {
-        prob_ptr = cs->probs[info.prob_id]->problem_dir;
-        if (problem_dir_prefix_len > 0 && !strncmp(prob_ptr, problem_dir_prefix, problem_dir_prefix_len)) {
-          prob_ptr += problem_dir_prefix_len;
-        }
-        snprintf(prob_dir_buf, sizeof(prob_dir_buf), "%s", prob_ptr);
-        for (int i = 0; prob_dir_buf[i]; ++i) {
-          if (prob_dir_buf[i] == '/') {
-            prob_dir_buf[i] = '.';
-          }
-        }
-        prob_ptr = prob_dir_buf;
-        while (*prob_ptr == '.') ++prob_ptr;
-      } else if (use_problem_extid && cs->probs[info.prob_id]->extid && cs->probs[info.prob_id]->extid[0]) {
-        prob_ptr = cs->probs[info.prob_id]->extid;
-      } else {
-        prob_ptr = cs->probs[info.prob_id]->short_name;
-      }
-    } else {
-      snprintf(prob_buf, sizeof(prob_buf), "!prob_%d", info.prob_id);
-      prob_ptr = prob_buf;
-    }
-    if (info.lang_id > 0 && info.lang_id <= cs->max_lang
-        && cs->langs[info.lang_id]) {
-      lang_ptr = cs->langs[info.lang_id]->short_name;
-      suff_ptr = cs->langs[info.lang_id]->src_sfx;
-    } else if (info.lang_id) {
-      snprintf(lang_buf, sizeof(lang_buf), "!lang_%d", info.lang_id);
-      lang_ptr = lang_buf;
-      suff_ptr = "";
-    } else {
-      lang_buf[0] = 0;
-      lang_ptr = lang_buf;
-      suff_ptr = mime_type_get_suffix(info.mime_type);
-    }
-
-    // create necessary directories
-    dir4[0] = 0;
-    dir4a[0] = 0;
-    switch (dir_struct) {
-    case 0:// /<File> (no directory structure)
-      break;
-    case 1:// /<Problem>/<File>
-      snprintf(dir4, sizeof(dir4), "%s", prob_ptr);
-      break;
-    case 2:// /<User_Id>/<File>
-      snprintf(dir4, sizeof(dir4), "%d", info.user_id);
-      break;
-    case 3:// /<User_Login>/<File>
-      snprintf(dir4, sizeof(dir4), "%s", login_ptr);
-      break;
-    case 4:// /<Problem>/<User_Id>/<File>
-      snprintf(dir4, sizeof(dir4), "%s", prob_ptr);
-      snprintf(dir4a, sizeof(dir4a), "%d", info.user_id);
-      break;
-    case 5:// /<Problem>/<User_Login>/<File>
-      snprintf(dir4, sizeof(dir4), "%s", prob_ptr);
-      snprintf(dir4a, sizeof(dir4a), "%s", login_ptr);
-      break;
-    case 6:// /<User_Id>/<Problem>/<File>
-      snprintf(dir4, sizeof(dir4), "%d", info.user_id);
-      snprintf(dir4a, sizeof(dir4a), "%s", prob_ptr);
-      break;
-    case 7:// /<User_Login>/<Problem>/<File>
-      snprintf(dir4, sizeof(dir4), "%s", login_ptr);
-      snprintf(dir4a, sizeof(dir4a), "%s", prob_ptr);
-      break;
-    case 8:// /<User_Name>/<File>
-      snprintf(dir4, sizeof(dir4), "%s", name_ptr);
-      break;
-    case 9:// /<Problem>/<User_Name>/<File>
-      snprintf(dir4, sizeof(dir4), "%s", prob_ptr);
-      snprintf(dir4a, sizeof(dir4a), "%s", name_ptr);
-      break;
-    case 10:// /<User_Name>/<Problem>/<File>
-      snprintf(dir4, sizeof(dir4), "%s", name_ptr);
-      snprintf(dir4a, sizeof(dir4a), "%s", prob_ptr);
-      break;
-    default:
-      abort();
-    }
-    if (dir4[0]) {
-      snprintf(dir5, sizeof(dir5), "%s/%s", dir3, dir4);
-      errno = 0;
-      if (mkdir(dir5, 0775) < 0 && errno != EEXIST) {
-        ns_error(log_f, NEW_SRV_ERR_MKDIR_FAILED, dir5, os_ErrorMsg());
-        goto cleanup;
-      }
-      if (dir4a[0]) {
-        snprintf(dir5, sizeof(dir5), "%s/%s/%s", dir3, dir4, dir4a);
-        errno = 0;
-        if (mkdir(dir5, 0775) < 0 && errno != EEXIST) {
-          ns_error(log_f, NEW_SRV_ERR_MKDIR_FAILED, dir5, os_ErrorMsg());
-          goto cleanup;
-        }
-      }
-    } else {
-      snprintf(dir5, sizeof(dir5), "%s", dir3);
-    }
-
-    file_name_exp_len = 128 + strlen(login_ptr) + strlen(name_ptr)
-      + strlen(prob_ptr) + strlen(lang_ptr) + strlen(suff_ptr);
-    if (file_name_exp_len > file_name_size) {
-      while (file_name_exp_len > file_name_size) file_name_size *= 2;
-      xfree(file_name_str);
-      file_name_str = (unsigned char*) xmalloc(file_name_size);
-    }
-
-    sep = "";
-    ptr = file_name_str;
-    if ((file_name_mask & NS_FILE_PATTERN_CONTEST)) {
-      ptr += sprintf(ptr, "%s%d", sep, cnts->id);
-      sep = "-";
-    }
-    if ((file_name_mask & NS_FILE_PATTERN_RUN)) {
-      ptr += sprintf(ptr, "%s%06d", sep, run_id);
-      sep = "-";
-    }
-    if ((file_name_mask & NS_FILE_PATTERN_UID)) {
-      ptr += sprintf(ptr, "%s%d", sep, info.user_id);
-      sep = "-";
-    }
-    if ((file_name_mask & NS_FILE_PATTERN_LOGIN)) {
-      ptr += sprintf(ptr, "%s%s", sep, login_ptr);
-      sep = "-";
-    }
-    if ((file_name_mask & NS_FILE_PATTERN_NAME)) {
-      ptr += sprintf(ptr, "%s%s", sep, name_ptr);
-      sep = "-";
-    }
-    if ((file_name_mask & NS_FILE_PATTERN_PROB)) {
-      ptr += sprintf(ptr, "%s%s", sep, prob_ptr);
-      sep = "-";
-    }
-    if ((file_name_mask & NS_FILE_PATTERN_LANG)) {
-      ptr += sprintf(ptr, "%s%s", sep, lang_ptr);
-      sep = "-";
-    }
-    if ((file_name_mask & NS_FILE_PATTERN_TIME)) {
-      time_t ttm = info.time;
-      struct tm *rtm = localtime(&ttm);
-      ptr += sprintf(ptr, "%s%04d%02d%02d%02d%02d%02d", sep, rtm->tm_year + 1900, rtm->tm_mon + 1, rtm->tm_mday, rtm->tm_hour, rtm->tm_min, rtm->tm_sec);
-      sep = "-";
-    }
-    if ((file_name_mask & NS_FILE_PATTERN_SUFFIX)) {
-      ptr += sprintf(ptr, "%s", suff_ptr);
-    }
-    for (ptr = file_name_str; *ptr; ++ptr) {
-      if (*ptr <= ' ') *ptr = '_';
-    }
-    snprintf(dstpath, sizeof(dstpath), "%s/%s", dir5, file_name_str);
-
-    srcflags = serve_make_source_read_path(cs, srcpath, sizeof(srcpath), &info);
-    if (srcflags < 0) {
-      ns_error(log_f, NEW_SRV_ERR_SOURCE_NONEXISTANT);
-      goto cleanup;
-    }
-
-    if (generic_copy_file(srcflags, 0, srcpath, "", 0, 0, dstpath, "") < 0) {
-      ns_error(log_f, NEW_SRV_ERR_DISK_WRITE_ERROR);
-      goto cleanup;
-    }
+    adj->runs[adj->run_u++] = run_id;
   }
 
-  if ((pid = fork()) < 0) {
-    err("fork failed: %s", os_ErrorMsg());
-    ns_error(log_f, NEW_SRV_ERR_TAR_FAILED);
-    goto cleanup;
-  } else if (!pid) {
-    if (chdir(dir2) < 0) {
-      err("chdir to %s failed: %s", dir2, os_ErrorMsg());
-      _exit(1);
-    }
-    execl("/bin/tar", "/bin/tar", "cfz", tgzname, name3, NULL);
-    err("execl failed: %s", os_ErrorMsg());
-    _exit(1);
-  }
+  nsf_add_job(phr->fw_state, &adj->b);
 
-  while ((p = waitpid(pid, &status, 0)) != pid);
-  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-    ns_error(log_f, NEW_SRV_ERR_TAR_FAILED);
+  snprintf(url_extra, sizeof(url_extra), "job_id=%s", job_id_str);
+  ns_refresh_page(fout, phr, NEW_SRV_ACTION_JOB_STATUS_PAGE, url_extra);
+
+cleanup:;
+}
+
+struct archive_download_job *
+ns_get_archive_download_job(
+        struct server_framework_state *state,
+        const unsigned char *job_id)
+{
+  struct server_framework_job *job = nsf_get_first_job(state);
+  while (job) {
+    if (job->vt == &NS_ARCHIVE_DOWNLOAD_JOB_VT) {
+      struct archive_download_job *a = (struct archive_download_job *) job;
+      if (!strcmp(a->job_id, job_id)) {
+        return a;
+      }
+    }
+    job = job->next;
+  }
+  return NULL;
+}
+
+void
+ns_download_job_result(
+        FILE *fout,
+        struct http_request_info *phr,
+        const struct contest_desc *cnts,
+        struct contest_extra *extra,
+        int priv_mode)
+{
+  const unsigned char *s = NULL;
+  char *file_bytes = NULL;
+  size_t file_size = 0;
+
+  if (hr_cgi_param(phr, "job_id", &s) <= 0 || !s) {
+    ns_error(phr->log_f, NEW_SRV_ERR_INV_PARAM);
     goto cleanup;
   }
 
-  if (generic_read_file(&file_bytes, 0, &file_size, 0, 0, tgzpath, 0) < 0) {
-    ns_error(log_f, NEW_SRV_ERR_DISK_READ_ERROR);
+  struct archive_download_job *adj = ns_get_archive_download_job(phr->fw_state, s);
+  if (!adj) {
+    ns_error(phr->log_f, NEW_SRV_ERR_INV_PARAM);
+    goto cleanup;
+  }
+  if (adj->stage != ADJ_FINISHED || !adj->is_success) {
+    ns_error(phr->log_f, NEW_SRV_ERR_INV_PARAM);
+    goto cleanup;
+  }
+
+  if (generic_read_file(&file_bytes, 0, &file_size, 0, 0, adj->tgzpath, 0) < 0) {
+    ns_error(phr->log_f, NEW_SRV_ERR_DISK_READ_ERROR);
     goto cleanup;
   }
 
@@ -3400,20 +3765,19 @@ ns_download_runs(
           "Content-type: application/x-tar\n"
           "Content-Disposition: attachment; filename=\"%s\"\n"
           "\n",
-          tgzname);
+          adj->tgzname);
   if (file_size > 0) {
     if (fwrite(file_bytes, 1, file_size, fout) != file_size) {
-      ns_error(log_f, NEW_SRV_ERR_OUTPUT_ERROR);
+      ns_error(phr->log_f, NEW_SRV_ERR_OUTPUT_ERROR);
       goto cleanup;
     }
   }
 
- cleanup:;
-  if (need_remove) {
-    remove_directory_recursively(dir2, 0);
-  }
+  remove_directory_recursively(adj->tgzdir, 0);
+  nsf_remove_job(phr->fw_state, &adj->b);
+
+cleanup:;
   xfree(file_bytes);
-  xfree(file_name_str);
 }
 
 static int
@@ -3684,7 +4048,7 @@ ns_upload_csv_runs(
       }
       runs[row].lang_id = lang->id;
 
-      if (lang->disabled) {
+      if (lang->disabled > 0) {
         fprintf(log_f, _("Language %s is disabled in row %d\n"),
                 lang->short_name, row);
         goto cleanup;
@@ -4149,7 +4513,8 @@ int
 ns_write_user_run_status(
         const serve_state_t cs,
         FILE *fout,
-        int run_id)
+        int run_id,
+        int separate_user_score)
 {
   struct run_entry re;
   int attempts = 0, disq_attempts = 0, ce_attempts = 0;
@@ -4158,6 +4523,9 @@ ns_write_user_run_status(
   unsigned char *run_kind_str = "", *prob_str = "???", *lang_str = "???";
   time_t run_time, start_time;
   unsigned char dur_str[64];
+  int group_count;
+  int group_scores[EJ_MAX_TEST_GROUP];
+  int total_group_score = -1;
 
   time_t effective_time = 0;
   time_t *p_eff_time = NULL;
@@ -4183,10 +4551,36 @@ ns_write_user_run_status(
   attempts = 0; disq_attempts = 0; ce_attempts = 0;
   if (cur_prob && cur_prob->enable_submit_after_reject > 0)
     p_eff_time = &effective_time;
-  if (cs->global->score_system == SCORE_KIROV && !re.is_hidden)
+  if (cs->global->score_system == SCORE_KIROV && !re.is_hidden) {
+    int ice = 0, cep = -1, egm = 0;
+    if (cur_prob) {
+      ice = cur_prob->ignore_compile_errors;
+      cep = cur_prob->compile_error_penalty;
+      egm = cur_prob->enable_group_merge;
+    }
     run_get_attempts(cs->runlog_state, run_id, &attempts, &disq_attempts, &ce_attempts,
                      p_eff_time,
-                     cur_prob->ignore_compile_errors, cur_prob->compile_error_penalty);
+                     ice, cep, egm,
+                     &group_count, group_scores);
+    if (egm > 0) {
+      total_group_score = 0;
+      if (separate_user_score > 0) {
+        for (int i = 0; i < group_count; ++i) {
+          if (group_scores[i] > 0) {
+            total_group_score += group_scores[i];
+          }
+        }
+      } else {
+        for (int i = 0; i < group_count; ++i) {
+          if (group_scores[i] >= 0) {
+            total_group_score += group_scores[i];
+          } else {
+            total_group_score -= group_scores[i];
+          }
+        }
+      }      
+    }
+  }
 
   prev_successes = RUN_TOO_MANY;
   if (cs->global->score_system == SCORE_KIROV
@@ -4232,7 +4626,8 @@ ns_write_user_run_status(
   fprintf(fout, "%d;%s;%s;%u;%s;%s;", run_id, run_kind_str, dur_str, re.size,
           prob_str, lang_str);
   write_text_run_status(cs, fout, start_time, &re, 1 /* user_mode */, 0, attempts,
-                        disq_attempts, ce_attempts, prev_successes, effective_time);
+                        disq_attempts, ce_attempts, prev_successes, effective_time,
+                        total_group_score);
   fprintf(fout, "\n");
 
   return 0;
@@ -4878,6 +5273,25 @@ kirov_score_latest_or_unmarked(
 
   ASSERT(cur_prob->score_latest_or_unmarked > 0);
 
+  int total_group_score = -1;
+  if (cur_prob->enable_group_merge > 0) {
+    if (separate_user_score > 0) {
+      for (int i = 0; i < pinfo->group_count; ++i) {
+        if (pinfo->group_scores[i] > 0) {
+          total_group_score += pinfo->group_scores[i];
+        }
+      }
+    } else {
+      for (int i = 0; i < pinfo->group_count; ++i) {
+        if (pinfo->group_scores[i] >= 0) {
+          total_group_score += pinfo->group_scores[i];
+        } else {
+          total_group_score -= pinfo->group_scores[i];
+        }
+      }
+    }
+  }
+
   /*
    * if there exists a "marked" run, the last "marked" score is taken
    * if there is no "marked" run, the max score is taken
@@ -4895,7 +5309,8 @@ kirov_score_latest_or_unmarked(
                                  1 /* user_mode */, re->token_flags, re, cur_prob,
                                  pinfo->attempts,
                                  pinfo->disqualified, pinfo->ce_attempts,
-                                 pinfo->prev_successes, 0, 0, pinfo->effective_time);
+                                 pinfo->prev_successes, 0, 0, pinfo->effective_time,
+                                 total_group_score);
     if (re->is_marked || cur_score > pinfo->best_score) {
       pinfo->best_score = cur_score;
       pinfo->best_run = run_id;
@@ -4910,7 +5325,8 @@ kirov_score_latest_or_unmarked(
                                  1 /* user_mode */, re->token_flags, re, cur_prob,
                                  pinfo->attempts,
                                  pinfo->disqualified, pinfo->ce_attempts,
-                                 pinfo->prev_successes, 0, 0, pinfo->effective_time);
+                                 pinfo->prev_successes, 0, 0, pinfo->effective_time,
+                                 total_group_score);
     if (re->is_marked || cur_score > pinfo->best_score) {
       pinfo->best_score = cur_score;
       pinfo->best_run = run_id;
@@ -4950,7 +5366,8 @@ kirov_score_latest_or_unmarked(
                                  1 /* user_mode */, re->token_flags, re, cur_prob,
                                  pinfo->attempts,
                                  pinfo->disqualified, pinfo->ce_attempts,
-                                 pinfo->prev_successes, 0, 0, pinfo->effective_time);
+                                 pinfo->prev_successes, 0, 0, pinfo->effective_time,
+                                 total_group_score);
     pinfo->attempts++;
     if (re->is_marked || cur_score > pinfo->best_score || pinfo->best_score <= 0) {
       pinfo->best_score = cur_score;
@@ -4998,11 +5415,31 @@ kirov_score_latest(
     return;
   }
 
+  int total_group_score = -1;
+  if (cur_prob->enable_group_merge > 0) {
+    if (separate_user_score > 0) {
+      for (int i = 0; i < pinfo->group_count; ++i) {
+        if (pinfo->group_scores[i] > 0) {
+          total_group_score += pinfo->group_scores[i];
+        }
+      }
+    } else {
+      for (int i = 0; i < pinfo->group_count; ++i) {
+        if (pinfo->group_scores[i] >= 0) {
+          total_group_score += pinfo->group_scores[i];
+        } else {
+          total_group_score -= pinfo->group_scores[i];
+        }
+      }
+    }
+  }
+
   cur_score = calc_kirov_score(0, 0, start_time, separate_user_score,
                                1 /* user_mode */, re->token_flags, re, cur_prob,
                                pinfo->attempts,
                                pinfo->disqualified, pinfo->ce_attempts,
-                               pinfo->prev_successes, 0, 0, pinfo->effective_time);
+                               pinfo->prev_successes, 0, 0, pinfo->effective_time,
+                               total_group_score);
   switch (status) {
   case RUN_OK:
     pinfo->marked_flag = re->is_marked;
@@ -5126,6 +5563,25 @@ kirov_score_tokenized(
 {
   ASSERT(cur_prob->score_tokenized > 0);
 
+  int total_group_score = -1;
+  if (cur_prob->enable_group_merge > 0) {
+    if (separate_user_score > 0) {
+      for (int i = 0; i < pinfo->group_count; ++i) {
+        if (pinfo->group_scores[i] > 0) {
+          total_group_score += pinfo->group_scores[i];
+        }
+      }
+    } else {
+      for (int i = 0; i < pinfo->group_count; ++i) {
+        if (pinfo->group_scores[i] >= 0) {
+          total_group_score += pinfo->group_scores[i];
+        } else {
+          total_group_score -= pinfo->group_scores[i];
+        }
+      }
+    }
+  }
+
   int cur_score = 0;
 
   if (!re->token_flags) {
@@ -5143,7 +5599,8 @@ kirov_score_tokenized(
                                1 /* user_mode */, re->token_flags, re, cur_prob,
                                pinfo->attempts,
                                pinfo->disqualified, pinfo->ce_attempts,
-                               pinfo->prev_successes, 0, 0, pinfo->effective_time);
+                               pinfo->prev_successes, 0, 0, pinfo->effective_time,
+                               total_group_score);
 
   switch (status) {
   case RUN_OK:
@@ -5221,11 +5678,31 @@ kirov_score_default(
     return;
   }
 
+  int total_group_score = -1;
+  if (cur_prob->enable_group_merge > 0) {
+    if (separate_user_score > 0) {
+      for (int i = 0; i < pinfo->group_count; ++i) {
+        if (pinfo->group_scores[i] > 0) {
+          total_group_score += pinfo->group_scores[i];
+        }
+      }
+    } else {
+      for (int i = 0; i < pinfo->group_count; ++i) {
+        if (pinfo->group_scores[i] >= 0) {
+          total_group_score += pinfo->group_scores[i];
+        } else {
+          total_group_score -= pinfo->group_scores[i];
+        }
+      }
+    }
+  }
+
   cur_score = calc_kirov_score(0, 0, start_time, separate_user_score,
                                1 /* user_mode */, re->token_flags, re, cur_prob,
                                pinfo->attempts,
                                pinfo->disqualified, pinfo->ce_attempts,
-                               pinfo->prev_successes, 0, 0, pinfo->effective_time);
+                               pinfo->prev_successes, 0, 0, pinfo->effective_time,
+                               total_group_score);
 
   switch (status) {
   case RUN_OK:
@@ -5328,6 +5805,7 @@ ns_get_user_problems_summary(
         int accepting_mode,
         time_t start_time,
         time_t stop_time,
+        time_t point_in_time,
         const ej_ip_t *ip,
         UserProblemInfo *pinfo)       /* user problem status */
 {
@@ -5342,7 +5820,9 @@ ns_get_user_problems_summary(
   UserProblemInfo *cur_pinfo;
   const struct virtual_end_info_s *vend_info = NULL;
 
-  if (global->is_virtual > 0 && stop_time > 0 && cs->current_time >= stop_time) {
+  if (point_in_time <= 0) point_in_time = cs->current_time;
+
+  if (global->is_virtual > 0 && stop_time > 0 && point_in_time >= stop_time) {
     vend_info = global->virtual_end_info;
   }
 
@@ -5389,6 +5869,7 @@ ns_get_user_problems_summary(
        run_id >= 0 && run_id < total_runs;
        run_id = need_prev_succ?(run_id + 1):run_get_user_next_run_id(cs->runlog_state, run_id)) {
     if (run_get_entry(cs->runlog_state, run_id, &re) < 0) continue;
+    if (re.time > point_in_time) continue;
     if (!run_is_valid_status(re.status)) continue;
     if (re.status >= RUN_PSEUDO_FIRST && re.status <= RUN_PSEUDO_LAST) continue;
     if (re.prob_id <= 0 || re.prob_id > cs->max_prob) continue;
@@ -5407,6 +5888,49 @@ ns_get_user_problems_summary(
     } else {
       status = re.status;
       score = re.score;
+    }
+    int total_group_score = -1;
+    if (cur_prob->enable_group_merge > 0) {
+      if (re.group_scores > 0) {
+        const int *p = run_get_group_scores(cs->runlog_state, re.group_scores);
+        if (p) {
+          int group_count = *p++;
+          if (group_count > cur_pinfo->group_count) {
+            cur_pinfo->group_count = group_count;
+          }
+          for (int i = 0; i < group_count; ++i) {
+            if (p[i] >= 0 && cur_pinfo->group_scores[i] >= 0 && p[i] > cur_pinfo->group_scores[i]) {
+              cur_pinfo->group_scores[i] = p[i];
+            } else if (p[i] < 0 && cur_pinfo->group_scores[i] < 0 && p[i] < cur_pinfo->group_scores[i]) {
+              cur_pinfo->group_scores[i] = p[i];
+            } else if (p[i] < 0 && cur_pinfo->group_scores[i] >= 0) {
+              cur_pinfo->group_scores[i] = -cur_pinfo->group_scores[i];
+              if (p[i] < cur_pinfo->group_scores[i]) {
+                cur_pinfo->group_scores[i] = p[i];
+              }
+            } else if (p[i] >= 0 && cur_pinfo->group_scores[i] < 0 && -p[i] < cur_pinfo->group_scores[i]) {
+              cur_pinfo->group_scores[i] = -p[i];
+            }
+          }
+        }
+      }
+      score = 0;
+      if (separate_user_score > 0) {
+        for (int i = 0; i < cur_pinfo->group_count; ++i) {
+          if (cur_pinfo->group_scores[i] >= 0) {
+            score += cur_pinfo->group_scores[i];
+          }
+        }
+      } else {
+        for (int i = 0; i < cur_pinfo->group_count; ++i) {
+          if (cur_pinfo->group_scores[i] >= 0) {
+            score += cur_pinfo->group_scores[i];
+          } else {
+            score -= cur_pinfo->group_scores[i];
+          }
+        }
+      }
+      total_group_score = score;
     }
 
     if (need_prev_succ && re.user_id != user_id) {
@@ -5565,7 +6089,8 @@ ns_get_user_problems_summary(
         cur_pinfo->best_run = run_id;
         cur_score = calc_kirov_score(0, 0, start_time,
                                      separate_user_score, 1 /* user_mode */, re.token_flags,
-                                     &re, cur_prob, 0, 0, 0, 0, 0, 0, 0);
+                                     &re, cur_prob, 0, 0, 0, 0, 0, 0, 0,
+                                     total_group_score);
         //if (cur_score > best_score[re.prob_id])
         cur_pinfo->best_score = cur_score;
         break;
@@ -5590,7 +6115,8 @@ ns_get_user_problems_summary(
         cur_pinfo->attempts++;
         cur_score = calc_kirov_score(0, 0, start_time, separate_user_score,
                                      1 /* user_mode */, re.token_flags,
-                                     &re, cur_prob, 0, 0, 0, 0, 0, 0, 0);
+                                     &re, cur_prob, 0, 0, 0, 0, 0, 0, 0,
+                                     total_group_score);
         //if (cur_score > best_score[re.prob_id])
         cur_pinfo->best_score = cur_score;
         break;
@@ -5787,12 +6313,12 @@ ns_get_user_problems_summary(
     if (!(cur_prob = cs->probs[prob_id])) continue;
 
     // the problem is completely disabled before its start_date
-    if (!serve_is_problem_started(cs, user_id, cur_prob))
+    if (!serve_is_problem_started(cs, user_id, cur_prob, 0))
       continue;
 
     // check the allowed IP list
     int ip_allowed = 1;
-    if (cur_prob->allow_ip) {
+    if (cur_prob->allow_ip && ip) {
       ip_allowed = 0;
       int j;
       for (j = 0; cur_prob->allow_ip[j]; ++j) {
@@ -5847,13 +6373,14 @@ ns_get_user_problems_summary(
 
     // check problem deadline
     time_t user_deadline = 0;
-    int is_deadlined = serve_is_problem_deadlined(cs, user_id, user_login, cur_prob, &user_deadline);
+    int is_deadlined = serve_is_problem_deadlined(cs, user_id, user_login, cur_prob, &user_deadline, 0);
     if (is_deadlined && cur_prob->enable_submit_after_reject > 0 && pinfo[prob_id].rejected_flag && !pinfo[prob_id].solved_flag) {
       is_deadlined = 0;
       user_deadline = 0;
     }
 
-    if (start_time > 0 && cs->current_time >= start_time
+    if (start_time > 0 && point_in_time >= start_time
+        && (ip_allowed || cur_prob->statement_ignore_ip > 0)
         && (cur_prob->unrestricted_statement > 0 || !is_deadlined))
       pinfo[prob_id].status |= PROB_STATUS_VIEWABLE;
 
@@ -5864,7 +6391,7 @@ ns_get_user_problems_summary(
         && (cur_prob->disable_submit_after_ok <= 0 || !pinfo[prob_id].solved_flag))
       pinfo[prob_id].status |= PROB_STATUS_SUBMITTABLE;
 
-    if (start_time > 0 && cs->current_time >= start_time && cur_prob->disable_tab <= 0)
+    if (start_time > 0 && point_in_time >= start_time && cur_prob->disable_tab <= 0)
       pinfo[prob_id].status |= PROB_STATUS_TABABLE;
   }
 
@@ -5908,7 +6435,8 @@ ns_examiners_page(
   unsigned char bb[1024];
   const unsigned char *s_beg = 0, *s_end = 0;
   unsigned char nbuf[1024];
-  int exam_role_count = 0, chief_role_count = 0, add_count, ex_num;
+  int exam_role_count = 0, add_count, ex_num;
+  [[gnu::unused]] int chief_role_count = 0;
   int assignable_runs, assigned_runs;
   unsigned char *exam_flag = 0;
 
@@ -6383,6 +6911,7 @@ ns_scan_one_compile_queue(
       mtime = stb.st_mtime;
     }
   }
+  closedir(d); d = NULL;
 
   if (info->sa == info->su) {
     if (!(info->sa *= 2)) info->sa = 16;
@@ -6447,6 +6976,7 @@ collect_run_status(
         int disable_failed,
         time_t effective_time,
         int gen_strings_flag,
+        int total_group_score,
         RunDisplayInfo *ri) // out
 {
   const struct section_global_data *global = cs->global;
@@ -6601,7 +7131,8 @@ collect_run_status(
     ri->score = calc_kirov_score(score_buf, sizeof(score_buf),
                                  start_time, separate_user_score, user_mode, pe->token_flags,
                                  pe, pr, attempts,
-                                 disq_attempts, ce_attempts, prev_successes, 0, 1, effective_time);
+                                 disq_attempts, ce_attempts, prev_successes, 0, 1, effective_time,
+                                 total_group_score);
     if (gen_strings_flag) {
       ri->score_str = strdup(score_buf);
     }
@@ -6623,6 +7154,9 @@ fill_user_run_info(
   const struct section_language_data *lang = NULL;
   const struct section_problem_data *cur_prob = NULL;
   int status = -1;
+  int group_count;
+  int group_scores[EJ_MAX_TEST_GROUP];
+  int total_group_score = -1;
 
   struct virtual_end_info_s *vend_info = NULL;
 
@@ -6674,10 +7208,36 @@ fill_user_run_info(
   if (cur_prob && cur_prob->enable_submit_after_reject > 0)
     p_eff_time = &effective_time;
 
-  if (global->score_system == SCORE_KIROV && !pre->is_hidden)
+  if (global->score_system == SCORE_KIROV && !pre->is_hidden) {
+    int ice = 0, cep = -1, egm = 0;
+    if (cur_prob) {
+      ice = cur_prob->ignore_compile_errors;
+      cep = cur_prob->compile_error_penalty;
+      egm = cur_prob->enable_group_merge;
+    }
     run_get_attempts(cs->runlog_state, run_id, &attempts, &disq_attempts, &ce_attempts,
                      p_eff_time,
-                     cur_prob->ignore_compile_errors, cur_prob->compile_error_penalty);
+                     ice, cep, egm,
+                     &group_count, group_scores);
+    if (egm > 0) {
+      if (separate_user_score > 0) {
+        total_group_score = 0;
+        for (int i = 0; i < pinfo->group_count; ++i) {
+          if (pinfo->group_scores[i] > 0) {
+            total_group_score += pinfo->group_scores[i];
+          }
+        }
+      } else {
+        for (int i = 0; i < pinfo->group_count; ++i) {
+          if (pinfo->group_scores[i] >= 0) {
+            total_group_score += pinfo->group_scores[i];
+          } else {
+            total_group_score -= pinfo->group_scores[i];
+          }
+        }
+      }
+    }
+  }
   prev_successes = RUN_TOO_MANY;
   if (global->score_system == SCORE_KIROV
       && status == RUN_OK
@@ -6760,6 +7320,7 @@ fill_user_run_info(
                      0 /* disable_failed */,
                      effective_time,
                      gen_strings_flag,
+                     total_group_score,
                      ri);
 
   ri->is_src_enabled = (enable_src_view > 0);
@@ -6954,6 +7515,9 @@ new_write_user_runs(
   struct virtual_end_info_s *vend_info = NULL;
 
   time_t effective_time, *p_eff_time;
+  int group_count;
+  int group_scores[EJ_MAX_TEST_GROUP];
+  int total_group_score = -1;
 
   if (table_class && *table_class) {
     cl = alloca(strlen(table_class) + 16);
@@ -7053,10 +7617,32 @@ new_write_user_runs(
     effective_time = 0; p_eff_time = NULL;
     if (cur_prob && cur_prob->enable_submit_after_reject > 0)
       p_eff_time = &effective_time;
-    if (global->score_system == SCORE_KIROV && !re.is_hidden)
+    total_group_score = -1;
+    if (global->score_system == SCORE_KIROV && !re.is_hidden) {
       run_get_attempts(state->runlog_state, i, &attempts, &disq_attempts, &ce_attempts,
                        p_eff_time,
-                       cur_prob->ignore_compile_errors, cur_prob->compile_error_penalty);
+                       cur_prob->ignore_compile_errors, cur_prob->compile_error_penalty,
+                       cur_prob->enable_group_merge,
+                       &group_count, group_scores);
+      if (cur_prob->enable_group_merge > 0) {
+        total_group_score = 0;
+        if (separate_user_score > 0) {
+          for (int i = 0; i < group_count; ++i) {
+            if (group_scores[i] > 0) {
+              total_group_score += group_scores[i];
+            }
+          }
+        } else {
+          for (int i = 0; i < group_count; ++i) {
+            if (group_scores[i] >= 0) {
+              total_group_score += group_scores[i];
+            } else {
+              total_group_score -= group_scores[i];
+            }
+          }
+        }
+      }
+    }
 
     prev_successes = RUN_TOO_MANY;
     if (global->score_system == SCORE_KIROV
@@ -7120,7 +7706,8 @@ new_write_user_runs(
     write_html_run_status(state, f, start_time, &re, separate_user_score /* user_mode */,
                           0, attempts, disq_attempts, ce_attempts,
                           prev_successes, table_class, 0, 0, RUN_VIEW_DEFAULT,
-                          effective_time, cur_test);
+                          effective_time,
+                          total_group_score, cur_test);
     super_run_status_vector_free(&srsv, 0);
 
     if (enable_src_view) {
@@ -7383,6 +7970,19 @@ html_make_title(unsigned char *buf, size_t size, const unsigned char *title)
   return buf;
 }
 
+struct GroupInfo
+{
+  int serial;
+  int first_test; // first test in the group (zero-based)
+  int first_fail;
+  int fail_status;
+  int count;      // total count of tests
+  int ok_count;
+  int skipped_count;
+  int cf_count;
+  int score;
+};
+
 int
 write_xml_team_testing_report(
         const serve_state_t state,
@@ -7409,6 +8009,13 @@ write_xml_team_testing_report(
   int hide_score = 0;
   int user_status_mode = 0;
   int show_checker_comment_mode = 0;
+  int has_icpc_group = 0;
+  unsigned char *visibilities = NULL;
+  int has_max_rss = 0;
+  long long max_rss = 0;
+  int has_tl_or_wtl = 0;
+  int max_time_ms = 0;
+  int has_mle = 0;
 
   if (table_class && *table_class) {
     snprintf(cl, sizeof(cl), " class=\"%s\"", table_class);
@@ -7543,46 +8150,29 @@ write_xml_team_testing_report(
     return 0;
   }
 
+  // regular problem
+  XALLOCAZ(visibilities, r->run_tests + 1);
+  for (i = 0; i < r->run_tests; ++i) {
+    if (r->tests[i]) {
+      visibilities[i] = cntsprob_get_test_visibility(prob, i + 1, state->online_final_visibility, token_flags);
+      if (visibilities[i] == TV_ICPC) {
+        has_icpc_group = 1;
+      }
+    }
+  }
+
   if (r->scoring_system == SCORE_KIROV ||
       (r->scoring_system == SCORE_OLYMPIAD && !r->accepting_mode)) {
     is_kirov = 1;
   }
 
-  if (is_kirov) {
-    fprintf(f, _("<big>%d total tests runs, %d passed, %d failed.<br/>\n"),
-            run_tests, tests_passed, run_tests - tests_passed);
-    fprintf(f, _("Score gained: %d (out of %d).<br/><br/></big>\n"),
-            score, max_score);
-  } else {
-    if (status != RUN_OK && status != RUN_ACCEPTED && status != RUN_PENDING_REVIEW && status != RUN_SUMMONED) {
-      fprintf(f, _("<big>Failed test: %d.<br/><br/></big>\n"), r->failed_test);
-    }
-  }
-
-  /*
-  if (r->comment) {
-    s = html_armor_string_dup(r->comment);
-    fprintf(f, "<big>Note: %s.<br/><br/></big>\n", s);
-    xfree(s);
-  }
-  */
-
-  if (r->valuer_comment) {
-    fprintf(f, "<p><b>%s</b>:<br/></p><pre>%s</pre>\n", _("Valuer comments"),
-            ARMOR(r->valuer_comment));
-    hide_score = 1;
-  }
-  if (((token_flags & TOKEN_VALUER_JUDGE_COMMENT_BIT) || state->online_valuer_judge_comments)
-       && r->valuer_judge_comment) {
-    fprintf(f, "<p><b>%s</b>:<br/></p><pre>%s</pre>\n", _("Valuer comments"),
-            ARMOR(r->valuer_judge_comment));
-    hide_score = 1;
-  }
-
   for (i = 0; i < r->run_tests; ++i) {
     if (!(t = r->tests[i])) continue;
-    // TV_NORMAL, TV_FULL, TV_FULLIFMARKED, TV_BRIEF, TV_EXISTS, TV_HIDDEN
-    visibility = cntsprob_get_test_visibility(prob, i + 1, state->online_final_visibility, token_flags);
+    // TV_NORMAL, TV_FULL, TV_FULLIFMARKED, TV_BRIEF, TV_EXISTS, TV_HIDDEN, TV_ICPC
+    visibility = visibilities[i];
+    if (visibility == TV_ICPC) {
+      continue;
+    }
     if (visibility == TV_FULLIFMARKED) {
       visibility = TV_HIDDEN;
       if (is_marked) visibility = TV_FULL;
@@ -7600,6 +8190,90 @@ write_xml_team_testing_report(
       has_full = 1;
       if (r->archive_available) need_links = 1;
     }
+    if (t->max_rss > 0) {
+      if (!has_max_rss) {
+        has_max_rss = 1;
+        max_rss = t->max_rss;
+      } else {
+        if (t->max_rss > max_rss) {
+          max_rss = t->max_rss;
+        }
+      }
+    }
+    if (t->status == RUN_TIME_LIMIT_ERR || t->status == RUN_WALL_TIME_LIMIT_ERR) {
+      has_tl_or_wtl = 1;
+    } else {
+      if (t->time > max_time_ms) {
+        max_time_ms = t->time;
+      }
+    }
+    if (t->status == RUN_MEM_LIMIT_ERR) {
+      has_mle = 1;
+    }
+  }
+
+  if (has_icpc_group && is_kirov) {
+    fprintf(f, _("<big>Score gained: %d (out of %d).</big>\n"),
+            score, max_score);
+  } else if (is_kirov) {
+    fprintf(f, _("<big>%d total tests runs, %d passed, %d failed.<br/>\n"),
+            run_tests, tests_passed, run_tests - tests_passed);
+    fprintf(f, _("Score gained: %d (out of %d).</big>\n"),
+            score, max_score);
+  } else {
+    if (status != RUN_OK && status != RUN_ACCEPTED && status != RUN_PENDING_REVIEW && status != RUN_SUMMONED) {
+      fprintf(f, _("<big>Failed test: %d.</big>\n"), r->failed_test);
+    }
+  }
+
+  fprintf(f, "<br/><big>");
+  fprintf(f, _("Max running time:"));
+  if (has_tl_or_wtl) {
+    fprintf(f, " &gt;= %d.%03d (", r->time_limit_ms / 1000, r->time_limit_ms % 1000);
+    fprintf(f, _("time-limit exceeded"));
+    fprintf(f, ")");
+  } else {
+    fprintf(f, " %d.%03d", max_time_ms / 1000, max_time_ms % 1000);
+  }
+  if (has_max_rss) {
+    fprintf(f, _("; max used memory:"));
+    if (has_mle) {
+      fprintf(f, _(" memory-limit exceeded"));
+    } else {
+      max_rss /= 1024;
+      if (max_rss > 1024) {
+        fprintf(f, " %lld MiB, %lld KiB", max_rss / 1024, max_rss % 1024);
+      } else {
+        fprintf(f, " %lld KiB", max_rss);
+      }
+    }
+  }
+  fprintf(f, "</big>");
+
+  fprintf(f, "<br/><br/>\n");
+
+  /*
+  if (r->comment) {
+    s = html_armor_string_dup(r->comment);
+    fprintf(f, "<big>Note: %s.<br/><br/></big>\n", s);
+    xfree(s);
+  }
+  */
+
+  if (r->valuer_comment && !has_icpc_group) {
+    fprintf(f, "<p><b>%s</b>:<br/></p><pre>%s</pre>\n", _("Valuer comments"),
+            ARMOR(r->valuer_comment));
+    hide_score = 1;
+  }
+  if (((token_flags & TOKEN_VALUER_JUDGE_COMMENT_BIT) || state->online_valuer_judge_comments)
+       && r->valuer_judge_comment) {
+    fprintf(f, "<p><b>%s</b>:<br/></p><pre>%s</pre>\n", _("Valuer comments"),
+            ARMOR(r->valuer_judge_comment));
+    hide_score = 1;
+  }
+
+  if (has_icpc_group) {
+    fprintf(f, "<h3>%s</h3>\n", _("Open tests"));
   }
 
   fprintf(f,
@@ -7607,6 +8281,9 @@ write_xml_team_testing_report(
           "<tr><th%s>N</th><th%s>%s</th><th%s>%s</th>",
           cl, cl, _("Result"), cl, _("Time (sec)")/*,
           cl, _("Real time (sec)")*/);
+  if (has_max_rss) {
+    fprintf(f, "<th%s>%s</th>", cl, _("Used memory RSS (KiB)"));
+  }
   if (need_info) {
     fprintf(f, "<th%s>%s</th>", cl, _("Extra info"));
   }
@@ -7624,8 +8301,11 @@ write_xml_team_testing_report(
 
   for (i = 0; i < r->run_tests; i++) {
     if (!(t = r->tests[i])) continue;
-    // TV_NORMAL, TV_FULL, TV_FULLIFMARKED, TV_BRIEF, TV_EXISTS, TV_HIDDEN
-    visibility = cntsprob_get_test_visibility(prob, i + 1, state->online_final_visibility, token_flags);
+    // TV_NORMAL, TV_FULL, TV_FULLIFMARKED, TV_BRIEF, TV_EXISTS, TV_HIDDEN, TV_ICPC
+    visibility = visibilities[i];
+    if (visibility == TV_ICPC) {
+      continue;
+    }
     if (visibility == TV_FULLIFMARKED) {
       visibility = TV_HIDDEN;
       if (is_marked) visibility = TV_FULL;
@@ -7637,6 +8317,9 @@ write_xml_team_testing_report(
       fprintf(f, "<td%s>%d</td>", cl, serial);
       fprintf(f, "<td%s>&nbsp;</td>", cl); // status
       fprintf(f, "<td%s>&nbsp;</td>", cl); // time
+      if (has_max_rss) {
+        fprintf(f, "<td%s>&nbsp;</td>", cl); // memory
+      }
       if (need_info) {
         fprintf(f, "<td%s>&nbsp;</td>", cl); // info
       }
@@ -7683,6 +8366,13 @@ write_xml_team_testing_report(
       fprintf(f, "<td%s>N/A</td>", cl);
     }
     */
+    if (has_max_rss) {
+      if (status == RUN_MEM_LIMIT_ERR) {
+        fprintf(f, "<td%s>&nbsp;</td>", cl);
+      } else {
+        fprintf(f, "<td%s>%lld</td>", cl, t->max_rss / 1024);
+      }
+    }
     if (need_info) {
       fprintf(f, "<td%s>", cl);
       if (status == RUN_RUN_TIME_ERR
@@ -7768,12 +8458,105 @@ write_xml_team_testing_report(
   }
   fprintf(f, "</table>\n");
 
+  if (has_icpc_group) {
+    // FIXME: use actual group numbers
+    int *tests_group = prob->open_tests_group;
+
+    int max_group_serial = -1;
+    struct GroupInfo *gi = NULL;
+    for (i = 0; i < r->run_tests; i++) {
+      if (!(t = r->tests[i])) continue;
+      visibility = visibilities[i];
+      if (visibility != TV_ICPC) {
+        continue;
+      }
+      if (max_group_serial < tests_group[i + 1]) {
+        max_group_serial = tests_group[i + 1];
+      }
+    }
+
+    if (max_group_serial > 0) {
+      XALLOCAZ(gi, max_group_serial + 1);
+      for (int g = 0; g <= max_group_serial; ++g) {
+        gi[g].serial = -1;
+        gi[g].first_test = -1;
+        gi[g].first_fail = -1;
+      }
+      // collect statistics on tests
+      for (i = 0; i < r->run_tests; ++i) {
+        if (!(t = r->tests[i])) continue;
+        visibility = visibilities[i];
+        if (visibility != TV_ICPC) {
+          continue;
+        }
+        int g = tests_group[i + 1];
+        gi[g].serial = g;
+        if (gi[g].first_test < 0) gi[g].first_test = i;
+        ++gi[g].count;
+        gi[g].score += t->score;
+        switch (t->status) {
+        case RUN_OK:
+          ++gi[g].ok_count;
+          break;
+        case RUN_RUN_TIME_ERR:
+        case RUN_TIME_LIMIT_ERR:
+        case RUN_PRESENTATION_ERR:
+        case RUN_WRONG_ANSWER_ERR:
+        case RUN_MEM_LIMIT_ERR:
+        case RUN_SECURITY_ERR:
+        case RUN_WALL_TIME_LIMIT_ERR:
+        case RUN_SYNC_ERR:
+          if (gi[g].first_fail < 0) {
+            gi[g].first_fail = i;
+            gi[g].fail_status = t->status;
+            gi[g].score = 0;
+          }
+          break;
+        case RUN_CHECK_FAILED:
+          ++gi[g].cf_count;
+          break;
+        case RUN_SKIPPED:
+          ++gi[g].skipped_count;
+          break;
+        }
+      }
+    }
+
+    if (gi) {
+      fprintf(f, "<h3>%s</h3>\n", _("Group Info"));
+      fprintf(f, "<table class=\"table\">");
+      fprintf(f, "<tr><th%s>N</th><th%s>%s</th><th%s>%s</th><th%s>%s</th></tr>\n", cl, cl, _("Result"), cl, _("Failed test"), cl, _("Score"));
+      for (int g = 0; g <= max_group_serial; ++g) {
+        if (gi[g].serial < 0) continue;
+        fprintf(f, "<tr><td%s>%d</td>", cl, gi[g].serial);
+        if (gi[g].ok_count == gi[g].count) {
+          fprintf(f, "<td%s><font color=\"%s\">%s</font></td><td%s>N/A</td><td%s>%d</td>\n",
+                  cl, "green", run_status_str(RUN_OK, 0, 0, 0, 0), cl, cl, gi[g].score);
+        } else if (gi[g].cf_count > 0) {
+          fprintf(f, "<td%s><font color=\"%s\">%s</font></td><td%s>N/A</td><td%s>N/A</td>\n",
+                  cl, "red", run_status_str(RUN_CHECK_FAILED, 0, 0, 0, 0), cl, cl);
+        } else if (gi[g].skipped_count == gi[g].count) {
+          fprintf(f, "<td%s><font color=\"%s\">%s</font></td><td%s>N/A</td><td%s>N/A</td>\n",
+                  cl, "magenta", run_status_str(RUN_SKIPPED, 0, 0, 0, 0), cl, cl);
+        } else {
+          fprintf(f, "<td%s><font color=\"%s\">%s</font></td><td%s>%d</td><td%s>%d</td>\n",
+                  cl, "red", run_status_str(gi[g].fail_status, 0, 0, 0, 0), cl, gi[g].first_fail - gi[g].first_test + 1, cl, gi[g].score);
+        }
+        fprintf(f, "</tr>\n");
+      }
+      fprintf(f, "</table>\n");
+    }
+  }
+
   if (has_full) {
     fprintf(f, "<pre>");
     for (i = 0; i < r->run_tests; i++) {
       if (!(t = r->tests[i])) continue;
       if (t->status == RUN_SKIPPED) continue;
-      visibility = cntsprob_get_test_visibility(prob, i + 1, state->online_final_visibility, token_flags);
+      visibility = visibilities[i];
+      if (visibility == TV_ICPC) {
+        continue;
+      }
       if (visibility == TV_FULLIFMARKED) {
         visibility = TV_HIDDEN;
         if (is_marked) visibility = TV_FULL;
@@ -9172,7 +9955,7 @@ write_json_run_info(
   for (int i = 0; i <= cs->max_prob; ++i) {
     pinfo[i].best_run = -1;
   }
-  ns_get_user_problems_summary(cs, phr->user_id, phr->login, accepting_mode, start_time, stop_time, &phr->ip, pinfo);
+  ns_get_user_problems_summary(cs, phr->user_id, phr->login, accepting_mode, start_time, stop_time, 0, &phr->ip, pinfo);
 
   int message_count = 0;
   if (pre->run_uuid.v[0] || pre->run_uuid.v[1] || pre->run_uuid.v[2] || pre->run_uuid.v[3]) {
@@ -9717,4 +10500,96 @@ run_display_info_free(struct RunDisplayInfo *rdi)
     free(rdi->abbrev_sha1);
     free(rdi->score_str);
   }
+}
+
+unsigned char *
+ns_get_vcs_snapshot_url(
+        const serve_state_t cs,
+        struct http_request_info *phr,
+        int contest_id,
+        int user_id,
+        int prob_id,
+        const unsigned char *src)
+{
+  struct userprob_plugin_data *up_plugin = NULL;
+  struct userprob_entry *ue = NULL;
+  unsigned char *vcs_url = NULL;
+  unsigned char *vcs_ptr = NULL;
+  unsigned char *commit_id = NULL;
+  __attribute__((unused)) int _;
+
+  up_plugin = userprob_plugin_get(phr->config, NULL, 0);
+  if (!up_plugin) {
+    err("%s: failed to load userprob plugin", __FUNCTION__);
+    goto fail;
+  }
+  ue = up_plugin->vt->fetch_by_cup(up_plugin, contest_id, user_id, prob_id);
+  if (!ue) {
+    goto fail;
+  }
+
+  if (!ue->vcs_type) {
+    goto fail;
+  }
+  if (!src) {
+    goto fail;
+  }
+
+  if (!ue->vcs_url || !*ue->vcs_url) {
+    goto fail;
+  }
+  vcs_url = xstrdup(ue->vcs_url);
+  vcs_ptr = vcs_url;
+  size_t len = strlen(vcs_url);
+  if (len > 0 && vcs_url[len - 1] == '/') {
+    vcs_url[len - 1] = 0;
+    --len;
+  }
+  if (len > 4
+      && vcs_url[len - 1] == 't'
+      && vcs_url[len - 2] == 'i'
+      && vcs_url[len - 3] == 'g'
+      && vcs_url[len - 4] == '.') {
+    vcs_url[len - 4] = 0;
+    len -= 4;
+  }
+  if (len > 4
+      && vcs_url[0] == 'g'
+      && vcs_url[1] == 'i'
+      && vcs_url[2] == 't'
+      && vcs_url[3] == '@') {
+    vcs_ptr = vcs_url + 4;
+  }
+  char *ss = strchr(vcs_ptr, ':');
+  if (ss) {
+    *ss = '/';
+  }
+  if (!strncmp(src, "commit ", 7)) {
+    const unsigned char *p = src + 7;
+    const unsigned char *q = p;
+    while (*q && !isspace(*q)) {
+      ++q;
+    }
+    commit_id = xmemdup(p, q - p);
+  }
+  if (!commit_id) {
+    goto fail;
+  }
+
+  char *out = NULL;
+  if (!strcmp(ue->vcs_type, "github")) {
+    _ = asprintf(&out, "https://%s/tree/%s", vcs_ptr, commit_id);
+  } else if (!strcmp(ue->vcs_type, "gitlab")) {
+    _ = asprintf(&out, "https://%s/-/tree/%s", vcs_ptr, commit_id);
+  }
+
+  xfree(commit_id);
+  xfree(vcs_url);
+
+  return out;
+
+fail:;
+  xfree(vcs_url);
+  xfree(commit_id);
+  return NULL;
 }

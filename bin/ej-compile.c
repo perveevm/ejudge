@@ -1,6 +1,6 @@
 /* -*- c -*- */
 
-/* Copyright (C) 2000-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2000-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -92,6 +92,9 @@ static unsigned char compile_server_queue_dir[PATH_MAX];
 static unsigned char compile_server_queue_dir_dir[PATH_MAX];
 static unsigned char compile_server_src_dir[PATH_MAX];
 static unsigned char heartbeat_dir[PATH_MAX];
+#if defined EJUDGE_COMPILE_SPOOL_DIR
+static unsigned char export_config_dir[PATH_MAX];
+#endif
 static unsigned char *agent_name;
 static struct AgentClient *agent;
 static unsigned char *instance_id;
@@ -108,6 +111,8 @@ static unsigned char pending_stop_flag; // bool
 static unsigned char pending_down_flag; // bool
 static unsigned char pending_reboot_flag; // bool
 static unsigned char *heartbeat_instance_id;
+static unsigned char *local_cache = NULL;
+static int compile_user_serial = 0;
 
 struct testinfo_subst_handler_compile
 {
@@ -115,6 +120,11 @@ struct testinfo_subst_handler_compile
   const struct compile_request_packet *request;
   const struct section_language_data *lang;
 };
+
+static int *lang_id_map = NULL;
+static int lang_id_map_size = 0;
+
+static const unsigned char PROP_SUFFIX[] = ".json";
 
 static unsigned char *
 subst_get_variable(
@@ -177,6 +187,9 @@ invoke_style_checker(
     task_SetMaxRealTime(tsk, lang->compile_real_time_limit);
   }
   task_EnableAllSignals(tsk);
+  if (compile_user_serial > 0) {
+    task_SetUserSerial(tsk, compile_user_serial);
+  }
 
   task_PrintArgs(tsk);
   if (task_Start(tsk) < 0) {
@@ -228,7 +241,7 @@ cleanup:
 }
 
 // non-recursive
-static int
+static __attribute__((unused)) int
 copy_all_files(
         FILE *log_f,
         const unsigned char *src_dir,
@@ -334,6 +347,107 @@ cleanup:;
 }
 
 static int
+detect_prepended_size(
+        const unsigned char *working_dir,
+        const unsigned char *input_file,
+        const unsigned char *output_file)
+{
+  enum { MAX_FILE_SIZE = 1024 * 1024 };
+  enum { MAX_SIZE_DIFF = 1024 };
+  unsigned char input_path[PATH_MAX];
+  unsigned char output_path[PATH_MAX];
+  int ifd = -1;
+  int ofd = -1;
+  struct stat istb, ostb;
+  size_t isize = 0, osize = 0;
+  unsigned char *ibuf = MAP_FAILED, *obuf = MAP_FAILED;
+  int prepended_size = 0;
+
+  if (snprintf(input_path, sizeof(input_path), "%s/%s", working_dir, input_file) >= (int)sizeof(input_path)) {
+    goto done;
+  }
+  if (snprintf(output_path, sizeof(output_path), "%s/%s", working_dir, output_file) >= (int)sizeof(output_path)) {
+    goto done;
+  }
+
+  ifd = open(input_path, O_RDONLY | O_CLOEXEC | O_NOCTTY | O_NOFOLLOW | O_NONBLOCK, 0);
+  if (ifd < 0) {
+    err("detect_prepended_size: open '%s' failed: %s", input_path, os_ErrorMsg());
+    goto done;
+  }
+  if (fstat(ifd, &istb) < 0) {
+    goto done;
+  }
+  if (!S_ISREG(istb.st_mode)) {
+    err("detect_prepended_size: '%s' not a regular file", input_path);
+    goto done;
+  }
+  if (istb.st_size > MAX_FILE_SIZE) {
+    goto done;
+  }
+  if (istb.st_size <= 0) {
+    goto done;
+  }
+
+  ofd = open(output_path, O_RDONLY | O_CLOEXEC | O_NOCTTY | O_NOFOLLOW | O_NONBLOCK, 0);
+  if (ofd < 0) {
+    err("detect_prepended_size: open '%s' failed: %s", output_path, os_ErrorMsg());
+    goto done;
+  }
+  if (fstat(ofd, &ostb) < 0) {
+    goto done;
+  }
+  if (!S_ISREG(ostb.st_mode)) {
+    err("detect_prepended_size: '%s' not a regular file", output_path);
+    goto done;
+  }
+  if (ostb.st_size <= 0) {
+    goto done;
+  }
+
+  if (ostb.st_size > MAX_FILE_SIZE) {
+    goto done;
+  }
+  if (ostb.st_size <= istb.st_size) {
+    goto done;
+  }
+  if (istb.st_size + MAX_SIZE_DIFF < ostb.st_size) {
+    goto done;
+  }
+
+  // both files are non-empty and less than 64KiB in size
+  // and the output file is no larger than 1KiB
+  isize = istb.st_size;
+  ibuf = mmap(NULL, isize, PROT_READ, MAP_PRIVATE, ifd, 0);
+  if (ibuf == MAP_FAILED) {
+    err("detect_prepended_size: mmap '%s' failed: %s", input_path, os_ErrorMsg());
+    goto done;
+  }
+
+  osize = ostb.st_size;
+  obuf = mmap(NULL, osize, PROT_READ, MAP_PRIVATE, ofd, 0);
+  if (obuf == MAP_FAILED) {
+    err("detect_prepended_size: mmap '%s' failed: %s", output_path, os_ErrorMsg());
+    goto done;
+  }
+
+  prepended_size = osize - isize;
+  if (memcmp(ibuf, obuf + prepended_size, isize) != 0) {
+    prepended_size = 0;
+    goto done;
+  }
+
+  info("detect_prepended_size: prepended_size == %d", prepended_size);
+
+done:
+  if (ibuf != MAP_FAILED) munmap(ibuf, isize);
+  if (obuf != MAP_FAILED) munmap(obuf, osize);
+  if (ifd >= 0) close(ifd);
+  if (ofd >= 0) close(ofd);
+  return prepended_size;
+}
+
+static int
 invoke_compiler(
         FILE *log_f,
         const struct serve_state *cs,
@@ -343,13 +457,16 @@ invoke_compiler(
         const unsigned char *output_file,
         const unsigned char *working_dir,
         const unsigned char *log_path,
-        const testinfo_t *tinf)
+        const testinfo_t *tinf,
+        int *p_prepended_size,
+        const unsigned char *status_file)
 {
   const struct section_global_data *global = serve_state.global;
   tpTask tsk = 0;
 
   if (req->extra_src_dir && req->extra_src_dir[0]) {
-    int r = copy_all_files(log_f, req->extra_src_dir, working_dir);
+    int r = copy_directory_recursively(log_f, req->extra_src_dir, working_dir);
+    //int r = copy_all_files(log_f, req->extra_src_dir, working_dir);
     if (r < 0) {
       err("failed to copy extra_src_dir from %s to %s",
           req->extra_src_dir, working_dir);
@@ -396,6 +513,9 @@ invoke_compiler(
     task_AddArg(tsk, input_file);
     task_AddArg(tsk, output_file);
   }
+  if (status_file && req->enable_run_props > 0) {
+    task_AddArg(tsk, status_file);
+  }
   task_SetPathAsArg0(tsk);
   task_EnableProcessGroup(tsk);
   if (VALID_SIZE(req->max_vm_size)) {
@@ -434,6 +554,10 @@ invoke_compiler(
     if (req->container_options && req->container_options[0]) {
       task_AppendContainerOptions(tsk, req->container_options);
     }
+    task_SetLanguageName(tsk, lang->short_name);
+  }
+  if (req->enable_run_props > 0) {
+    task_EnableSubdirMode(tsk);
   }
 
   if (req->env_num > 0) {
@@ -447,6 +571,9 @@ invoke_compiler(
   if (req->vcs_mode) {
     task_PutEnv(tsk, "EJUDGE_VCS_MODE=1");
   }
+  if (req->enable_run_props > 0) {
+    task_PutEnv(tsk, "EJUDGE_EXE_PROPERTIES=1");
+  }
   task_SetWorkingDir(tsk, working_dir);
   task_SetRedir(tsk, 0, TSR_FILE, "/dev/null", TSK_READ);
   if (tinf && tinf->compiler_must_fail > 0) {
@@ -459,6 +586,9 @@ invoke_compiler(
     task_SetMaxRealTime(tsk, lang->compile_real_time_limit);
   }
   task_EnableAllSignals(tsk);
+  if (compile_user_serial > 0) {
+    task_SetUserSerial(tsk, compile_user_serial);
+  }
 
   task_PrintArgs(tsk);
 
@@ -495,6 +625,9 @@ invoke_compiler(
   } else {
     info("Compilation sucessful");
     task_Delete(tsk);
+    if (req->preserve_numbers && p_prepended_size) {
+      *p_prepended_size = detect_prepended_size(working_dir, input_file, output_file);
+    }
     return RUN_OK;
   }
 }
@@ -557,8 +690,10 @@ done:;
   if (mem != MAP_FAILED) munmap(mem, size);
 }
 
+#ifdef __GCC__
 #pragma GCC push_options
 #pragma GCC optimize "no-inline"
+#endif
 static void
 save_heartbeat(void)
 {
@@ -614,7 +749,9 @@ save_heartbeat(void)
   flatcc_builder_clear(&builder);
   last_heartbeat_update_ms = current_time_ms;
 }
+#ifdef __GCC__
 #pragma GCC pop_options
+#endif
 
 static void
 delete_heartbeat(void)
@@ -651,16 +788,32 @@ handle_packet(
         const unsigned char *log_work_path,       // the path to the log file (open in APPEND mode)
         unsigned char *exe_work_name,             // OUTPUT: the name of the executable
         int *p_override_exe,
-        int *p_exe_copied)
+        int *p_exe_copied,
+        const unsigned char *json_work_path)      // extended status working path
 {
   struct ZipData *zf = NULL;
+  int prepended_size = 0;
+  unsigned char build_dir[PATH_MAX];
+  __attribute__((unused)) int _;
+  const unsigned char *build_dir_ptr = working_dir;
+  unsigned char exe_rel_path[PATH_MAX];
+
+  if (req->enable_run_props > 0) {
+    _ = snprintf(build_dir, sizeof(build_dir), "%s/build", working_dir);
+    if (mkdir(build_dir, 0700) < 0 && errno != EEXIST) {
+      fprintf(log_f, "cannot create build directory: %s\n", os_ErrorMsg());
+      rpl->status = RUN_CHECK_FAILED;
+      goto cleanup;
+    }
+    build_dir_ptr = build_dir;
+  }
 
   if (req->output_only) {
     if (req->style_checker && req->style_checker[0]) {
       unsigned char src_work_name[PATH_MAX];
       snprintf(src_work_name, sizeof(src_work_name), "%llx", random_u64());
       unsigned char src_work_path[PATH_MAX];
-      snprintf(src_work_path, sizeof(src_work_path), "%s/%s", working_dir, src_work_name);
+      snprintf(src_work_path, sizeof(src_work_path), "%s/%s", build_dir_ptr, src_work_name);
 
       if (src_buf) {
         if (generic_write_file(src_buf, src_len, 0, NULL, src_work_path, "") < 0) {
@@ -676,7 +829,7 @@ handle_packet(
         }
       }
 
-      int r = invoke_style_checker(log_f, cs, lang, req, src_work_name, working_dir, log_work_path, NULL);
+      int r = invoke_style_checker(log_f, cs, lang, req, src_work_name, build_dir_ptr, log_work_path, NULL);
       if (r != RUN_OK) {
         rpl->status = r;
         goto cleanup;
@@ -751,7 +904,7 @@ handle_packet(
   unsigned char src_work_name[PATH_MAX];
   snprintf(src_work_name, sizeof(src_work_name), "%llx%s", random_u64(), lang->src_sfx);
   unsigned char src_work_path[PATH_MAX];
-  snprintf(src_work_path, sizeof(src_work_path), "%s/%s", working_dir, src_work_name);
+  snprintf(src_work_path, sizeof(src_work_path), "%s/%s", build_dir_ptr, src_work_name);
 
   if (src_buf) {
     if (generic_write_file(src_buf, src_len, 0, NULL, src_work_path, "") < 0) {
@@ -775,7 +928,12 @@ handle_packet(
   if (!req->multi_header) {
     snprintf(exe_work_name, PATH_MAX, "%llx%s", random_u64(), lang->exe_sfx);
     unsigned char exe_work_path[PATH_MAX];
-    snprintf(exe_work_path, sizeof(exe_work_path), "%s/%s", working_dir, exe_work_name);
+    snprintf(exe_work_path, sizeof(exe_work_path), "%s/%s", build_dir_ptr, exe_work_name);
+    if (req->enable_run_props > 0) {
+      snprintf(exe_rel_path, sizeof(exe_rel_path), "../%s", exe_work_name);
+    } else {
+      snprintf(exe_rel_path, sizeof(exe_rel_path), "%s", exe_work_name);
+    }
 
     /*
     if (req->style_checker && req->style_checker[0]) {
@@ -793,13 +951,14 @@ handle_packet(
     */
 
     if (req->style_check_only <= 0) {
-      int r = invoke_compiler(log_f, cs, lang, req, src_work_name, exe_work_name, working_dir, log_work_path, NULL);
+      int r = invoke_compiler(log_f, cs, lang, req, src_work_name, exe_rel_path, build_dir_ptr, log_work_path, NULL, &prepended_size, json_work_path);
       rpl->status = r;
       if (r != RUN_OK) goto cleanup;
+      rpl->prepended_size = prepended_size;
     }
 
     if (req->vcs_mode <= 0 && req->style_checker && req->style_checker[0]) {
-      int r = invoke_style_checker(log_f, cs, lang, req, src_work_name, working_dir, log_work_path, NULL);
+      int r = invoke_style_checker(log_f, cs, lang, req, src_work_name, build_dir_ptr, log_work_path, NULL);
       rpl->status = r;
       if (r == RUN_OK && req->style_check_only > 0) *p_override_exe = 1;
     }
@@ -810,7 +969,7 @@ handle_packet(
   // multi-header mode
   snprintf(exe_work_name, PATH_MAX, "%llx%s", random_u64(), lang->exe_sfx);
   unsigned char exe_work_path[PATH_MAX];
-  snprintf(exe_work_path, sizeof(exe_work_path), "%s/%s", working_dir, exe_work_name);
+  snprintf(exe_work_path, sizeof(exe_work_path), "%s/%s", build_dir_ptr, exe_work_name);
   zf = ej_libzip_open(log_f, exe_work_path, O_CREAT | O_TRUNC | O_WRONLY);
   if (!zf) {
     fprintf(log_f, "cannot create zip archive '%s'\n", exe_work_path);
@@ -995,7 +1154,7 @@ handle_packet(
     unsigned char test_src_name[PATH_MAX];
     snprintf(test_src_name, sizeof(test_src_name), "%llx%s", random_u64(), lang->src_sfx);
     unsigned char test_src_path[PATH_MAX];
-    snprintf(test_src_path, sizeof(test_src_path), "%s/%s", working_dir, test_src_name);
+    snprintf(test_src_path, sizeof(test_src_path), "%s/%s", build_dir_ptr, test_src_name);
     if (generic_write_file(full_s, full_z, 0, NULL, test_src_path, NULL) < 0) {
       fprintf(log_f, "failed to write full source file '%s'\n", test_src_path);
       testinfo_free(tinf);
@@ -1011,7 +1170,16 @@ handle_packet(
     // FIXME: random exe name?
     snprintf(test_exe_name, sizeof(test_exe_name), "%06d_%03d%s", req->run_id, serial, lang->exe_sfx);
     unsigned char test_exe_path[PATH_MAX];
-    snprintf(test_exe_path, sizeof(test_exe_path), "%s/%s", working_dir, test_exe_name);
+    snprintf(test_exe_path, sizeof(test_exe_path), "%s/%s", build_dir_ptr, test_exe_name);
+    unsigned char test_json_name[PATH_MAX];
+    unsigned char test_json_path[PATH_MAX];
+    test_json_name[0] = 0;
+    test_json_path[0] = 0;
+    if (req->enable_run_props > 0) {
+      __attribute__((unused)) int _;
+      _ = snprintf(test_json_name, sizeof(test_json_name), "%06d_%03d%s", req->run_id, serial, PROP_SUFFIX);
+      _ = snprintf(test_json_path, sizeof(test_json_path), "%s/%s", working_dir, test_json_name);
+    }
 
     int cur_status = RUN_OK;
     /*
@@ -1033,7 +1201,7 @@ handle_packet(
     if (cur_status == RUN_OK) {
       fprintf(log_f, "=== compilation for test %d ===\n", serial);
       fflush(log_f);
-      cur_status = invoke_compiler(log_f, cs, lang, req, test_src_name, test_exe_name, working_dir, log_work_path, tinf);
+      cur_status = invoke_compiler(log_f, cs, lang, req, test_src_name, test_exe_name, build_dir_ptr, log_work_path, tinf, &prepended_size, test_json_path);
       // valid statuses: RUN_OK, RUN_COMPILE_ERR, RUN_CHECK_FAILED
       if (cur_status == RUN_CHECK_FAILED) {
         status = RUN_CHECK_FAILED;
@@ -1082,7 +1250,7 @@ handle_packet(
                 fprintf(log_f, "failed to write full source file '%s'\n", test_src_path);
                 status = RUN_CHECK_FAILED;
               } else {
-                cur_status = invoke_compiler(log_f, cs, lang, req, test_src_name, test_exe_name, working_dir, log_work_path, tinf);
+                cur_status = invoke_compiler(log_f, cs, lang, req, test_src_name, test_exe_name, build_dir_ptr, log_work_path, tinf, &prepended_size, test_json_path);
 
                 if (cur_status == RUN_CHECK_FAILED) {
                   status = RUN_CHECK_FAILED;
@@ -1104,6 +1272,17 @@ handle_packet(
                     fprintf(log_f, "output file '%s' is not executable: %s\n", test_exe_path, strerror(errno));
                     status = RUN_CHECK_FAILED;
                   } else {
+                    struct stat stb;
+                    if (req->enable_run_props > 0 && lstat(test_json_path, &stb) >= 0
+                        && S_ISREG(stb.st_mode) && stb.st_size > 0) {
+                      if (zf->ops->add_file(zf, test_json_name, test_json_path) < 0) {
+                        fprintf(log_f, "cannot add file '%s' to zip archive\n", test_json_path);
+                        status = RUN_CHECK_FAILED;
+                      }
+                      rpl->has_run_props = 1;
+                      strcpy(rpl->prop_sfx, PROP_SUFFIX);
+                    }
+
                     if (zf->ops->add_file(zf, test_exe_name, test_exe_path) < 0) {
                       fprintf(log_f, "cannot add file '%s' to zip archive\n", test_exe_path);
                       status = RUN_CHECK_FAILED;
@@ -1143,6 +1322,17 @@ handle_packet(
             fprintf(log_f, "%s\n", tinf->comment);
           }
         } else {
+          struct stat stb;
+          if (req->enable_run_props > 0 && lstat(test_json_path, &stb) >= 0
+              && S_ISREG(stb.st_mode) && stb.st_size > 0) {
+            if (zf->ops->add_file(zf, test_json_name, test_json_path) < 0) {
+              fprintf(log_f, "cannot add file '%s' to zip archive\n", test_json_path);
+              status = RUN_CHECK_FAILED;
+            }
+            strcpy(rpl->prop_sfx, PROP_SUFFIX);
+            rpl->has_run_props = 1;
+          }
+
           if (zf->ops->add_file(zf, test_exe_name, test_exe_path) < 0) {
             fprintf(log_f, "cannot add file '%s' to zip archive\n", test_exe_path);
             status = RUN_CHECK_FAILED;
@@ -1156,7 +1346,7 @@ handle_packet(
       fflush(log_f);
 
       style_already_checked = 1;
-      cur_status = invoke_style_checker(log_f, cs, lang, req, test_src_name, working_dir, log_work_path, tinf);
+      cur_status = invoke_style_checker(log_f, cs, lang, req, test_src_name, build_dir_ptr, log_work_path, tinf);
       // valid statuses: RUN_OK, RUN_STYLE_ERR, RUN_CHECK_FAILED
       if (cur_status == RUN_CHECK_FAILED) {
         status = RUN_CHECK_FAILED;
@@ -1174,11 +1364,235 @@ handle_packet(
 
   rpl->status = status;
   rpl->zip_mode = 1;
+  rpl->prepended_size = prepended_size;
 
 cleanup:
   if (zf) zf->ops->close(zf);
   return;
 }
+
+static const unsigned char stub_program[] =
+"#! /bin/sh\n"
+"echo 'This is a stub program!'\n"
+"exit 1\n";
+
+static int
+do_write_string(
+        const unsigned char *path,
+        int perms,
+        const unsigned char *str)
+{
+  int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, perms);
+  if (fd < 0) {
+    err("%s: failed to open '%s': %s", __FUNCTION__, path, os_ErrorMsg());
+    return -1;
+  }
+  ssize_t len = strlen(str);
+  const unsigned char *p = str;
+  while (len > 0) {
+    ssize_t w = write(fd, p, len);
+    if (w < 0) {
+      err("%s: write error: %s", __FUNCTION__, os_ErrorMsg());
+      close(fd);
+      unlink(path);
+      return -1;
+    }
+    if (!w) abort();
+    p += w;
+    len -= w;
+  }
+  if (close(fd) < 0) {
+    err("%s: close failed: %s", __FUNCTION__, os_ErrorMsg());
+    unlink(path);
+    return -1;
+  }
+  return 0;
+}
+
+static int
+do_copy_regular_file(
+        const unsigned char *dst_path,
+        const unsigned char *src_path)
+{
+  int src_fd = -1;
+  int retval = -1;
+  size_t src_size = 0;
+  unsigned char *src_ptr = MAP_FAILED;
+  int dst_fd = -1;
+  int need_unlink = 0;
+  unsigned char *dst_ptr = MAP_FAILED;
+
+  src_fd = open(src_path, O_RDONLY | O_CLOEXEC | O_NOCTTY | O_NONBLOCK, 0);
+  if (src_fd < 0) {
+    err("%s: open '%s' failed: %s", __FUNCTION__, src_path, os_ErrorMsg());
+    goto done;
+  }
+  struct stat stb;
+  if (fstat(src_fd, &stb) < 0) {
+    err("%s: fstat failed: %s", __FUNCTION__, os_ErrorMsg());
+    goto done;
+  }
+  if (!S_ISREG(stb.st_mode)) {
+    err("%s: '%s' is not regular", __FUNCTION__, src_path);
+    goto done;
+  }
+  if (stb.st_size < 0 || stb.st_size > 128 * 1024 * 1024) {
+    err("%s: '%s' is too big", __FUNCTION__, src_path);
+    goto done;
+  }
+  src_size = stb.st_size;
+
+  dst_fd = open(dst_path, O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOCTTY | O_NONBLOCK, stb.st_mode & 0777);
+  if (dst_fd < 0) {
+    err("%s: open '%s' failed: %s", __FUNCTION__, dst_path, os_ErrorMsg());
+    goto done;
+  }
+  need_unlink = 1;
+  if (fstat(dst_fd, &stb) < 0) {
+    err("%s: fstat failed: %s", __FUNCTION__, os_ErrorMsg());
+    goto done;
+  }
+  if (!S_ISREG(stb.st_mode)) {
+    err("%s: '%s' is not regular", __FUNCTION__, dst_path);
+    goto done;
+  }
+
+  if (src_size > 0) {
+    src_ptr = mmap(NULL, src_size, PROT_READ, MAP_PRIVATE, src_fd, 0);
+    if (src_ptr == MAP_FAILED) {
+      err("%s: mmap of '%s' failed: %s", __FUNCTION__, src_path, os_ErrorMsg());
+      goto done;
+    }
+
+    if (posix_fallocate(dst_fd, 0, src_size) < 0) {
+      err("%s: fallocate failed: %s", __FUNCTION__, os_ErrorMsg());
+      goto done;
+    }
+    dst_ptr = mmap(NULL, src_size, PROT_READ | PROT_WRITE, MAP_SHARED, dst_fd, 0);
+    if (dst_ptr == MAP_FAILED) {
+      err("%s: mmap of '%s' failed: %s", __FUNCTION__, dst_path, os_ErrorMsg());
+      goto done;
+    }
+    memcpy(dst_ptr, src_ptr, src_size);
+  }
+
+  retval = 0;
+  need_unlink = 0;
+
+done:;
+  if (dst_ptr != MAP_FAILED) munmap(dst_ptr, src_size);
+  if (src_ptr != MAP_FAILED) munmap(src_ptr, src_size);
+  if (need_unlink) unlink(dst_path);
+  if (dst_fd >= 0) close(dst_fd);
+  if (src_fd >= 0) close(src_fd);
+  return retval;
+}
+
+static int
+copy_to_local_cache(
+        const struct compile_request_packet *req,
+        const unsigned char *exe_work_path,
+        const unsigned char *exe_sfx)
+{
+  unsigned char uuid_buf[64];
+  unsigned char cached_path[PATH_MAX];
+  int r;
+
+  r = snprintf(cached_path, sizeof(cached_path), "%s/%s%s",
+               local_cache,
+               ej_uuid_unparse_r(uuid_buf, sizeof(uuid_buf),
+                                 &req->judge_uuid, ""),
+               exe_sfx);
+  if (r >= (int)sizeof(cached_path)) {
+    err("%s: cached_path is too long", __FUNCTION__);
+    return -1;
+  }
+
+  struct stat stb;
+  if (stat(exe_work_path, &stb) < 0) {
+    err("%s: stat failed for '%s': %s", __FUNCTION__, exe_work_path, os_ErrorMsg());
+    return -1;
+  }
+  if (!S_ISREG(stb.st_mode)) {
+    err("%s: '%s' not regular", __FUNCTION__, exe_work_path);
+    return -1;
+  }
+
+  if (rename(exe_work_path, cached_path) >= 0) {
+    if (do_write_string(exe_work_path, 777, stub_program) < 0) {
+      err("%s: writing of stub file failed", __FUNCTION__);
+      unlink(cached_path);
+      return -1;
+    }
+    return 0;
+  }
+  if (errno != EXDEV) {
+    err("%s: rename failed: %s", __FUNCTION__, os_ErrorMsg());
+    return -1;
+  }
+  if (do_copy_regular_file(cached_path, exe_work_path) < 0) {
+    return -1;
+  }
+  if (do_write_string(exe_work_path, 777, stub_program) < 0) {
+    err("%s: writing of stub file failed", __FUNCTION__);
+    unlink(cached_path);
+    return -1;
+  }
+  return 0;
+}
+
+#if defined EJUDGE_COMPILE_SPOOL_DIR
+static int
+save_config(void)
+{
+  char *cfg_s = NULL;
+  size_t cfg_z = 0;
+  FILE *cfg_f = open_memstream(&cfg_s, &cfg_z);
+  int max_lang = serve_state.max_lang;
+  struct section_language_data **langs = serve_state.langs;
+  if (lang_id_map) {
+    int new_max_lang = max_lang;
+    if (lang_id_map_size > new_max_lang) new_max_lang = lang_id_map_size;
+    struct section_language_data **new_langs = NULL;
+    struct section_language_data **old_langs = NULL;
+    XALLOCAZ(new_langs, new_max_lang + 1);
+    XALLOCAZ(old_langs, serve_state.max_lang + 1);
+    memcpy(old_langs, langs, (serve_state.max_lang + 1) * sizeof(old_langs[0]));
+
+    for (int i = 1; i < lang_id_map_size; ++i) {
+      int j = lang_id_map[i];
+      if (j > 0 && j <= max_lang && old_langs[j]) {
+        new_langs[i] = old_langs[j];
+        old_langs[j] = NULL;
+      }
+    }
+    for (int i = 1; i <= max_lang; ++i) {
+      if (old_langs[i] && !new_langs[i]) {
+        new_langs[i] = old_langs[i];
+      }
+    }
+
+    langs = new_langs;
+    max_lang = new_max_lang;
+  }
+
+  for (int i = 1; i <= max_lang; ++i) {
+    if (langs[i]) {
+      prepare_unparse_lang(cfg_f, langs[i], i, NULL, NULL, NULL, 0);
+    }
+  }
+  fclose(cfg_f); cfg_f = NULL;
+
+  if (agent) {
+    agent->ops->put_config(agent, "compile.cfg", cfg_s, cfg_z);
+  } else {
+    generic_write_file(cfg_s, cfg_z, SAFE, export_config_dir, "compile.cfg", NULL);
+  }
+  free(cfg_s); cfg_s = NULL; cfg_z = 0;
+
+  return 0;
+}
+#endif
 
 static int
 new_loop(int parallel_mode, const unsigned char *global_log_path)
@@ -1234,7 +1648,9 @@ new_loop(int parallel_mode, const unsigned char *global_log_path)
   }
 
 #if defined EJUDGE_COMPILE_SPOOL_DIR
-  // nothing to do
+  if (save_config() < 0) {
+    return -1;
+  }
 #else
   if (snprintf(compile_server_queue_dir, sizeof(compile_server_queue_dir), "%s", global->compile_queue_dir) >= sizeof(compile_server_queue_dir)) {
     err("path '%s' is too long", global->compile_queue_dir);
@@ -1279,6 +1695,9 @@ new_loop(int parallel_mode, const unsigned char *global_log_path)
   interrupt_disable();
 
   while (1) {
+    interrupt_enable();
+    interrupt_disable();
+
     // terminate if signaled
     if (interrupt_get_status() || interrupt_restart_requested()) break;
     if (interrupt_was_usr1()) {
@@ -1382,7 +1801,9 @@ new_loop(int parallel_mode, const unsigned char *global_log_path)
     } else {
       r = generic_read_file(&pkt_ptr, 0, &pkt_len, SAFE | REMOVE, compile_server_queue_dir, pkt_name, "");
     }
-    if (r == 0) continue;
+    if (r == 0){
+      continue;
+    }
     if (r < 0 || !pkt_ptr) {
       // it looks like there's no reasonable recovery strategy
       // so, just ignore the error
@@ -1394,6 +1815,13 @@ new_loop(int parallel_mode, const unsigned char *global_log_path)
     xfree(pkt_ptr); pkt_ptr = NULL;
     if (r < 0) {
       continue;
+    }
+
+    if (lang_id_map
+        && req->lang_id > 0 && req->lang_id < lang_id_map_size
+        && lang_id_map[req->lang_id] > 0) {
+      info("language %d mapped to %d", req->lang_id, lang_id_map[req->lang_id]);
+      req->lang_id = lang_id_map[req->lang_id];
     }
 
     if (!req->contest_id) {
@@ -1502,6 +1930,24 @@ new_loop(int parallel_mode, const unsigned char *global_log_path)
     snprintf(log_path, sizeof(log_path), "%s/%s.txt", report_dir, run_name);
     unlink(log_path);
 
+    unsigned char json_path[PATH_MAX];
+    unsigned char json_work_name[PATH_MAX];
+    unsigned char json_work_path[PATH_MAX];
+    unsigned char json_rel_path[PATH_MAX];
+    json_path[0] = 0;
+    json_work_name[0] = 0;
+    json_work_path[0] = 0;
+    json_rel_path[0] = 0;
+    if (req->enable_run_props > 0) {
+      __attribute__((unused)) int _;
+      _ = snprintf(json_path, sizeof(json_path), "%s/%s%s", report_dir, run_name, PROP_SUFFIX);
+      unlink(json_path);
+      _ = snprintf(json_work_name, sizeof(json_work_name), "%s%s", run_name, PROP_SUFFIX);
+      _ = snprintf(json_work_path, sizeof(json_work_path), "%s/%s", full_working_dir, json_work_name);
+      unlink(json_work_path);
+      _ = snprintf(json_rel_path, sizeof(json_rel_path), "../%s", json_work_name);
+    }
+
     unsigned char exe_work_name[PATH_MAX];
     exe_work_name[0] = 0;
 
@@ -1570,7 +2016,8 @@ new_loop(int parallel_mode, const unsigned char *global_log_path)
                   log_work_path,
                   exe_work_name,
                   &override_exe,
-                  &exe_copied);
+                  &exe_copied,
+                  json_rel_path);
 
     free(src_buf); src_buf = NULL; src_len = 0;
 
@@ -1604,6 +2051,12 @@ new_loop(int parallel_mode, const unsigned char *global_log_path)
             rpl.status = RUN_COMPILE_ERR;
           } else {
             if (agent) {
+              if (req->enable_remote_cache > 0 && local_cache && *local_cache
+                  && ej_uuid_is_nonempty(req->judge_uuid)) {
+                if (copy_to_local_cache(req, exe_work_path, exe_sfx) >= 0) {
+                  rpl.cached_on_remote = 1;
+                }
+              }
               if (agent->ops->put_output_2(agent,
                                            contest_server_id,
                                            rpl.contest_id,
@@ -1633,6 +2086,24 @@ new_loop(int parallel_mode, const unsigned char *global_log_path)
     }
 
     fclose(log_f); log_f = NULL;
+
+    if (req->enable_run_props > 0) {
+      struct stat stb;
+      if (lstat(json_work_path, &stb) >= 0 && S_ISREG(stb.st_mode) && stb.st_size > 0) {
+        rpl.has_run_props = 1;
+        strcpy(rpl.prop_sfx, PROP_SUFFIX);
+        if (agent) {
+          r = agent->ops->put_output_2(agent,
+                                       contest_server_id,
+                                       rpl.contest_id,
+                                       run_name,
+                                       PROP_SUFFIX,
+                                       json_work_path);
+        } else {
+          r = generic_copy_file(0, NULL, json_work_path, "", 0, NULL, json_path, "");
+        }
+      }
+    }
 
     if (agent) {
       r = agent->ops->put_output_2(agent,
@@ -1722,7 +2193,8 @@ static int
 filter_languages(char *key)
 {
   // key is not NULL
-  int i, total = 0;
+  int i;
+  [[gnu::unused]] int total = 0;
   const struct section_language_data *lang = 0;
 
   for (i = 1; i <= serve_state.max_lang; i++) {
@@ -1752,7 +2224,7 @@ static int
 check_config(void)
 {
   int i;
-  int total = 0;
+  [[gnu::unused]] int total = 0;
 
 #if !defined EJUDGE_COMPILE_SPOOL_DIR
   if (check_writable_spool(serve_state.global->compile_queue_dir, SPOOL_OUT) < 0)
@@ -1776,6 +2248,62 @@ check_config(void)
   return 0;
 }
 
+static int
+parse_lang_id_map(const char *prog, const char *file)
+{
+  FILE *f = NULL;
+
+  if (!(f = fopen(file, "r"))) {
+    fprintf(stderr, "%s: cannot open '%s': %s\n", prog, file, strerror(errno));
+    goto fail;
+  }
+  char buf[1024];
+  while (fgets(buf, sizeof(buf), f)) {
+    int l = strlen(buf);
+    while (l > 0 && isspace((unsigned char) buf[l - 1])) --l;
+    buf[l] = 0;
+    if (!l) continue;
+    int n, from_id, to_id;
+    if (sscanf(buf, "%d%d%n", &from_id, &to_id, &n) != 2 || buf[n]) {
+      fprintf(stderr, "%s: failed to parse map line\n", prog);
+      goto fail;
+    }
+    if (from_id <= 0 || to_id <= 0 || from_id > 100000 || to_id > 100000) {
+      fprintf(stderr, "%s: failed to parse map line\n", prog);
+      goto fail;
+    }
+    if (from_id >= lang_id_map_size) {
+      int new_lang_id_map_size = lang_id_map_size * 2;
+      if (!lang_id_map_size) {
+        new_lang_id_map_size = 16;
+      }
+      while (from_id >= new_lang_id_map_size) {
+        new_lang_id_map_size *= 2;
+      }
+      int *new_lang_id_map = NULL;
+      XCALLOC(new_lang_id_map, new_lang_id_map_size);
+      if (lang_id_map_size > 0) {
+        memcpy(new_lang_id_map, lang_id_map, lang_id_map_size * new_lang_id_map[0]);
+      }
+      xfree(lang_id_map);
+      lang_id_map = new_lang_id_map;
+      lang_id_map_size = new_lang_id_map_size;
+    }
+    if (lang_id_map[from_id]) {
+      fprintf(stderr, "%s: duplicate entry in lang_id map\n", prog);
+      goto fail;
+    }
+    lang_id_map[from_id] = to_id;
+  }
+
+  fclose(f);
+  return 0;
+
+fail:;
+  if (f) fclose(f);
+  return -1;
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1791,6 +2319,7 @@ main(int argc, char *argv[])
   int     disable_stack_trace = 0;
   unsigned char *halt_command = NULL;
   unsigned char *reboot_command = NULL;
+  unsigned char *lang_id_map = NULL;
 
 #if HAVE_SETSID - 0
   path_t  log_path;
@@ -1948,6 +2477,18 @@ main(int argc, char *argv[])
       reboot_command = xstrdup(argv[i++]);
       argv_restart[j++] = argv[i];
       argv_restart[j++] = argv[i - 1];
+    } else if (!strcmp(argv[i], "--lang-id-map")) {
+      if (++i >= argc) goto print_usage;
+      xfree(lang_id_map);
+      lang_id_map = xstrdup(argv[i++]);
+      argv_restart[j++] = argv[i];
+      argv_restart[j++] = argv[i - 1];
+    } else if (!strcmp(argv[i], "--local-cache")) {
+      if (++i >= argc) goto print_usage;
+      xfree(local_cache);
+      local_cache = xstrdup(argv[i++]);
+      argv_restart[j++] = argv[i];
+      argv_restart[j++] = argv[i - 1];
     } else if (!strcmp(argv[i], "-p")) {
       parallel_mode = 1;
       ++i;
@@ -1968,6 +2509,16 @@ main(int argc, char *argv[])
       heartbeat_mode = 0;
       ++i;
       argv_restart[j++] = argv[i];
+    } else if (!strcmp(argv[i], "-y")) {
+      if (++i >= argc) goto print_usage;
+      argv_restart[j++] = argv[i - 1];
+      argv_restart[j++] = argv[i];
+
+      char *eptr = NULL;
+      errno = 0;
+      long lval = strtol(argv[i++], &eptr, 10);
+      if (errno || *eptr || eptr == argv[i - 1] || (int) lval != lval || lval < 0) goto print_usage;
+      compile_user_serial = lval;
     } else if (!strcmp(argv[i], "--help")) {
       code = 0;
       goto print_usage;
@@ -2029,6 +2580,12 @@ main(int argc, char *argv[])
     return 1;
   }
 
+  if (lang_id_map && *lang_id_map) {
+    if (parse_lang_id_map(argv[0], lang_id_map) < 0) {
+      return 1;
+    }
+  }
+
   unsigned char **host_names = NULL;
   if (!(host_names = ejudge_get_host_names())) {
     fprintf(stderr, "%s: cannot obtain the list of host names\n", argv[0]);
@@ -2039,8 +2596,8 @@ main(int argc, char *argv[])
     return 1;
   }
 
-  int parallelism = ejudge_cfg_get_host_option_int(ejudge_config, host_names, "compile_parallelism", 1, 0);
-  if (parallelism <= 0 || parallelism > 128) {
+  int parallelism = ejudge_cfg_get_host_option_int(ejudge_config, host_names, "compile_parallelism", 1, -1);
+  if (parallelism < 0 || parallelism > 128) {
     fprintf(stderr, "%s: invalid value of compile_parallelism host option\n", argv[0]);
     return 1;
   }
@@ -2254,11 +2811,18 @@ main(int argc, char *argv[])
 
     snprintf(heartbeat_dir, sizeof(heartbeat_dir), "%s/heartbeat", compile_server_spool_dir);
     if (make_all_dir(heartbeat_dir, 0777) < 0) return 1;
+
+    snprintf(export_config_dir, sizeof(export_config_dir), "%s/config", compile_server_spool_dir);
+    if (make_all_dir(export_config_dir, 0777) < 0) return 1;
   }
 #endif
 
   if (create_dirs(NULL, &serve_state, PREPARE_COMPILE) < 0) return 1;
   if (check_config() < 0) return 1;
+  if (local_cache && *local_cache) {
+    if (make_dir(local_cache, 0770) < 0) return 1;
+  }
+
   if (initialize_mode) return 0;
 
 #if HAVE_SETSID - 0
@@ -2318,20 +2882,36 @@ main(int argc, char *argv[])
 
  print_usage:
   printf("Usage: %s [ OPTS ] [config-file]\n", argv[0]);
-  printf("  -k key - specify language key\n");
-  printf("  -DDEF  - define a symbol for preprocessor\n");
-  printf("  -D     - start in daemon mode\n");
-  printf("  -i     - initialize mode: create all dirs and exit\n");
-  printf("  -p     - parallel mode: support multiple instances\n");
-  printf("  -k KEY - specify a language filter key\n");
-  printf("  -u U   - start as user U (only as root)\n");
-  printf("  -g G   - start as group G (only as root)\n");
-  printf("  -C D   - change directory to D\n");
-  printf("  -x X   - specify a path to ejudge.xml file\n");
-  printf("  -I ID  - specify compile server id\n");
-  printf("  -r S   - substitute ${CONTESTS_HOME_DIR} for S in the config\n");
-  printf("  -c C   - substitute ${COMPILE_HOME_DIR} for C in the config\n");
-  printf("  -a A   - use agent A to access to compile queue\n");
-  printf("  -s I   - set instance Id to I\n");
+  printf("  --agent AGENT   - specify server connection agent\n");
+  printf("  -C D            - change directory to D\n");
+  printf("  -c C            - substitute ${COMPILE_HOME_DIR} for C in the config\n");
+  printf("  -D              - start in daemon mode\n");
+  printf("  -DVAR[=VAL]     - define a variable\n");
+  printf("  -d              - start in daemon mode\n");
+  printf("  -e FD           - set logging file descriptor\n");
+  printf("  -g G            - start as group G (only as root)\n");
+  printf("  -hb             - enable heartbeat mode\n");
+  printf("  -hc CMD         - specify halt command\n");
+  printf("  -hi ID          - specify hearbeat instance ID\n");
+  printf("  -I ID           - specify compile server id\n");
+  printf("  -i              - initialize mode: create all dirs and exit\n");
+  printf("  --instance-id I - specify instance ID\n");
+  printf("  --ip IP         - specify IP to report to server\n");
+  printf("  -k KEY          - specify a language filter key\n");
+  printf("  -l FD           - set ejudge.xml file descriptor\n");
+  printf("  --lang-id-map M - specify language ID map file\n");
+  printf("  --local-cache D - specify local cache directory\n");
+  printf("  -nhb            - disable heartbeat mode\n");
+  printf("  -nst            - disable stack trace on crash\n");
+  printf("  -p              - parallel mode: support multiple instances\n");
+  printf("  -R              - restart mode\n");
+  printf("  -r S            - substitute ${CONTESTS_HOME_DIR} for S in the config\n");
+  printf("  -rc CMD         - specify reboot command\n");
+  printf("  -S              - start in slave mode\n");
+  printf("  -s I            - set instance Id to I\n");
+  printf("  -u U            - start as user U (only as root)\n");
+  printf("  -v              - verbose mode\n");
+  printf("  -x X            - specify a path to ejudge.xml file\n");
+  printf("  -y S            - set instance serial number to S\n");
   return code;
 }

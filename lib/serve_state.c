@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2006-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2006-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -16,6 +16,7 @@
 
 #include "ejudge/serve_state.h"
 #include "ejudge/filter_tree.h"
+#include "ejudge/mixed_id.h"
 #include "ejudge/runlog.h"
 #include "ejudge/team_extra.h"
 #include "ejudge/teamdb.h"
@@ -42,17 +43,20 @@
 #include "ejudge/variant_plugin.h"
 #include "ejudge/submit_plugin.h"
 #include "ejudge/metrics_contest.h"
+#include "ejudge/notify_plugin.h"
 
 #include "ejudge/xalloc.h"
 #include "ejudge/logger.h"
 #include "ejudge/osdeps.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <ctype.h>
+#include <errno.h>
 
 serve_state_t
 serve_state_init(int contest_id)
@@ -160,11 +164,14 @@ serve_state_destroy(
         xfree(state->prob_extras[i].v_alts);
       }
 
-      if (state->prob_extras[i].plugin && state->prob_extras[i].plugin_data) {
-        (*state->prob_extras[i].plugin->finalize)(state->prob_extras[i].plugin_data);
-      }
-      if (state->prob_extras[i].plugin) {
-        plugin_unload((struct ejudge_plugin_iface*) state->prob_extras[i].plugin);
+      struct ejudge_plugin_iface *iface = (struct ejudge_plugin_iface*) state->prob_extras[i].plugin;
+      if (plugin_get_refcount(iface) == 1) {
+        if (state->prob_extras[i].plugin && state->prob_extras[i].plugin_data) {
+          (*state->prob_extras[i].plugin->finalize)(state->prob_extras[i].plugin_data);
+        }
+        if (state->prob_extras[i].plugin) {
+          plugin_unload_2(iface);
+        }
       }
     }
   }
@@ -331,15 +338,15 @@ serve_load_user_groups(
   if (!global) return 0;
   if (!global->load_user_group) return 0;
   if (!ul_conn) {
-    info("load_contest: contest %d groups are not loaded", contest_id);
+    info("%s: contest %d groups are not loaded", __FUNCTION__, contest_id);
     return 0;
   }
   for (i = 0; global->load_user_group[i]; ++i) {
     total_len += strlen(global->load_user_group[i]) + 1;
   }
   if (total_len >= 65536) {
-    err("load_contest: contest %d: total group length too high (%d)",
-        contest_id, total_len);
+    err("%s: contest %d: total group length too high (%d)",
+        __FUNCTION__, contest_id, total_len);
     return -1;
   }
   grp_list = (unsigned char *) alloca(total_len + 10);
@@ -357,23 +364,23 @@ serve_load_user_groups(
   r = userlist_clnt_get_xml_by_text(ul_conn, ULS_GET_GROUPS, grp_list,
                                     &xml_text);
   if (r < 0) {
-    err("load_contest: contest %d: failed to load groups: %s",
-        contest_id, userlist_strerror(-r));
+    err("%s: contest %d: failed to load groups: %s",
+        __FUNCTION__, contest_id, userlist_strerror(-r));
     goto failed;
   }
   if (!xml_text) {
-    err("load_contest: contest %d: group XML is NULL", contest_id);
+    err("%s: contest %d: group XML is NULL", __FUNCTION__, contest_id);
     goto failed;
   }
   grp_info = userlist_parse_str(xml_text);
   if (!grp_info) {
-    err("load_contest: contest %d: XML parse error", contest_id);
+    err("%s: contest %d: XML parse error", __FUNCTION__, contest_id);
     goto failed;
   }
   xfree(xml_text); xml_text = 0;
 
   if (grp_info->group_map_size <= 0 || !grp_info->group_map) {
-    err("load_contest: contest %d: no groups loaded", contest_id);
+    err("%s: contest %d: no groups loaded", __FUNCTION__, contest_id);
     goto failed;
   }
 
@@ -391,7 +398,7 @@ serve_load_user_groups(
   }
 
   if (user_group_count <= 0) {
-    err("load_contest: contest %d: no groups loaded", contest_id);
+    err("%s: contest %d: no groups loaded", __FUNCTION__, contest_id);
     goto failed;
   }
 
@@ -676,6 +683,334 @@ const size_t serve_struct_sizes_array_size = sizeof(serve_struct_sizes_array);
 const size_t serve_struct_sizes_array_num = sizeof(serve_struct_sizes_array) / sizeof(serve_struct_sizes_array[0]);
 
 int
+serve_state_import_languages(
+        const struct ejudge_cfg *config,
+        serve_state_t cs)
+{
+  int retval = -1;
+  struct section_global_data *global = cs->global;
+  __attribute__((unused)) int _;
+  struct section_language_data **new_langs = NULL;
+  const struct section_language_data **cid_langs = NULL; // languages by compile_id
+  const struct section_language_data **cid_langs_alloc = NULL;
+  int has_different_compile_id = 0;
+  signed char *enable_flags = NULL;
+  char *log_s = NULL;
+  size_t log_z = 0;
+  FILE *log_f = NULL;
+  struct compile_server_configs entries;
+
+  if (global->enable_language_import <= 0) {
+    return 0;
+  }
+
+  // explicitly set 'enabled' for langs in language list
+  for (int lang_id = 1; lang_id <= cs->max_lang; ++lang_id) {
+    struct section_language_data *lang = cs->langs[lang_id];
+    if (lang && lang->disabled < 0 && lang->enabled < 0) {
+      lang->enabled = 1;
+    }
+  }
+
+  const unsigned char *compile_spool_dir = "";
+#if !defined EJUDGE_COMPILE_SPOOL_DIR
+  err("%s: --enable-compile-spool-dir must be enabled", __FUNCTION__);
+  return -1;
+#else
+  compile_spool_dir = EJUDGE_COMPILE_SPOOL_DIR;
+#endif
+
+  log_f = open_memstream(&log_s, &log_z);
+  compile_servers_config_init(&entries);
+
+  const unsigned char *global_id = config->contest_server_id;
+  if (global->compile_server_id && global->compile_server_id[0]) {
+    global_id = global->compile_server_id;
+  }
+  (void) compile_servers_get(&entries, global_id);
+
+  // languages in cs->langs are in disarray, scan for language servers without using lang->id
+  for (int lang_id = 1; lang_id <= cs->max_lang; ++lang_id) {
+    const struct section_language_data *lang = cs->langs[lang_id];
+    if (lang && lang->compile_server_id && lang->compile_server_id[0]) {
+      (void) compile_servers_get(&entries, lang->compile_server_id);
+    }
+  }
+
+  for (int i = 0; i < entries.u; ++i) {
+    if (compile_server_load(&entries.v[i], log_f, compile_spool_dir) < 0) {
+      goto cleanup;
+    }
+  }
+
+  if (compile_servers_arrange(&entries, log_f, &cs->max_lang, &cs->langs) < 0) {
+    goto cleanup;
+  }
+
+  for (int lang_id = 1; lang_id <= cs->max_lang; ++lang_id) {
+    const struct section_language_data *lang = cs->langs[lang_id];
+    if (lang && lang->compile_id > 0 && lang->compile_id != lang->id) {
+      has_different_compile_id = 1;
+    }
+  }
+  
+  int max_cid_lang = cs->max_lang;
+  cid_langs = (const struct section_language_data **) cs->langs;
+  if (has_different_compile_id > 0) {
+    for (int lang_id = 1; lang_id <= cs->max_lang; ++lang_id) {
+      const struct section_language_data *lang = cs->langs[lang_id];
+      if (lang && lang->compile_id > 0 && lang->compile_id != lang->id && lang->compile_id > max_cid_lang) {
+        max_cid_lang = lang->compile_id;
+      }
+    }
+    XCALLOC(cid_langs_alloc, max_cid_lang + 1);
+    cid_langs = cid_langs_alloc;
+    for (int lang_id = 1; lang_id <= cs->max_lang; ++lang_id) {
+      const struct section_language_data *lang = cs->langs[lang_id];
+      if (lang) {
+        int new_id = lang_id;
+        if (lang->compile_id > 0 && lang->compile_id != new_id) {
+          new_id = lang->compile_id;
+        }
+        if (cid_langs[new_id]) {
+          err("%s: conflicting languages for compile_id %d: '%s' and '%s'", __FUNCTION__, new_id, cid_langs[new_id]->short_name, lang->short_name);
+          goto cleanup;
+        }
+        cid_langs[new_id] = lang;
+      }
+    }
+  }
+
+  int max_lang = max_cid_lang;
+  for (int i = 0; i < entries.u; ++i) {
+    struct compile_server_config *e = &entries.v[i];
+    if (e->max_lang > max_lang) {
+      max_lang = e->max_lang;
+    }
+  }
+  XCALLOC(new_langs, max_lang + 1);
+  enable_flags = xmalloc((max_lang + 1) * sizeof(enable_flags[0]));
+  memset(enable_flags, -1, (max_lang + 1) * sizeof(enable_flags[0]));
+
+  struct compile_server_config *global_entry = &entries.v[0];
+  for (int lang_id = 1; lang_id <= global_entry->max_lang; ++lang_id) {
+    const struct section_language_data *imp_lang = global_entry->langs[lang_id];
+    if (!imp_lang) continue;
+    const struct section_language_data *cnts_lang = 0;
+    if (lang_id <= max_cid_lang) {
+      cnts_lang = cid_langs[lang_id];
+    }
+    if (!cnts_lang) {
+      struct section_language_data *new_lang = prepare_alloc_language();
+      cs->config = param_merge(cs->config, &new_lang->g);
+      prepare_copy_language(new_lang, imp_lang);
+      if (new_langs[new_lang->id]) {
+        err("%s: conflicting languages for id %d: '%s' and '%s'", __FUNCTION__, new_lang->id, new_langs[new_lang->id]->short_name, new_lang->short_name);
+        goto cleanup;
+      }
+      new_langs[new_lang->id] = new_lang;
+      if (imp_lang->disabled > 0) {
+        // not overridable by contest
+        enable_flags[new_lang->id] = 2;
+      } else if (imp_lang->default_disabled > 0) {
+        // overridable by contest, but not by "enable all"
+        enable_flags[new_lang->id] = 3;
+      }
+      continue;
+    }
+    if (cnts_lang->compile_server_id && strcmp(cnts_lang->compile_server_id, global_entry->id) != 0) {
+      continue;
+    }
+    struct section_language_data *new_lang = prepare_alloc_language();
+    cs->config = param_merge(cs->config, &new_lang->g);
+    prepare_merge_language(new_lang, imp_lang, cnts_lang);
+    if (new_langs[new_lang->id]) {
+      err("%s: conflicting languages for id %d: '%s' and '%s'", __FUNCTION__, new_lang->id, new_langs[new_lang->id]->short_name, new_lang->short_name);
+      goto cleanup;
+    }
+    if (imp_lang->disabled > 0) {
+      // not overridable by contest
+      enable_flags[new_lang->id] = 2;
+    } else if (imp_lang->default_disabled > 0) {
+      // overridable by contest
+      enable_flags[new_lang->id] = 3;
+    }
+    new_langs[new_lang->id] = new_lang;
+  }
+
+  for (int lang_id = 1; lang_id <= cs->max_lang; ++lang_id) {
+    const struct section_language_data *cnts_lang = cs->langs[lang_id];
+    if (!cnts_lang) continue;
+    if (!cnts_lang->compile_server_id || !cnts_lang->compile_server_id[0] || !strcmp(cnts_lang->compile_server_id, global_entry->id)) {
+      if (!new_langs[lang_id]) {
+        err("%s: language %d (%s) is not supported by compilation server %s", __FUNCTION__, lang_id, cnts_lang->short_name, global_entry->id);
+        goto cleanup;
+      }
+      continue;
+    }
+    struct compile_server_config *entry = compile_servers_get(&entries, cnts_lang->compile_server_id);
+    if (!entry) {
+      err("%s: language %d (%s) has invalid compilation server %s", __FUNCTION__, lang_id, cnts_lang->short_name, cnts_lang->compile_server_id);
+      goto cleanup;
+    }
+    const struct section_language_data *imp_lang = NULL;
+    int compile_id = lang_id;
+    if (cnts_lang->compile_id > 0) {
+      compile_id = cnts_lang->compile_id;
+    }
+    if (compile_id > 0 && compile_id <= entry->max_lang) {
+      imp_lang = entry->langs[compile_id];
+    }
+    if (!imp_lang) {
+      err("%s: language %d (%s) is not supported by compilation server %s", __FUNCTION__, lang_id, cnts_lang->short_name, entry->id);
+      goto cleanup;
+    }
+    if (new_langs[lang_id]) {
+      err("%s: conflicting languages for id %d: '%s' and '%s'", __FUNCTION__, lang_id, new_langs[lang_id]->short_name, cnts_lang->short_name);
+      goto cleanup;
+    }
+    struct section_language_data *new_lang = prepare_alloc_language();
+    cs->config = param_merge(cs->config, &new_lang->g);
+    prepare_merge_language(new_lang, imp_lang, cnts_lang);
+    new_langs[lang_id] = new_lang;
+    if (imp_lang->disabled > 0) {
+      // not overridable by contest
+      enable_flags[new_lang->id] = 2;
+    } else if (imp_lang->default_disabled > 0) {
+      // overridable by contest
+      enable_flags[new_lang->id] = 3;
+    }
+  }
+
+  // handle language_import specs
+  if (global->language_import && global->language_import[0]) {
+    // "enable short_id{[,]short_id}"
+    // "disable short_id{[,]short_id}"
+    // "enable all"
+    // "disable all"
+    for (int i = 0; global->language_import[i]; ++i) {
+      const unsigned char *str = global->language_import[i];
+      int enable_flag = 0;
+      const unsigned char *s = str;
+      unsigned char short_name[64];
+      if (!strncmp(str, "enable ", 7)) {
+        s += 7;
+        enable_flag = 1;
+      } else if (!strncmp(str, "disable ", 8)) {
+        s += 8;
+      } else {
+        err("%s: invalid language import specification '%s'", __FUNCTION__, str);
+        goto cleanup;
+      }
+      while (*s) {
+        while (isspace(*s) || *s == ',') ++s;
+        if (!*s) break;
+        const unsigned char *q = s;
+        while (*q && !isspace(*q) && *q != ',') ++q;
+        if (q - s >= sizeof(short_name)) {
+          err("%s: language short_name is too long '%s'", __FUNCTION__, s);
+          goto cleanup;
+        }
+        memcpy(short_name, s, q - s);
+        short_name[q-s] = 0;
+        s = q;
+
+        if (!strcmp(short_name, "all")) {
+          for (int lang_id = 1; lang_id <= max_lang; ++lang_id) {
+            if (enable_flags[lang_id] != 2) {
+              if (!enable_flag || enable_flags[lang_id] != 3) {
+                enable_flags[lang_id] = enable_flag;
+              }
+            }
+          }
+        } else {
+          int lang_id = 1;
+          for (; lang_id <= max_lang; ++lang_id) {
+            const struct section_language_data *lang = new_langs[lang_id];
+            if (lang && !strcmp(lang->short_name, short_name)) {
+              break;
+            }
+          }
+          if (lang_id <= max_lang) {
+            if (enable_flags[lang_id] != 2) {
+              enable_flags[lang_id] = enable_flag;
+            }
+          } else {
+            err("%s: language '%s' is not found", __FUNCTION__, short_name);
+          }
+        }
+      }
+    }
+  }
+
+  // handle individual language specifications
+  for (int lang_id = 1; lang_id <= max_lang; ++lang_id) {
+    const struct section_language_data *lang = new_langs[lang_id];
+    if (lang && enable_flags[lang_id] != 2) {
+      if (lang->enabled > 0) {
+        enable_flags[lang_id] = 1;
+      } else if (lang->disabled > 0) {
+        enable_flags[lang_id] = 0;
+      }
+    }
+  }
+  for (int lang_id = 1; lang_id <= cs->max_lang; ++lang_id) {
+    const struct section_language_data *lang = cs->langs[lang_id];
+    if (lang && enable_flags[lang_id] != 2) {
+      if (lang->enabled > 0) {
+        enable_flags[lang_id] = 1;
+      } else if (lang->disabled > 0) {
+        enable_flags[lang_id] = 0;
+      }
+    }
+  }
+
+  for (int lang_id = 1; lang_id <= max_lang; ++lang_id) {
+    struct section_language_data *lang = new_langs[lang_id];
+    if (!lang) continue;
+    if (lang->compile_id <= 0) {
+      lang->compile_id = lang_id;
+    }
+    lang->enabled = 0;
+    lang->default_disabled = 0;
+    if (enable_flags[lang_id] >= 2) {
+      lang->disabled = 1;
+    } else if (enable_flags[lang_id] == 1) {
+      lang->disabled = 0;
+    } else if (enable_flags[lang_id] == 0) {
+      lang->disabled = 1;
+    } else {
+      lang->disabled = 0;
+    }
+  }
+
+  xfree(cs->langs);
+  cs->langs = new_langs; new_langs = NULL;
+  cs->max_lang = max_lang;
+
+  fprintf(stderr, "======== languages dump ========\n");
+  for (int lang_id = 1; lang_id <= cs->max_lang; ++lang_id) {
+    const struct section_language_data *lang = cs->langs[lang_id];
+    if (lang && lang->disabled <= 0) {
+      prepare_unparse_lang(stderr, lang, 0, NULL, NULL, NULL, 0);
+    }
+  }
+  fprintf(stderr, "======== end languages dump ========\n");
+
+  retval = 0;
+
+cleanup:;
+  if (log_f) fclose(log_f);
+  errt(log_s, log_z);
+  compile_servers_config_free(&entries);
+  xfree(new_langs);
+  xfree(cid_langs_alloc);
+  xfree(enable_flags);
+  xfree(log_s);
+  return retval;
+}
+
+int
 serve_state_load_contest_config(
         struct contest_extra *extra,
         const struct ejudge_cfg *config,
@@ -692,11 +1027,11 @@ serve_state_load_contest_config(
     snprintf(config_path, sizeof(config_path), "%s/serve.cfg", cnts->conf_dir);
   } else {
     if (!cnts->root_dir) {
-      err("load_contest: contest %d root_dir is not set", contest_id);
+      err("%s: contest %d root_dir is not set", __FUNCTION__, contest_id);
       goto failure;
     } else if (!os_IsAbsolutePath(cnts->root_dir)) {
-      err("load_contest: contest %d root_dir %s is not absolute",
-          contest_id, cnts->root_dir);
+      err("%s: contest %d root_dir %s is not absolute",
+          __FUNCTION__, contest_id, cnts->root_dir);
       goto failure;
     }
     if (!(conf_dir = cnts->conf_dir)) conf_dir = "conf";
@@ -705,18 +1040,18 @@ serve_state_load_contest_config(
   }
 
   if (stat(config_path, &stbuf) < 0) {
-    err("load_contest: contest %d config file %s does not exist",
-        contest_id, config_path);
+    err("%s: contest %d config file %s does not exist",
+        __FUNCTION__, contest_id, config_path);
     goto failure;
   }
   if (!S_ISREG(stbuf.st_mode)) {
-    err("load_contest: contest %d config file %s is not a regular file",
-        contest_id, config_path);
+    err("%s: contest %d config file %s is not a regular file",
+        __FUNCTION__, contest_id, config_path);
     goto failure;
   }
   if (access(config_path, R_OK) < 0) {
-    err("load_contest: contest %d config file %s is not readable",
-        contest_id, config_path);
+    err("%s: contest %d config file %s is not readable",
+        __FUNCTION__, contest_id, config_path);
     goto failure;
   }
 
@@ -750,7 +1085,11 @@ serve_state_load_contest(
         struct userlist_clnt *ul_conn,
         struct teamdb_db_callbacks *teamdb_callbacks,
         const struct contest_desc **p_cnts,
-        int no_users_flag)
+        int no_users_flag,
+        void (*load_plugin_func)(
+                serve_state_t cs,
+                struct problem_extra_info *extra,
+                const struct section_problem_data *prob))
 {
   serve_state_t state = 0;
   const struct contest_desc *cnts = 0;
@@ -773,11 +1112,11 @@ serve_state_load_contest(
     snprintf(config_path, sizeof(config_path), "%s/serve.cfg", cnts->conf_dir);
   } else {
     if (!cnts->root_dir) {
-      err("load_contest: contest %d root_dir is not set", contest_id);
+      err("%s: contest %d root_dir is not set", __FUNCTION__, contest_id);
       goto failure;
     } else if (!os_IsAbsolutePath(cnts->root_dir)) {
-      err("load_contest: contest %d root_dir %s is not absolute",
-          contest_id, cnts->root_dir);
+      err("%s: contest %d root_dir %s is not absolute",
+          __FUNCTION__, contest_id, cnts->root_dir);
       goto failure;
     }
     if (!(conf_dir = cnts->conf_dir)) conf_dir = "conf";
@@ -786,18 +1125,18 @@ serve_state_load_contest(
   }
 
   if (stat(config_path, &stbuf) < 0) {
-    err("load_contest: contest %d config file %s does not exist",
-        contest_id, config_path);
+    err("%s: contest %d config file %s does not exist",
+        __FUNCTION__, contest_id, config_path);
     goto failure;
   }
   if (!S_ISREG(stbuf.st_mode)) {
-    err("load_contest: contest %d config file %s is not a regular file",
-        contest_id, config_path);
+    err("%s: contest %d config file %s is not a regular file",
+        __FUNCTION__, contest_id, config_path);
     goto failure;
   }
   if (access(config_path, R_OK) < 0) {
-    err("load_contest: contest %d config file %s is not readable",
-        contest_id, config_path);
+    err("%s: contest %d config file %s is not readable",
+        __FUNCTION__, contest_id, config_path);
     goto failure;
   }
 
@@ -813,7 +1152,52 @@ serve_state_load_contest(
   if (prepare_serve_defaults(cnts, state, p_cnts) < 0) goto failure;
   if (create_dirs(cnts, state, PREPARE_SERVE) < 0) goto failure;
 
+  serve_build_compile_dirs(config, state);
+  serve_build_run_dirs(config, state, cnts);
+
   global = state->global;
+
+  if (global->notification_spec) {
+    const unsigned char *spec = global->notification_spec;
+    struct notify_plugin_data *np = NULL;
+    char *eptr = NULL;
+    errno = 0;
+    long notify_driver = strtol(spec, &eptr, 10);
+    if (errno || notify_driver <= 0 || notify_driver >= 128 || *eptr != ':') {
+      err("invalid notification_spec");
+      goto failure;
+    }
+    if (!(np = notify_plugin_get(config, notify_driver))) {
+      err("invalid notification plugin");
+      goto failure;
+    }
+    spec = eptr + 1;
+    size_t offset = 0;
+    int kind = mixed_it_parse_kind_2(spec, &offset);
+    if (kind <= 0) {
+      err("invalid notification queue kind");
+      goto failure;
+    }
+    spec += offset;
+    if (*spec != ':') {
+      err("invalid notification_spec");
+      goto failure;
+    }
+    spec += 1;
+    if (mixed_id_unmarshall(&state->notify_queue, kind, spec) < 0) {
+      err("invalid notification_spec");
+      goto failure;
+    }
+    mixed_id_marshall(state->notify_queue_buf, kind, &state->notify_queue);
+    state->notify_driver = (int) notify_driver;
+    state->notify_kind = kind;
+    state->notify_plugin = np;
+  }
+
+  if (global->enable_language_import > 0) {
+    if (serve_state_import_languages(config, state) < 0) goto failure;
+  }
+
   teamdb_disable(state->teamdb_state, global->disable_user_database);
 
   /* find olympiad_mode problems in KIROV contests */
@@ -826,7 +1210,7 @@ serve_state_load_contest(
 
   state->statusdb_state = statusdb_open(config, cnts, global, NULL, 0, 1);
   if (!state->statusdb_state) {
-    err("load_contest: contest %d statusdb plugin failed to load", contest_id);
+    err("%s: contest %d statusdb plugin failed to load", __FUNCTION__, contest_id);
     goto failure;
   }
 
@@ -836,7 +1220,7 @@ serve_state_load_contest(
 
   state->xuser_state = team_extra_open(config, cnts, global, NULL, 0);
   if (!state->xuser_state) {
-    err("load_contest: contest %d xuser plugin failed to load", contest_id);
+    err("%s: contest %d xuser plugin failed to load", __FUNCTION__, contest_id);
     goto failure;
   }
 
@@ -917,21 +1301,26 @@ serve_state_load_contest(
     goto failure;
   serve_load_status_file(config, cnts, state);
   serve_set_upsolving_mode(state);
-  serve_build_compile_dirs(config, state);
-  serve_build_run_dirs(config, state, cnts);
 
   int need_variant_plugin = 0;
   XCALLOC(state->prob_extras, state->max_prob + 1);
   for (i = 1; i <= state->max_prob; i++) {
-    if (!state->probs[i] || state->probs[i]->variant_num <= 0) continue;
-    need_variant_plugin = 1;
-    XCALLOC(state->prob_extras[i].v_stmts, state->probs[i]->variant_num + 1);
-    XCALLOC(state->prob_extras[i].v_alts, state->probs[i]->variant_num + 1);
+    const struct section_problem_data *prob = state->probs[i];
+    if (!prob) continue;
+    struct problem_extra_info *extra = &state->prob_extras[i];
+    if (prob->plugin_file && prob->plugin_file[0] && load_plugin_func) {
+      load_plugin_func(state, extra, prob);
+    }
+    if (prob->variant_num > 0) {
+      need_variant_plugin = 1;
+      XCALLOC(extra->v_stmts, prob->variant_num + 1);
+      XCALLOC(extra->v_alts, prob->variant_num + 1);
+    }
   }
   if (need_variant_plugin) {
     state->variant_state = variant_plugin_open(NULL, config, cnts, state, NULL, 0);
     if (!state->variant_state) {
-      err("load_contest: contest %d variant plugin failed to load", contest_id);
+      err("%s: contest %d variant plugin failed to load", __FUNCTION__, contest_id);
       goto failure;
     }
   }

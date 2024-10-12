@@ -1,6 +1,6 @@
 /* -*- c -*- */
 
-/* Copyright (C) 2012-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2012-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -40,6 +40,8 @@
 #include "ejudge/base64.h"
 #include "ejudge/ej_libzip.h"
 #include "ejudge/agent_client.h"
+#include "ejudge/random.h"
+#include "ejudge/run_props.h"
 
 #include "ejudge/xalloc.h"
 #include "ejudge/osdeps.h"
@@ -79,6 +81,12 @@ mirror_file(
         unsigned char *buf,
         int size,
         const unsigned char *mirror_dir);
+static void
+read_run_test_file(
+        const struct super_run_in_global_packet *srgp,
+        struct run_test_file *rtf,
+        const unsigned char *path,
+        int utf8_mode);
 
 static unsigned char*
 ej_size64_t_to_size(unsigned char *buf, size_t buf_size, ej_size64_t num)
@@ -154,6 +162,41 @@ need_base64(unsigned char *data, long long size)
 }
 
 static void
+make_file_content_2(
+        struct testing_report_file_content *fc,
+        const struct super_run_in_global_packet *srgp,
+        const struct run_test_file *rtf)
+{
+  if (!rtf->is_here) {
+    fc->size = -1;
+    fc->orig_size = -1;
+    fc->data = NULL;
+    fc->is_too_big = 0;
+    fc->is_base64 = 0;
+  } else if (rtf->is_too_long || rtf->is_too_wide) {
+    fc->size = rtf->stored_size;
+    fc->orig_size = rtf->orig_size;
+    fc->is_too_big = 1;
+    fc->is_base64 = rtf->is_base64;
+    if (rtf->data) {
+      fc->data = xmalloc(rtf->stored_size + 1);
+      memcpy(fc->data, rtf->data, rtf->stored_size);
+      fc->data[fc->size] = 0;
+    }
+  } else {
+    fc->size = rtf->stored_size;
+    fc->orig_size = rtf->orig_size;
+    fc->is_too_big = 0;
+    fc->is_base64 = rtf->is_base64;
+    if (rtf->data) {
+      fc->data = xmalloc(rtf->stored_size + 1);
+      memcpy(fc->data, rtf->data, rtf->stored_size);
+      fc->data[fc->size] = 0;
+    }
+  }
+}
+
+static __attribute__((unused))  void
 make_file_content(
         struct testing_report_file_content *fc,
         const struct super_run_in_global_packet *srgp,
@@ -208,13 +251,36 @@ static const unsigned int status_to_bit_map[] =
   [RUN_SYNC_ERR]            = RUN_SYNC_ERR_BIT,
 };
 
+static __attribute__((unused)) void
+print_run_test_file(
+        FILE *fout,
+        const unsigned char *title,
+        const struct run_test_file *rtf)
+{
+  fprintf(fout, "%s: { "
+          "\"orig_size\": %zd,"
+          "\"stored_size\": %zd,"
+          "\"is_here\":%d,"
+          "\"is_binary\":%d,"
+          "\"is_too_long\":%d,"
+          "\"is_too_wide\":%d,"
+          "\"is_fixed\":%d,"
+          "\"is_base64\":%d,"
+          "\"is_archived\":%d,"
+          "}\n",
+          title, rtf->orig_size, rtf->stored_size,
+          rtf->is_here, rtf->is_binary, rtf->is_too_long,
+          rtf->is_too_wide, rtf->is_fixed,
+          rtf->is_base64, rtf->is_archived);
+}
+
 static int
 generate_xml_report(
         const struct super_run_in_packet *srp,
         struct run_reply_packet *reply_pkt,
         const unsigned char *report_path,
         int total_tests,
-        const struct testinfo *tests,
+        const struct run_test_info *tests,
         int utf8_mode,
         int variant,
         int scores,
@@ -235,7 +301,9 @@ generate_xml_report(
         const unsigned char *valuer_errors,
         const unsigned char *cpu_model,
         const unsigned char *cpu_mhz,
-        const unsigned char *hostname)
+        const unsigned char *hostname,
+        int group_count,
+        int *group_scores)
 {
   int i;
   unsigned char *msg = 0;
@@ -342,7 +410,7 @@ generate_xml_report(
     for (i = 1; i < total_tests; ++i) {
       struct testing_report_test *trt = testing_report_test_alloc(i, tests[i].status);
       tr->tests[i - 1] = trt;
-      const struct testinfo *ti = &tests[i];
+      const struct run_test_info *ti = &tests[i];
       if (ti->status >= 0 && ti->status < (int) (sizeof(status_to_bit_map) / sizeof(status_to_bit_map[0]))) {
         verdict_bits |= status_to_bit_map[ti->status];
       }
@@ -394,8 +462,8 @@ generate_xml_report(
         trt->checker_token = xstrdup(ti->checker_token);
       }
       if ((ti->status == RUN_WRONG_ANSWER_ERR || ti->status == RUN_PRESENTATION_ERR || ti->status == RUN_OK)
-          && ti->chk_out_size > 0 && ti->chk_out && ti->chk_out[0]) {
-        trt->checker_comment = prepare_checker_comment(utf8_mode, ti->chk_out);
+          && ti->chk_out.data && ti->chk_out.data[0]) {
+        trt->checker_comment = prepare_checker_comment(utf8_mode, ti->chk_out.data);
       }
       if (srgp->enable_full_archive > 0) {
         if (ti->has_input_digest) {
@@ -412,15 +480,9 @@ generate_xml_report(
         }
       }
       if (srgp->enable_full_archive > 0) {
-        if (ti->output_size >= 0) {
-          trt->output_available = 1;
-        }
-        if (ti->error_size >= 0) {
-          trt->stderr_available = 1;
-        }
-        if (ti->chk_out_size >= 0) {
-          trt->checker_output_available = 1;
-        }
+        trt->output_available = ti->output.is_archived;
+        trt->stderr_available = ti->error.is_archived;
+        trt->checker_output_available = ti->chk_out.is_archived;
       }
       if (ti->args && strlen(ti->args) >= srgp->max_cmd_length) {
         trt->args_too_long = 1;
@@ -442,17 +504,33 @@ generate_xml_report(
         trt->args = xstrdup(ti->args);
       }
       if (srgp->enable_full_archive <= 0) {
-        make_file_content(&trt->input, srgp, ti->input, ti->input_size, utf8_mode);
-        make_file_content(&trt->output, srgp, ti->output, ti->output_size, utf8_mode);
-        make_file_content(&trt->correct, srgp, ti->correct, ti->correct_size, utf8_mode);
-        make_file_content(&trt->error, srgp, ti->error, ti->error_size, utf8_mode);
-        make_file_content(&trt->checker, srgp, ti->chk_out, ti->chk_out_size, utf8_mode);
-        make_file_content(&trt->test_checker, srgp, ti->test_checker, ti->test_checker_size, utf8_mode);
+        make_file_content_2(&trt->input, srgp, &ti->input);
+        make_file_content_2(&trt->output, srgp, &ti->output);
+        make_file_content_2(&trt->correct, srgp, &ti->correct);
+        make_file_content_2(&trt->error, srgp, &ti->error);
+        make_file_content_2(&trt->checker, srgp, &ti->chk_out);
+        make_file_content_2(&trt->test_checker, srgp, &ti->test_checker);
+
+        /*
+        char buf[64];
+        snprintf(buf, sizeof(buf), "RTF %d: ", i);
+        print_run_test_file(stderr, buf, &ti->output);
+        */
       }
     }
   }
   tr->verdict_bits = verdict_bits;
   reply_pkt->verdict_bits = verdict_bits;
+  if (srp->problem->enable_group_merge > 0) {
+    if (group_count >= 0 && group_count <= EJ_MAX_TEST_GROUP) {
+      tr->has_group_scores = 1;
+      tr->group_count = group_count;
+      if (group_count > 0) {
+        XCALLOC(tr->group_scores, group_count);
+        memcpy(tr->group_scores, group_scores, group_count * sizeof(group_scores[0]));
+      }
+    }
+  }
 
   if (srgp->bson_available && testing_report_bson_available()) {
     if (testing_report_to_file_bson(report_path, tr) < 0) {
@@ -538,31 +616,33 @@ append_msg_to_log(const unsigned char *path, const char *format, ...)
   }
 }
 
-static void
-chk_printf(struct testinfo *result, const char *format, ...)
+static __attribute__((format(printf, 2, 3))) void
+rtf_printf(struct run_test_file *rtf, const char *format, ...)
 {
   va_list args;
-  unsigned char buf[1024];
+  char *text_s = NULL;
+  size_t text_z = 0;
+  FILE *text_f = NULL;
 
-  va_start(args, format);
-  vsnprintf(buf, sizeof(buf), format, args);
-  va_end(args);
-
-  if (!result->chk_out) {
-    result->chk_out = xstrdup(buf);
-    result->chk_out_size = strlen(result->chk_out);
-  } else {
-    int len1 = strlen(result->chk_out);
-    int len2 = strlen(buf);
-    int len3 = len1 + len2;
-    unsigned char *str = (unsigned char*) xmalloc(len3 + 1);
-    memcpy(str, result->chk_out, len1);
-    memcpy(str + len1, buf, len2);
-    str[len3] = 0;
-    xfree(result->chk_out);
-    result->chk_out = str;
-    result->chk_out_size = len3;
+  text_f = open_memstream(&text_s, &text_z);
+  if (rtf->stored_size > 0 && rtf->data) {
+    fwrite_unlocked(rtf->data, 1, rtf->stored_size, text_f);
   }
+  va_start(args, format);
+  vfprintf(text_f, format, args);
+  va_end(args);
+  fclose(text_f); text_f = NULL;
+
+  free(rtf->data);
+  rtf->data = text_s; text_s = NULL;
+  rtf->stored_size = text_z;
+  rtf->orig_size = text_z;
+  rtf->is_here = 1;
+  rtf->is_binary = 0;
+  rtf->is_too_long = 0;
+  rtf->is_too_wide = 0;
+  rtf->is_fixed = 0;
+  rtf->is_base64 = 0;
 }
 
 static int
@@ -758,12 +838,15 @@ parse_valuer_score(
         int max_score,
         int valuer_sets_marked,
         int separate_user_score,
+        int enable_groups,
         int *p_reply_next_num,
         int *p_score,
         int *p_marked,
         int *p_user_status,
         int *p_user_score,
-        int *p_user_tests_passed)
+        int *p_user_tests_passed,
+        int *p_group_count,
+        int *p_group_scores)
 {
   if (p_marked) *p_marked = -1;
 
@@ -876,6 +959,32 @@ parse_valuer_score(
       goto invalid_reply;
     }
   }
+  if (enable_groups > 0) {
+    int v_group_count = -1;
+    if (sscanf(buf + idx, "%d%n", &v_group_count, &n) != 1) {
+      lineno = __LINE__;
+      goto invalid_reply;
+    }
+    idx += n;
+    if (v_group_count < 0 || v_group_count > EJ_MAX_TEST_GROUP) {
+      lineno = __LINE__;
+      goto invalid_reply;
+    }
+    if (p_group_count) {
+      *p_group_count = v_group_count;
+    }
+    for (int i = 0; i < v_group_count; ++i) {
+      int x = 0;
+      if (sscanf(buf + idx, "%d%n", &x, &n) != 1) {
+        lineno = __LINE__;
+        goto invalid_reply;
+      }
+      idx += n;
+      if (p_group_scores) {
+        p_group_scores[i] = x;
+      }
+    }
+  }
   if (buf[idx]) {
     lineno = __LINE__;
     goto invalid_reply;
@@ -905,11 +1014,14 @@ read_valuer_score(
         int max_score,
         int valuer_sets_marked,
         int separate_user_score,
+        int enable_groups,
         int *p_score,
         int *p_marked,
         int *p_user_status,
         int *p_user_score,
-        int *p_user_tests_passed)
+        int *p_user_tests_passed,
+        int *p_group_count,
+        int *p_group_scores)
 {
   char *score_buf = 0;
   size_t score_buf_size = 0;
@@ -926,11 +1038,46 @@ read_valuer_score(
 
   r = parse_valuer_score(log_path, score_buf, score_buf_size,
                          0, max_score, valuer_sets_marked, separate_user_score,
+                         enable_groups,
                          NULL, p_score, p_marked,
-                         p_user_status, p_user_score, p_user_tests_passed);
+                         p_user_status, p_user_score, p_user_tests_passed,
+                         p_group_count, p_group_scores);
 
   xfree(score_buf);
   return r;
+}
+
+static int
+read_env_file(tpTask tsk, const unsigned char *env_file)
+{
+  char *str = NULL;
+  size_t size = 0;
+  ssize_t r;
+  FILE *f = fopen(env_file, "r");
+  if (!f) {
+    err("read_env_file: open '%s' failed: %s", env_file, os_ErrorMsg());
+    return -1;
+  }
+  while ((r = getline(&str, &size, f)) >= 0) {
+    int len = strlen(str);
+    if (len != r) {
+      err("read_env_file: binary file '%s'", env_file);
+      continue;
+    }
+    while (len > 0 && isspace((unsigned char) str[len - 1])) --len;
+    str[len] = 0;
+    if (!len) continue;
+    char *eq = strchr(str, '=');
+    if (!eq) {
+      err("read_env_file: missing '=' in '%s'", env_file);
+      continue;
+    }
+    *eq = 0;
+    task_SetEnv(tsk, str, eq + 1);
+  }
+  free(str);
+  fclose(f);
+  return 0;
 }
 
 static void
@@ -1010,6 +1157,93 @@ setup_environment(
 }
 
 static void
+setup_ejudge_environment(
+        tpTask tsk,
+        const struct super_run_in_packet *srp,
+        int cur_test,
+        int test_max_score,
+        int output_only,
+        const unsigned char *src_path,
+        int exec_user_serial,
+        uint64_t test_random_value)
+{
+  const struct super_run_in_global_packet *srgp = srp->global;
+  const struct super_run_in_problem_packet *srpp = srp->problem;
+  unsigned char buf[64];
+
+  task_SetEnv(tsk, "EJUDGE", "1");
+  if (srpp->scoring_checker > 0) {
+    task_SetEnv(tsk, "EJUDGE_SCORING_CHECKER", "1");
+    if (srpp->enable_checker_token > 0) {
+      task_SetEnv(tsk, "EJUDGE_CHECKER_TOKEN", "1");
+    }
+    if (test_max_score >= 0) {
+      snprintf(buf, sizeof(buf), "%d", test_max_score);
+      task_SetEnv(tsk, "EJUDGE_MAX_SCORE", buf);
+    }
+  }
+  if (srgp->checker_locale && srgp->checker_locale[0]) {
+    task_SetEnv(tsk, "EJUDGE_LOCALE", srgp->checker_locale);
+  }
+  if (srgp->separate_user_score > 0 || output_only > 0) {
+    task_SetEnv(tsk, "EJUDGE_USER_SCORE", "1");
+  }
+  if (srpp->valuer_sets_marked > 0) {
+    task_SetEnv(tsk, "EJUDGE_MARKED", "1");
+  }
+  if (srpp->interactive_valuer > 0) {
+    task_SetEnv(tsk, "EJUDGE_INTERACTIVE", "1");
+  }
+  if (srgp->rejudge_flag > 0) {
+    task_SetEnv(tsk, "EJUDGE_REJUDGE", "1");
+  }
+  if (exec_user_serial > 0) {
+    sprintf(buf, "%d", exec_user_serial);
+    task_SetEnv(tsk, "EJUDGE_SUPER_RUN_SERIAL", buf);
+  }
+  if (test_random_value > 0) {
+    sprintf(buf, "%llx", (unsigned long long) test_random_value);
+    task_SetEnv(tsk, "EJUDGE_TEST_RANDOM_VALUE", buf);
+  }
+  if (srgp->testlib_mode > 0) {
+    task_SetEnv(tsk, "EJUDGE_TESTLIB_MODE", "1");
+  }
+  if (srgp->enable_container > 0) {
+    task_SetEnv(tsk, "EJUDGE_CONTAINER", "1");
+  } else if (srgp->suid_run > 0) {
+    task_SetEnv(tsk, "EJUDGE_SUID_RUN", "1");
+  }
+  if (srpp->enable_extended_info > 0) {
+    snprintf(buf, sizeof(buf), "%d", srgp->user_id);
+    task_SetEnv(tsk, "EJUDGE_USER_ID", buf);
+    snprintf(buf, sizeof(buf), "%d", srgp->contest_id);
+    task_SetEnv(tsk, "EJUDGE_CONTEST_ID", buf);
+    snprintf(buf, sizeof(buf), "%d", srgp->run_id);
+    task_SetEnv(tsk, "EJUDGE_RUN_ID", buf);
+    if (cur_test > 0) {
+      snprintf(buf, sizeof(buf), "%d", cur_test);
+      task_SetEnv(tsk, "EJUDGE_TEST_NUM", buf);
+    }
+    if (srgp->user_login) {
+      task_SetEnv(tsk, "EJUDGE_USER_LOGIN", srgp->user_login);
+    }
+    if (srgp->user_name) {
+      task_SetEnv(tsk, "EJUDGE_USER_NAME", srgp->user_name);
+    }
+    if (srpp->test_count > 0) {
+      snprintf(buf, sizeof(buf), "%d", srpp->test_count);
+      task_SetEnv(tsk, "EJUDGE_TEST_COUNT", buf);
+    }
+  }
+  if (srpp->enable_group_merge > 0) {
+    task_SetEnv(tsk, "EJUDGE_GROUP_MERGE", "1");
+  }
+  if (src_path) {
+    task_SetEnv(tsk, "EJUDGE_SOURCE_PATH", src_path);
+  }
+}
+
+static void
 read_log_file(const unsigned char *path, char **p_text)
 {
   char *stext = NULL;
@@ -1050,25 +1284,29 @@ invoke_valuer(
         const struct super_run_in_packet *srp,
         struct AgentClient *agent,
         const unsigned char *mirror_dir,
+        const unsigned char *valuer_cmd,
         int total_tests,
-        const struct testinfo *tests,
+        const struct run_test_info *tests,
         int cur_variant,
         int max_score,
+        int exec_user_serial,
         int *p_score,
         int *p_marked,
         int *p_user_status,
         int *p_user_score,
         int *p_user_tests_passed,
+        int *p_group_count,
+        int *p_group_scores,
         char **p_err_txt,
         char **p_cmt_txt,
-        char **p_jcmt_txt)
+        char **p_jcmt_txt,
+        const unsigned char *src_path)
 {
   path_t score_list;
   path_t score_res;
   path_t score_err;
   path_t score_cmt;
   path_t score_jcmt;
-  path_t valuer_cmd;
   FILE *f = 0;
   int i, retval = -1;
   tpTask tsk = 0;
@@ -1111,9 +1349,6 @@ invoke_valuer(
   }
   f = 0;
 
-  snprintf(valuer_cmd, sizeof(valuer_cmd), "%s", srpp->valuer_cmd);
-  mirror_file(agent, valuer_cmd, sizeof(valuer_cmd), mirror_dir);
-
   info("starting valuer: %s %s %s", valuer_cmd, score_cmt, score_jcmt);
 
   tsk = task_New();
@@ -1146,41 +1381,12 @@ invoke_valuer(
     task_SetRSSSize(tsk, srpp->checker_max_rss_size);
   }
   setup_environment(tsk, srpp->valuer_env, 0, NULL, 1);
-  if (srgp->separate_user_score > 0) {
-    task_SetEnv(tsk, "EJUDGE_USER_SCORE", "1");
-  }
-  if (srpp->valuer_sets_marked > 0) {
-    task_SetEnv(tsk, "EJUDGE_MARKED", "1");
-  }
-  if (srpp->interactive_valuer > 0) {
-    task_SetEnv(tsk, "EJUDGE_INTERACTIVE", "1");
-  }
-  task_SetEnv(tsk, "EJUDGE", "1");
-  if (srgp->checker_locale && srgp->checker_locale[0]) {
-    task_SetEnv(tsk, "EJUDGE_LOCALE", srgp->checker_locale);
-  }
-  if (srgp->rejudge_flag > 0) {
-    task_SetEnv(tsk, "EJUDGE_REJUDGE", "1");
-  }
-  if (srpp->enable_checker_token > 0) {
-    task_SetEnv(tsk, "EJUDGE_CHECKER_TOKEN", "1");
-  }
-  if (srpp->enable_extended_info > 0) {
-    unsigned char buf[64];
-    snprintf(buf, sizeof(buf), "%d", srgp->user_id);
-    task_SetEnv(tsk, "EJUDGE_USER_ID", buf);
-    snprintf(buf, sizeof(buf), "%d", srgp->contest_id);
-    task_SetEnv(tsk, "EJUDGE_CONTEST_ID", buf);
-    snprintf(buf, sizeof(buf), "%d", srgp->run_id);
-    task_SetEnv(tsk, "EJUDGE_RUN_ID", buf);
-    task_SetEnv(tsk, "EJUDGE_USER_LOGIN", srgp->user_login);
-    task_SetEnv(tsk, "EJUDGE_USER_NAME", srgp->user_name);
-    if (srpp->test_count > 0) {
-      snprintf(buf, sizeof(buf), "%d", srpp->test_count);
-      task_SetEnv(tsk, "EJUDGE_TEST_COUNT", buf);
-    }
-  }
-
+  setup_ejudge_environment(tsk, srp,
+                           0 /* cur_test*/,
+                           -1 /* test_max_score */,
+                           0 /* output_only */,
+                           src_path, exec_user_serial,
+                           0 /* test_random_value */);
   task_EnableAllSignals(tsk);
 
   task_PrintArgs(tsk);
@@ -1209,7 +1415,9 @@ invoke_valuer(
 
   if (read_valuer_score(score_res, score_err, "valuer", max_score,
                         srpp->valuer_sets_marked, srgp->separate_user_score,
-                        p_score, p_marked, p_user_status, p_user_score, p_user_tests_passed) < 0) {
+                        srpp->enable_group_merge > 0,
+                        p_score, p_marked, p_user_status, p_user_score, p_user_tests_passed,
+                        p_group_count, p_group_scores) < 0) {
     goto cleanup;
   }
   read_log_file(score_cmt, p_cmt_txt);
@@ -1239,19 +1447,17 @@ start_interactive_valuer(
         const struct super_run_in_packet *srp,
         struct AgentClient *agent,
         const unsigned char *mirror_dir,
+        const unsigned char *valuer_cmd,
         const unsigned char *valuer_err_file,
         const unsigned char *valuer_cmt_file,
         const unsigned char *valuer_jcmt_file,
         int stdin_fd,
-        int stdout_fd)
+        int stdout_fd,
+        const unsigned char *src_path,
+        int exec_user_serial)
 {
-  const struct super_run_in_global_packet *srgp = srp->global;
   const struct super_run_in_problem_packet *srpp = srp->problem;
-  path_t valuer_cmd;
   tpTask tsk = NULL;
-
-  snprintf(valuer_cmd, sizeof(valuer_cmd), "%s", srpp->valuer_cmd);
-  mirror_file(agent, valuer_cmd, sizeof(valuer_cmd), mirror_dir);
 
   info("starting interactive valuer: %s %s %s",
        valuer_cmd, valuer_cmt_file, valuer_jcmt_file);
@@ -1297,37 +1503,13 @@ start_interactive_valuer(
     task_SetRSSSize(tsk, srpp->checker_max_rss_size);
   }
   setup_environment(tsk, srpp->valuer_env, 0, NULL, 1);
-  if (srgp->separate_user_score > 0) {
-    task_SetEnv(tsk, "EJUDGE_USER_SCORE", "1");
-  }
-  if (srpp->valuer_sets_marked > 0) {
-    task_SetEnv(tsk, "EJUDGE_MARKED", "1");
-  }
-  if (srpp->interactive_valuer > 0) {
-    task_SetEnv(tsk, "EJUDGE_INTERACTIVE", "1");
-  }
-  task_SetEnv(tsk, "EJUDGE", "1");
-  if (srgp->checker_locale && srgp->checker_locale[0]) {
-    task_SetEnv(tsk, "EJUDGE_LOCALE", srgp->checker_locale);
-  }
-  if (srgp->rejudge_flag > 0) {
-    task_SetEnv(tsk, "EJUDGE_REJUDGE", "1");
-  }
-  if (srpp->enable_extended_info > 0) {
-    unsigned char buf[64];
-    snprintf(buf, sizeof(buf), "%d", srgp->user_id);
-    task_SetEnv(tsk, "EJUDGE_USER_ID", buf);
-    snprintf(buf, sizeof(buf), "%d", srgp->contest_id);
-    task_SetEnv(tsk, "EJUDGE_CONTEST_ID", buf);
-    snprintf(buf, sizeof(buf), "%d", srgp->run_id);
-    task_SetEnv(tsk, "EJUDGE_RUN_ID", buf);
-    task_SetEnv(tsk, "EJUDGE_USER_LOGIN", srgp->user_login);
-    task_SetEnv(tsk, "EJUDGE_USER_NAME", srgp->user_name);
-    if (srpp->test_count > 0) {
-      snprintf(buf, sizeof(buf), "%d", srpp->test_count);
-      task_SetEnv(tsk, "EJUDGE_TEST_COUNT", buf);
-    }
-  }
+  setup_ejudge_environment(tsk, srp,
+                           0 /* cur_test */,
+                           -1 /* test_max_score */,
+                           0 /* output_only */,
+                           src_path,
+                           exec_user_serial,
+                           0 /* test_random_value */);
   //task_EnableAllSignals(tsk);
 
   task_PrintArgs(tsk);
@@ -1613,7 +1795,7 @@ invoke_nwrun(
         const unsigned char *test_src_path,
         const unsigned char *test_basename,
         long time_limit_millis,
-        struct testinfo *result,
+        struct run_test_info *result,
         const unsigned char *check_dir)
 {
   path_t full_spool_dir;
@@ -1661,7 +1843,7 @@ invoke_nwrun(
       snprintf(full_spool_dir, sizeof(full_spool_dir), "%s/%s", EJUDGE_CONTESTS_HOME_DIR, tst->nwrun_spool_dir);
 #else
       err("cannot initialize full_spool_dir");
-      chk_printf(result, "full_spool_dir is invalid\n");
+      rtf_printf(&result->chk_out, "full_spool_dir is invalid\n");
       goto fail;
 #endif
     }
@@ -1670,7 +1852,7 @@ invoke_nwrun(
   snprintf(queue_path, sizeof(queue_path), "%s/queue",
            full_spool_dir);
   if (make_all_dir(queue_path, 0777) < 0) {
-    chk_printf(result, "make_all_dir(%s) failed\n", queue_path);
+    rtf_printf(&result->chk_out, "make_all_dir(%s) failed\n", queue_path);
     goto fail;
   }
 
@@ -1684,7 +1866,7 @@ invoke_nwrun(
   snprintf(full_in_path, sizeof(full_in_path),
            "%s/in/%s_%s", queue_path, os_NodeName(), pkt_name);
   if (make_dir(full_in_path, 0777) < 0) {
-    chk_printf(result, "make_dir(%s) failed\n", full_in_path);
+    rtf_printf(&result->chk_out, "make_dir(%s) failed\n", full_in_path);
     goto fail;
   }
 
@@ -1694,7 +1876,7 @@ invoke_nwrun(
   snprintf(tmp_in_path, sizeof(tmp_in_path), "%s/%s",
            full_in_path, exe_basename);
   if (make_hardlink(exe_src_path, tmp_in_path) < 0) {
-    chk_printf(result, "copy(%s, %s) failed\n", exe_src_path, tmp_in_path);
+    rtf_printf(&result->chk_out, "copy(%s, %s) failed\n", exe_src_path, tmp_in_path);
     goto fail;
   }
 
@@ -1702,7 +1884,7 @@ invoke_nwrun(
   snprintf(tmp_in_path, sizeof(tmp_in_path), "%s/%s",
            full_in_path, test_basename);
   if (make_hardlink(test_src_path, tmp_in_path) < 0) {
-    chk_printf(result, "copy(%s, %s) failed\n", test_src_path, tmp_in_path);
+    rtf_printf(&result->chk_out, "copy(%s, %s) failed\n", test_src_path, tmp_in_path);
     goto fail;
   }
 
@@ -1720,7 +1902,7 @@ invoke_nwrun(
   snprintf(tmp_in_path, sizeof(tmp_in_path), "%s/packet.cfg", full_in_path);
   f = fopen(tmp_in_path, "w");
   if (!f) {
-    chk_printf(result, "fopen(%s) failed\n", tmp_in_path);
+    rtf_printf(&result->chk_out, "fopen(%s) failed\n", tmp_in_path);
     goto fail;
   }
 
@@ -1784,7 +1966,7 @@ invoke_nwrun(
 
   fflush(f);
   if (ferror(f)) {
-    chk_printf(result, "output error to %s\n", tmp_in_path);
+    rtf_printf(&result->chk_out, "output error to %s\n", tmp_in_path);
     goto fail;
   }
   fclose(f); f = 0;
@@ -1797,7 +1979,7 @@ invoke_nwrun(
   snprintf(full_dir_path, sizeof(full_dir_path),
            "%s/dir/%s", queue_path, pkt_name);
   if (rename(full_in_path, full_dir_path) < 0) {
-    chk_printf(result, "rename(%s, %s) failed\n", full_in_path, full_dir_path);
+    rtf_printf(&result->chk_out, "rename(%s, %s) failed\n", full_in_path, full_dir_path);
     goto fail;
   }
 
@@ -1816,7 +1998,7 @@ invoke_nwrun(
   while (1) {
     r = scan_dir(result_path, result_pkt_name, sizeof(result_pkt_name), 0);
     if (r < 0) {
-      chk_printf(result, "scan_dir(%s) failed\n", result_path);
+      rtf_printf(&result->chk_out, "scan_dir(%s) failed\n", result_path);
       goto fail;
     }
 
@@ -1826,7 +2008,7 @@ invoke_nwrun(
     //fprintf(stderr, "time: %lld\n", cur_time_ms);
 
     if (cur_time_ms >= wait_end_time) {
-      chk_printf(result, "invoke_nwrun: timeout!\n");
+      rtf_printf(&result->chk_out, "invoke_nwrun: timeout!\n");
       goto fail;
     }
 
@@ -1844,7 +2026,7 @@ invoke_nwrun(
   if (rename(dir_entry_packet, out_entry_packet) < 0) {
     err("rename(%s, %s) failed: %s", dir_entry_packet, out_entry_packet,
         os_ErrorMsg());
-    chk_printf(result, "rename(%s, %s) failed", dir_entry_packet,
+    rtf_printf(&result->chk_out, "rename(%s, %s) failed", dir_entry_packet,
                out_entry_packet);
     goto fail;
   }
@@ -1854,33 +2036,33 @@ invoke_nwrun(
            out_entry_packet);
   generic_out_packet = nwrun_out_packet_parse(tmp_in_path, &out_packet);
   if (!generic_out_packet) {
-    chk_printf(result, "out_packet parse failed for %s\n", tmp_in_path);
+    rtf_printf(&result->chk_out, "out_packet parse failed for %s\n", tmp_in_path);
     goto fail;
   }
 
   // match output and input data
   if (out_packet->contest_id != srgp->contest_id) {
-    chk_printf(result, "contest_id mismatch: %d, %d\n",
+    rtf_printf(&result->chk_out, "contest_id mismatch: %d, %d\n",
                out_packet->contest_id, srgp->contest_id);
     goto restart_waiting;
   }
   if (out_packet->run_id - 1 != srgp->run_id) {
-    chk_printf(result, "run_id mismatch: %d, %d\n",
+    rtf_printf(&result->chk_out, "run_id mismatch: %d, %d\n",
                out_packet->run_id, srgp->run_id);
     goto restart_waiting;
   }
   if (out_packet->prob_id != srpp->id) {
-    chk_printf(result, "prob_id mismatch: %d, %d\n",
+    rtf_printf(&result->chk_out, "prob_id mismatch: %d, %d\n",
                out_packet->prob_id, srpp->id);
     goto restart_waiting;
   }
   if (out_packet->test_num != test_num) {
-    chk_printf(result, "test_num mismatch: %d, %d\n",
+    rtf_printf(&result->chk_out, "test_num mismatch: %d, %d\n",
                out_packet->test_num, test_num);
     goto restart_waiting;
   }
   if (out_packet->judge_id != srgp->judge_id) {
-    chk_printf(result, "judge_id mismatch: %d, %d\n",
+    rtf_printf(&result->chk_out, "judge_id mismatch: %d, %d\n",
                out_packet->judge_id, srgp->judge_id);
     goto restart_waiting;
   }
@@ -1895,12 +2077,12 @@ invoke_nwrun(
       && result->status != RUN_MEM_LIMIT_ERR
       && result->status != RUN_SECURITY_ERR
       && result->status != RUN_SYNC_ERR) {
-    chk_printf(result, "invalid status %d\n", result->status);
+    rtf_printf(&result->chk_out, "invalid status %d\n", result->status);
     goto fail;
   }
 
   if (result->status != RUN_OK && out_packet->comment[0]) {
-    chk_printf(result, "nwrun: %s\n", out_packet->comment);
+    rtf_printf(&result->chk_out, "nwrun: %s\n", out_packet->comment);
   }
 
   if (out_packet->is_signaled) {
@@ -1926,17 +2108,8 @@ invoke_nwrun(
   if (srgp->enable_full_archive > 0) {
     filehash_get(test_src_path, result->input_digest);
     result->has_input_digest = 1;
-  } else if (srpp->binary_input <= 0) {
-    file_size = generic_file_size(0, test_src_path, 0);
-    if (file_size >= 0) {
-      result->input_size = file_size;
-      if (srgp->max_file_length > 0 && file_size <= srgp->max_file_length) {
-        if (generic_read_file(&result->input, 0, 0, 0, 0, test_src_path, "")<0){
-          chk_printf(result, "generic_read_file(%s) failed\n", test_src_path);
-          goto fail;
-        }
-      }
-    }
+  } else {
+    read_run_test_file(srgp, &result->input, test_src_path, 0);
   }
 
   /* handle the program output */
@@ -1949,49 +2122,34 @@ invoke_nwrun(
       snprintf(check_output_path, sizeof(check_output_path),
                "%s/%s", check_dir, srpp->output_file);
       if (fast_copy_file(packet_output_path, check_output_path) < 0) {
-        chk_printf(result, "copy_file(%s, %s) failed\n",
+        rtf_printf(&result->chk_out, "copy_file(%s, %s) failed\n",
                    packet_output_path, check_output_path);
         goto fail;
       }
     }
 
-    result->output_size = out_packet->output_file_orig_size;
-    if (srgp->enable_full_archive <= 0
-        && srpp->binary_input <= 0
-        && srgp->max_file_length > 0
-        && result->output_size <= srgp->max_file_length) {
-      if (generic_read_file(&result->output,0,0,0,0,packet_output_path,"")<0) {
-        chk_printf(result, "generic_read_file(%s) failed\n",
-                   packet_output_path);
-        goto fail;
-      }
-    }
-
+    read_run_test_file(srgp, &result->output, packet_output_path, 0);
     if (far) {
       snprintf(arch_entry_name, sizeof(arch_entry_name), "%06d.o", test_num);
       full_archive_append_file(far, arch_entry_name, 0, packet_output_path);
     }
   } else if (out_packet->output_file_existed > 0) {
-    chk_printf(result, "output file is too big\n");
+    rtf_printf(&result->chk_out, "output file is too big\n");
   }
 
   /* handle the program error file */
   if (out_packet->error_file_existed > 0) {
     snprintf(packet_error_path, sizeof(packet_error_path),
              "%s/%s", out_entry_packet, error_file_name);
-    result->error_size = out_packet->error_file_size;
-    if (srgp->enable_full_archive <= 0
-        && srgp->max_file_length > 0
-        && result->error_size <= srgp->max_file_length) {
-      if (generic_read_file(&result->error,0,0,0,0,packet_error_path,"") < 0) {
-        chk_printf(result, "generic_read_file(%s) failed\n",
-                   packet_error_path);
-        goto fail;
-      }
-    }
     if (far) {
-      snprintf(arch_entry_name, sizeof(arch_entry_name), "%06d.e", test_num);
-      full_archive_append_file(far, arch_entry_name, 0, packet_error_path);
+      file_size = generic_file_size(0, packet_error_path, 0);
+      if (file_size >= 0) {
+        result->error.is_archived = 1;
+        snprintf(arch_entry_name, sizeof(arch_entry_name), "%06d.e", test_num);
+        full_archive_append_file(far, arch_entry_name, 0, packet_error_path);
+      }
+    } else {
+      read_run_test_file(srgp, &result->error, packet_error_path, 0);
     }
   }
 
@@ -2046,7 +2204,8 @@ invoke_test_checker_cmd(
         const struct super_run_in_packet *srp,
         const unsigned char *work_dir,
         const unsigned char *input_file,
-        const unsigned char *log_path)
+        const unsigned char *log_path,
+        int exec_user_serial)
 {
   const struct super_run_in_problem_packet *srpp = srp->problem;
   tpTask tsk = NULL;
@@ -2078,6 +2237,11 @@ invoke_test_checker_cmd(
   }
   if (srpp->checker_max_rss_size > 0) {
     task_SetRSSSize(tsk, srpp->checker_max_rss_size);
+  }
+  if (exec_user_serial > 0) {
+    char buf[32];
+    sprintf(buf, "%d", exec_user_serial);
+    task_SetEnv(tsk, "EJUDGE_SUPER_RUN_SERIAL", buf);
   }
 
   if (task_Start(tsk) < 0) {
@@ -2111,20 +2275,121 @@ invoke_test_checker_cmd(
 }
 
 static int
+invoke_test_generator_cmd(
+        const struct super_run_in_packet *srp,
+        const unsigned char *test_generator_cmd,
+        const unsigned char *work_dir,
+        const unsigned char *src_path,
+        const unsigned char *log_path,
+        int exec_user_serial)
+{
+  const struct super_run_in_global_packet *srgp = srp->global;
+  const struct super_run_in_problem_packet *srpp = srp->problem;
+  tpTask tsk = NULL;
+
+  tsk = task_New();
+  task_AddArg(tsk, test_generator_cmd);
+  task_SetPathAsArg0(tsk);
+  task_EnableAllSignals(tsk);
+  if (work_dir) task_SetWorkingDir(tsk, work_dir);
+  task_SetRedir(tsk, 0, TSR_FILE, "/dev/null", TSK_READ, 0);
+  task_SetRedir(tsk, 1, TSR_FILE, log_path, TSK_APPEND, TSK_FULL_RW);
+  task_SetRedir(tsk, 2, TSR_FILE, log_path, TSK_APPEND, TSK_FULL_RW);
+  if (srpp->test_generator_env) {
+    for (int i = 0; srpp->test_generator_env[i]; ++i)
+      task_PutEnv(tsk, srpp->test_generator_env[i]);
+  }
+  if (srpp->checker_real_time_limit_ms > 0) {
+    task_SetMaxRealTimeMillis(tsk, srpp->checker_real_time_limit_ms);
+  }
+  if (srpp->checker_time_limit_ms > 0) {
+    task_SetMaxTimeMillis(tsk, srpp->checker_time_limit_ms);
+  }
+  if (srpp->checker_max_stack_size > 0) {
+    task_SetStackSize(tsk, srpp->checker_max_stack_size);
+  }
+  if (srpp->checker_max_vm_size > 0) {
+    task_SetVMSize(tsk, srpp->checker_max_vm_size);
+  }
+  if (srpp->checker_max_rss_size > 0) {
+    task_SetRSSSize(tsk, srpp->checker_max_rss_size);
+  }
+  task_SetEnv(tsk, "EJUDGE", "1");
+  if (srgp->checker_locale && srgp->checker_locale[0]) {
+    task_SetEnv(tsk, "EJUDGE_LOCALE", srgp->checker_locale);
+  }
+  if (srgp->testlib_mode > 0) {
+    task_SetEnv(tsk, "EJUDGE_TESTLIB_MODE", "1");
+  }
+  if (exec_user_serial > 0) {
+    char buf[32];
+    sprintf(buf, "%d", exec_user_serial);
+    task_SetEnv(tsk, "EJUDGE_SUPER_RUN_SERIAL", buf);
+  }
+  if (srpp->enable_extended_info > 0) {
+    unsigned char buf[64];
+    snprintf(buf, sizeof(buf), "%d", srgp->user_id);
+    task_SetEnv(tsk, "EJUDGE_USER_ID", buf);
+    snprintf(buf, sizeof(buf), "%d", srgp->contest_id);
+    task_SetEnv(tsk, "EJUDGE_CONTEST_ID", buf);
+    snprintf(buf, sizeof(buf), "%d", srgp->run_id);
+    task_SetEnv(tsk, "EJUDGE_RUN_ID", buf);
+    task_SetEnv(tsk, "EJUDGE_USER_LOGIN", srgp->user_login);
+    task_SetEnv(tsk, "EJUDGE_USER_NAME", srgp->user_name);
+  }
+  if (src_path) {
+    task_SetEnv(tsk, "EJUDGE_SOURCE_PATH", src_path);
+  }
+
+  if (task_Start(tsk) < 0) {
+    append_msg_to_log(log_path, "failed to start test generator %s", srpp->test_generator_cmd);
+    task_Delete(tsk);
+    return RUN_CHECK_FAILED;
+  }
+
+  task_Wait(tsk);
+  if (task_IsTimeout(tsk)) {
+    append_msg_to_log(log_path, "test generator %s time-out", srpp->test_generator_cmd);
+    task_Delete(tsk);
+    return RUN_CHECK_FAILED;
+  }
+
+  if (task_Status(tsk) == TSK_SIGNALED) {
+    append_msg_to_log(log_path, "test generator %s is terminated by signal %d", srpp->test_generator_cmd, task_TermSignal(tsk));
+    task_Delete(tsk);
+    return RUN_CHECK_FAILED;
+  }
+
+  if (task_ExitCode(tsk) != 0) {
+    append_msg_to_log(log_path, "test generator %s failed with code %d", srpp->test_generator_cmd, task_ExitCode(tsk));
+    task_Delete(tsk);
+    return RUN_CHECK_FAILED;
+  }
+
+  task_Delete(tsk);
+  return 0;
+}
+
+static int
 invoke_init_cmd(
-        const struct super_run_in_problem_packet *srpp,
+        const struct super_run_in_packet *srp,
         const unsigned char *subcommand,
         const unsigned char *test_src_path,
         const unsigned char *corr_src_path,
         const unsigned char *info_src_path,
         const unsigned char *working_dir,
         const unsigned char *check_out_path,
-        testinfo_t *ti)
+        testinfo_t *ti,
+        const unsigned char *src_path,
+        int cur_test,
+        int exec_user_serial,
+        uint64_t test_random_value)
 {
   tpTask tsk = NULL;
   int status = 0;
   int env_u = 0;
   char **env_v = NULL;
+  const struct super_run_in_problem_packet *srpp = srp->problem;
 
   if (ti) {
     env_u = ti->init_env.u;
@@ -2150,6 +2415,14 @@ invoke_init_cmd(
     task_SetWorkingDir(tsk, working_dir);
   }
   setup_environment(tsk, srpp->init_env, env_u, env_v, 1);
+  setup_ejudge_environment(tsk,
+                           srp,
+                           cur_test,
+                           -1, /* test_max_score */
+                           0, /* output_only */
+                           src_path,
+                           exec_user_serial,
+                           test_random_value);
   task_SetRedir(tsk, 0, TSR_FILE, "/dev/null", TSK_READ);
   task_SetRedir(tsk, 1, TSR_FILE, check_out_path, TSK_APPEND, TSK_FULL_RW);
   task_SetRedir(tsk, 2, TSR_DUP, 1);
@@ -2225,7 +2498,7 @@ cleanup:
   return status;
 }
 
-static tpTask
+static __attribute__((unused)) tpTask
 invoke_interactor(
         const unsigned char *interactor_cmd,
         const unsigned char *test_src_path,
@@ -2239,31 +2512,18 @@ invoke_interactor(
         int stdout_fd,
         int control_fd,
         int program_pid,
-        const struct super_run_in_global_packet *srgp,
-        const struct super_run_in_problem_packet *srpp,
-        int cur_test)
-	__attribute__((unused)); // on Windows
-static tpTask
-invoke_interactor(
-        const unsigned char *interactor_cmd,
-        const unsigned char *test_src_path,
-        const unsigned char *output_path,
-        const unsigned char *corr_src_path,
-        const unsigned char *info_src_path,
-        const unsigned char *working_dir,
-        const unsigned char *check_out_path,
-        struct testinfo_struct *ti,
-        int stdin_fd,
-        int stdout_fd,
-        int control_fd,
-        int program_pid,
-        const struct super_run_in_global_packet *srgp,
-        const struct super_run_in_problem_packet *srpp,
-        int cur_test)
+        const struct super_run_in_packet *srp,
+        int cur_test,
+        const unsigned char *src_path,
+        int exec_user_serial,
+        uint64_t test_random_value)
 {
   tpTask tsk_int = NULL;
   int env_u = 0;
   char **env_v = NULL;
+
+  const struct super_run_in_global_packet *srgp = srp->global;
+  const struct super_run_in_problem_packet *srpp = srp->problem;
 
   if (ti) {
     env_u = ti->interactor_env.u;
@@ -2288,43 +2548,22 @@ invoke_interactor(
   task_SetPathAsArg0(tsk_int);
   task_SetWorkingDir(tsk_int, working_dir);
   setup_environment(tsk_int, srpp->interactor_env, env_u, env_v, 1);
-  task_SetEnv(tsk_int, "EJUDGE", "1");
-  task_SetRedir(tsk_int, 0, TSR_DUP, stdin_fd);
-  task_SetRedir(tsk_int, 1, TSR_DUP, stdout_fd);
-  task_SetRedir(tsk_int, 2, TSR_FILE, check_out_path, TSK_APPEND, TSK_FULL_RW);
-  if (srgp->checker_locale && srgp->checker_locale[0]) {
-    task_SetEnv(tsk_int, "EJUDGE_LOCALE", srgp->checker_locale);
-  }
-  if (srgp->enable_container > 0) {
-    task_SetEnv(tsk_int, "EJUDGE_CONTAINER", "1");
-  } else if (srgp->suid_run > 0) {
-    task_SetEnv(tsk_int, "EJUDGE_SUID_RUN", "1");
-  }
-  if (srgp->testlib_mode > 0) {
-    task_SetEnv(tsk_int, "EJUDGE_TESTLIB_MODE", "1");
-  }
-  if (srpp->enable_extended_info > 0) {
-    unsigned char buf[64];
-    snprintf(buf, sizeof(buf), "%d", srgp->user_id);
-    task_SetEnv(tsk_int, "EJUDGE_USER_ID", buf);
-    snprintf(buf, sizeof(buf), "%d", srgp->contest_id);
-    task_SetEnv(tsk_int, "EJUDGE_CONTEST_ID", buf);
-    snprintf(buf, sizeof(buf), "%d", srgp->run_id);
-    task_SetEnv(tsk_int, "EJUDGE_RUN_ID", buf);
-    snprintf(buf, sizeof(buf), "%d", cur_test);
-    task_SetEnv(tsk_int, "EJUDGE_TEST_NUM", buf);
-    task_SetEnv(tsk_int, "EJUDGE_USER_LOGIN", srgp->user_login);
-    task_SetEnv(tsk_int, "EJUDGE_USER_NAME", srgp->user_name);
-    if (srpp->test_count > 0) {
-      snprintf(buf, sizeof(buf), "%d", srpp->test_count);
-      task_SetEnv(tsk_int, "EJUDGE_TEST_COUNT", buf);
-    }
-  }
+  setup_ejudge_environment(tsk_int,
+                           srp,
+                           cur_test,
+                           -1, /* test_max_score */
+                           0, /* output_only */
+                           src_path,
+                           exec_user_serial,
+                           test_random_value);
   if (control_fd >= 0) {
     unsigned char buf[64];
     snprintf(buf, sizeof(buf), "%d", control_fd);
     task_SetEnv(tsk_int, "EJUDGE_CONTROL_FD", buf);
   }
+  task_SetRedir(tsk_int, 0, TSR_DUP, stdin_fd);
+  task_SetRedir(tsk_int, 1, TSR_DUP, stdout_fd);
+  task_SetRedir(tsk_int, 2, TSR_FILE, check_out_path, TSK_APPEND, TSK_FULL_RW);
   task_EnableAllSignals(tsk_int);
   task_IgnoreSIGPIPE(tsk_int);
   if (srpp->interactor_time_limit_ms > 0) {
@@ -2424,10 +2663,9 @@ report_args_and_env(testinfo_t *ti)
 
 static int
 invoke_checker(
-        const struct super_run_in_global_packet *srgp,
-        const struct super_run_in_problem_packet *srpp,
+        const struct super_run_in_packet *srp,
         int cur_test,
-        struct testinfo *cur_info,
+        struct run_test_info *cur_info,
         const unsigned char *check_cmd,
         const unsigned char *test_src,
         const unsigned char *output_path,
@@ -2441,7 +2679,10 @@ invoke_checker(
         testinfo_t *ti,
         int test_score_count,
         const int *test_score_val,
-        int output_only)
+        int output_only,
+        const unsigned char *src_path,
+        int exec_user_serial,
+        uint64_t test_random_value)
 {
   tpTask tsk = NULL;
   int status = RUN_CHECK_FAILED;
@@ -2450,6 +2691,8 @@ invoke_checker(
   int env_u = 0;
   char **env_v = 0;
   int user_score_mode = 0;
+  const struct super_run_in_global_packet *srgp = srp->global;
+  const struct super_run_in_problem_packet *srpp = srp->problem;
 
   if (ti) {
     env_u = ti->checker_env.u;
@@ -2521,39 +2764,16 @@ invoke_checker(
     abort();
   }
   setup_environment(tsk, srpp->checker_env, env_u, env_v, 1);
-  if (srpp->scoring_checker > 0) {
-    task_SetEnv(tsk, "EJUDGE_SCORING_CHECKER", "1");
-    if (srpp->enable_checker_token > 0) {
-      task_SetEnv(tsk, "EJUDGE_CHECKER_TOKEN", "1");
-    }
-    unsigned char buf[64];
-    snprintf(buf, sizeof(buf), "%d", test_max_score);
-    task_SetEnv(tsk, "EJUDGE_MAX_SCORE", buf);
-  }
-  task_SetEnv(tsk, "EJUDGE", "1");
-  if (srgp->checker_locale && srgp->checker_locale[0]) {
-    task_SetEnv(tsk, "EJUDGE_LOCALE", srgp->checker_locale);
-  }
+  setup_ejudge_environment(tsk,
+                           srp,
+                           cur_test,
+                           test_max_score,
+                           output_only,
+                           src_path,
+                           exec_user_serial,
+                           test_random_value);
   if (srgp->separate_user_score > 0 && output_only > 0) {
-    task_SetEnv(tsk, "EJUDGE_USER_SCORE", "1");
     user_score_mode = 1;
-  }
-  if (srpp->enable_extended_info > 0) {
-    unsigned char buf[64];
-    snprintf(buf, sizeof(buf), "%d", srgp->user_id);
-    task_SetEnv(tsk, "EJUDGE_USER_ID", buf);
-    snprintf(buf, sizeof(buf), "%d", srgp->contest_id);
-    task_SetEnv(tsk, "EJUDGE_CONTEST_ID", buf);
-    snprintf(buf, sizeof(buf), "%d", srgp->run_id);
-    task_SetEnv(tsk, "EJUDGE_RUN_ID", buf);
-    snprintf(buf, sizeof(buf), "%d", cur_test);
-    task_SetEnv(tsk, "EJUDGE_TEST_NUM", buf);
-    task_SetEnv(tsk, "EJUDGE_USER_LOGIN", srgp->user_login);
-    task_SetEnv(tsk, "EJUDGE_USER_NAME", srgp->user_name);
-    if (srpp->test_count > 0) {
-      snprintf(buf, sizeof(buf), "%d", srpp->test_count);
-      task_SetEnv(tsk, "EJUDGE_TEST_COUNT", buf);
-    }
   }
   task_EnableAllSignals(tsk);
 
@@ -2671,6 +2891,110 @@ cleanup:
   return status;
 }
 
+static int
+invoke_clean_up_cmd(
+        const struct super_run_in_packet *srp,
+        const unsigned char *working_dir,
+        const unsigned char *check_out_path,
+        const unsigned char *src_path,
+        int cur_test,
+        int exec_user_serial,
+        uint64_t test_random_value)
+{
+  const struct super_run_in_global_packet *srgp = srp->global;
+  const struct super_run_in_problem_packet *srpp = srp->problem;
+  tpTask tsk = NULL;
+  unsigned char start_path[PATH_MAX];
+  __attribute__((unused)) int _;
+  unsigned char *start_ptr = NULL;
+  int status = 0;
+
+  if (!srgp->clean_up_cmd || !srgp->clean_up_cmd[0]) {
+    return 0;
+  }
+
+  if (os_IsAbsolutePath(srgp->clean_up_cmd)) {
+    start_ptr = srgp->clean_up_cmd;
+  } else {
+    _ = snprintf(start_path, sizeof(start_path), "%s/lang/%s",
+                 EJUDGE_SCRIPT_DIR, srgp->clean_up_cmd);
+    start_ptr = start_path;
+  }
+
+  tsk = task_New();
+  task_AddArg(tsk, start_ptr);
+  task_SetPathAsArg0(tsk);
+  if (working_dir && *working_dir) {
+    task_SetWorkingDir(tsk, working_dir);
+  }
+  setup_environment(tsk, srpp->init_env, 0, NULL, 1);
+  setup_ejudge_environment(tsk,
+                           srp,
+                           cur_test,
+                           -1,
+                           0,
+                           src_path,
+                           exec_user_serial,
+                           test_random_value);
+  if (srgp->clean_up_env_file && *srgp->clean_up_env_file) {
+    read_env_file(tsk, srgp->clean_up_env_file);
+  }
+  task_SetRedir(tsk, 0, TSR_FILE, "/dev/null", TSK_READ);
+  task_SetRedir(tsk, 1, TSR_FILE, check_out_path, TSK_APPEND, TSK_FULL_RW);
+  task_SetRedir(tsk, 2, TSR_DUP, 1);
+  task_EnableAllSignals(tsk);
+  if (srpp->checker_real_time_limit_ms > 0) {
+    task_SetMaxRealTimeMillis(tsk, srpp->checker_real_time_limit_ms);
+  }
+  if (srpp->checker_time_limit_ms > 0) {
+    task_SetMaxTimeMillis(tsk, srpp->checker_time_limit_ms);
+  }
+  if (srpp->checker_max_stack_size > 0) {
+    task_SetStackSize(tsk, srpp->checker_max_stack_size);
+  }
+  if (srpp->checker_max_vm_size > 0) {
+    task_SetVMSize(tsk, srpp->checker_max_vm_size);
+  }
+  if (srpp->checker_max_rss_size > 0) {
+    task_SetRSSSize(tsk, srpp->checker_max_rss_size);
+  }
+
+  if (task_Start(tsk) < 0) {
+    append_msg_to_log(check_out_path, "failed to start clean_up_cmd %s",
+                      start_ptr);
+    status = RUN_CHECK_FAILED;
+    goto cleanup;
+  }
+  task_Wait(tsk);
+  if (task_IsTimeout(tsk)) {
+    append_msg_to_log(check_out_path, "clean_up_cmd timeout (%ld ms)",
+                      task_GetRunningTime(tsk));
+    err("clean_up_cmd timeout (%ld ms)",
+        task_GetRunningTime(tsk));
+    status = RUN_CHECK_FAILED;
+    goto cleanup;
+  }
+  if (task_Status(tsk) == TSK_SIGNALED) {
+    int signo = task_TermSignal(tsk);
+    append_msg_to_log(check_out_path,
+                      "clean_up_cmd terminated with signal %d (%s)",
+                      signo, os_GetSignalString(signo));
+    status = RUN_CHECK_FAILED;
+    goto cleanup;
+  }
+  int exitcode = task_ExitCode(tsk);
+  if (exitcode != 0) {
+    append_msg_to_log(check_out_path, "clean_up_cmd exited with code %d",
+                      exitcode);
+    status = RUN_CHECK_FAILED;
+    goto cleanup;
+  }
+
+cleanup:
+  task_Delete(tsk);
+  return status;
+}
+
 static const char *
 remap_start_cmd_for_container(const char *start_cmd)
 {
@@ -2763,6 +3087,7 @@ does_test_exist(
         const struct ejudge_cfg *config,
         serve_state_t state,
         const struct super_run_in_packet *srp,
+        const unsigned char *test_dir,
         int cur_test)
 {
   unsigned char test_base[PATH_MAX];
@@ -2772,9 +3097,370 @@ does_test_exist(
   test_src[0] = 0;
   if (srpp->test_pat && srpp->test_pat[0]) {
     snprintf(test_base, sizeof(test_base), srpp->test_pat, cur_test);
-    snprintf(test_src, sizeof(test_src), "%s/%s", srpp->test_dir, test_base);
+    snprintf(test_src, sizeof(test_src), "%s/%s", test_dir, test_base);
   }
   return os_CheckAccess(test_src, REUSE_R_OK) >= 0;
+}
+
+static int
+copy_exe_file_and_extract_args(
+        const unsigned char *src_dir,
+        const unsigned char *src_name,
+        const unsigned char *src_sfx,
+        const unsigned char *src_b,
+        ssize_t src_z,
+        ssize_t prepended_size,
+        unsigned char **p_interpreter_str,
+        const unsigned char *dst_dir,
+        const unsigned char *dst_name,
+        const unsigned char *dst_sfx,
+        unsigned char **interpreter_args,
+        int *p_interpreter_cnt)
+{
+  int retval = -1;
+  unsigned char src_path[PATH_MAX];
+  unsigned char dst_path[PATH_MAX];
+  int src_fd = -1;
+  int r;
+  unsigned char *src_mem = MAP_FAILED;
+  size_t src_mem_z = 0;
+  size_t start_offset = 0;
+  size_t dst_z = 0;
+  int dst_fd = -1;
+  unsigned char *dst_mem = MAP_FAILED;
+  unsigned char *interpreter_str = NULL;
+
+  if (!src_b) {
+    if (!src_sfx) src_sfx = "";
+    if (src_dir && *src_dir) {
+      r = snprintf(src_path, sizeof(src_path), "%s/%s%s", src_dir, src_name, src_sfx);
+    } else {
+      r = snprintf(src_path, sizeof(src_path), "%s%s", src_name, src_sfx);
+    }
+    if (r >= (int) sizeof(src_path)) {
+      err("%s: src_path is too long", __FUNCTION__);
+      goto cleanup;
+    }
+    src_fd = open(src_path, O_RDONLY | O_NOCTTY | O_NOFOLLOW | O_NONBLOCK, 0);
+    if (src_fd < 0) {
+      err("%s: failed to open '%s': %s", __FUNCTION__, src_path, os_ErrorMsg());
+      goto cleanup;
+    }
+    struct stat stb;
+    if (fstat(src_fd, &stb) < 0) {
+      err("%s: failed to fstat: %s", __FUNCTION__, os_ErrorMsg());
+      goto cleanup;
+    }
+    if (!S_ISREG(stb.st_mode)) {
+      err("%s: '%s' not regular", __FUNCTION__, src_path);
+      goto cleanup;
+    }
+    if (stb.st_size > 0) {
+      if (stb.st_size > 1024 * 1024 * 1024) {
+        err("%s: '%s' is too big", __FUNCTION__, src_path);
+        goto cleanup;
+      }
+      src_mem_z = stb.st_size;
+      src_mem = mmap(NULL, src_mem_z, PROT_READ, MAP_PRIVATE, src_fd, 0);
+      if (src_mem == MAP_FAILED) {
+        err("%s: mmap '%s' failed: %s", __FUNCTION__, src_path, os_ErrorMsg());
+        goto cleanup;
+      }
+    } else {
+      src_mem = NULL;
+      src_mem_z = 0;
+    }
+    close(src_fd); src_fd = -1;
+    src_b = src_mem;
+    src_z = src_mem_z;
+  }
+
+  while (1) {
+    if (prepended_size <= 0) {
+      break;
+    }
+    if (prepended_size >= src_z) {
+      break;
+    }
+    interpreter_str = malloc(prepended_size + 1);
+    memcpy(interpreter_str, src_b, prepended_size);
+    interpreter_str[prepended_size] = 0;
+    unsigned char *ep = strchr(interpreter_str, '\n');
+    if (!ep) {
+      break;
+    }
+    int ei = ep - interpreter_str;
+    while (ei > 0 && isspace(interpreter_str[ei - 1])) --ei;
+    interpreter_str[ei] = 0;
+    if (interpreter_str[0] != '#' || interpreter_str[1] != '!') {
+      break;
+    }
+    int bi = 2;
+    if (bi == ei) {
+      break;
+    }
+    while (isspace(interpreter_str[bi])) ++bi;
+    int cnt = 0;
+    // extract interpreter name
+    int eei = bi;
+    while (interpreter_str[eei] && !isspace(interpreter_str[eei])) ++eei;
+    if (interpreter_str[eei]) {
+      interpreter_str[eei] = 0;
+      interpreter_args[cnt++] = &interpreter_str[bi];
+      bi = eei + 1;
+      while (isspace(interpreter_str[bi])) ++bi;
+      interpreter_args[cnt++] = &interpreter_str[bi];
+      interpreter_args[cnt] = NULL;
+    } else {
+      interpreter_args[cnt++] = &interpreter_str[bi];
+      interpreter_args[cnt] = NULL;
+    }
+    *p_interpreter_cnt = cnt;
+    start_offset = prepended_size;
+    *p_interpreter_str = interpreter_str; interpreter_str = NULL;
+    break;
+  }
+
+  dst_z = src_z - start_offset;
+  if (!dst_sfx) dst_sfx = "";
+  if (dst_dir && *dst_dir) {
+    r = snprintf(dst_path, sizeof(dst_path), "%s/%s%s", dst_dir, dst_name, dst_sfx);
+  } else {
+    r = snprintf(dst_path, sizeof(dst_path), "%s%s", dst_name, dst_sfx);
+  }
+  if (r >= (int) sizeof(dst_path)) {
+    err("%s: dst_path is too long", __FUNCTION__);
+    goto cleanup;
+  }
+  dst_fd = open(dst_path, O_RDWR | O_CREAT | O_TRUNC | O_NOCTTY | O_NOFOLLOW | O_NONBLOCK, 0666);
+  if (dst_fd < 0) {
+    err("%s: open '%s' failed: %s", __FUNCTION__, dst_path, os_ErrorMsg());
+    goto cleanup;
+  }
+  struct stat stb;
+  if (fstat(dst_fd, &stb) < 0) {
+    err("%s: fstat failed: %s", __FUNCTION__, os_ErrorMsg());
+    goto cleanup;
+  }
+  if (ftruncate(dst_fd, dst_z) < 0) {
+    err("%s: ftruncate failed: %s", __FUNCTION__, os_ErrorMsg());
+    goto cleanup;
+  }
+  if (dst_z > 0) {
+    dst_mem = mmap(NULL, dst_z, PROT_READ | PROT_WRITE, MAP_SHARED, dst_fd, 0);
+    if (dst_mem == MAP_FAILED) {
+      err("%s: mmap failed: %s", __FUNCTION__, os_ErrorMsg());
+      goto cleanup;
+    }
+    close(dst_fd); dst_fd = -1;
+    memcpy(dst_mem, src_b + start_offset, dst_z);
+  }
+
+  retval = 0;
+
+cleanup:;
+  if (dst_mem != MAP_FAILED) munmap(dst_mem, dst_z);
+  if (src_mem && src_mem != MAP_FAILED) munmap(src_mem, src_mem_z);
+  if (src_fd >= 0) close(src_fd);
+  if (dst_fd >= 0) close(dst_fd);
+  xfree(interpreter_str);
+  return retval;
+}
+
+static ssize_t
+get_max_line_length(const unsigned char *data, ssize_t size)
+{
+  ssize_t max_len = 0;
+  ssize_t prev_ind = -1;
+  for (ssize_t i = 0; i < size; ++i) {
+    if (data[i] == '\n') {
+      if (i - prev_ind > max_len) {
+        max_len = i - prev_ind;
+      }
+      prev_ind = i;
+    }
+  }
+  if (size - prev_ind > max_len) {
+    max_len = size - prev_ind;
+  }
+  return max_len;
+}
+
+static void
+trim_long_lines(
+        const unsigned char *data,
+        ssize_t size,
+        int utf8_mode,
+        int max_line_length,
+        unsigned char **p_out_data,
+        ssize_t *p_out_size)
+{
+  char *out_s = NULL;
+  size_t out_z = 0;
+  FILE *out_f = open_memstream(&out_s, &out_z);
+  ssize_t beg_ind = 0;
+  ssize_t ind;
+
+  for (ind = 0; ind < size; ++ind) {
+    if (data[ind] == '\n') {
+      if (ind - beg_ind > max_line_length) {
+        if (utf8_mode) {
+          ssize_t trimmed = utf8_trim_last_codepoint(&data[beg_ind], max_line_length);
+          fwrite_unlocked(&data[beg_ind], 1, trimmed, out_f);
+          fputs_unlocked("…\n", out_f);
+        } else {
+          fwrite_unlocked(&data[beg_ind], 1, max_line_length, out_f);
+          fputs_unlocked("...\n", out_f);
+        }
+      } else {
+        fwrite_unlocked(&data[beg_ind], 1, ind - beg_ind + 1, out_f);
+      }
+      beg_ind = ind + 1;
+    } else if (ind == size - 1) {
+      if (ind - beg_ind + 1 > max_line_length) {
+        if (utf8_mode) {
+          ssize_t trimmed = utf8_trim_last_codepoint(&data[beg_ind], max_line_length);
+          fwrite_unlocked(&data[beg_ind], 1, trimmed, out_f);
+          fputs_unlocked("…", out_f);
+        } else {
+          fwrite_unlocked(&data[beg_ind], 1, max_line_length, out_f);
+          fputs_unlocked("...", out_f);
+        }
+      } else {
+        fwrite_unlocked(&data[beg_ind], 1, ind - beg_ind + 1, out_f);
+      }
+    }
+  }
+
+  fclose(out_f);
+  *p_out_data = out_s;
+  *p_out_size = out_z;
+}
+
+static void
+read_run_test_file(
+        const struct super_run_in_global_packet *srgp,
+        struct run_test_file *rtf,
+        const unsigned char *path,
+        int utf8_mode)
+{
+  int fd = -1;
+  unsigned char *proc_data = NULL;
+  long long proc_size = 0;
+
+  memset(rtf, 0, sizeof(*rtf));
+
+  fd = open(path, O_RDONLY | O_CLOEXEC | O_NOCTTY | O_NONBLOCK, 0);
+  if (fd < 0) {
+    err("%s: cannot open on '%s': %s", __FUNCTION__, path, os_ErrorMsg());
+    return;
+  }
+
+  struct stat stb;
+  if (fstat(fd, &stb) < 0) {
+    err("%s: stat failed on '%s': %s", __FUNCTION__, path, os_ErrorMsg());
+    goto done;
+  }
+  if (stb.st_size < 0) {
+    err("%s: invalid size of '%s': %lld", __FUNCTION__, path,
+        (long long) stb.st_size);
+    goto done;
+  }
+  if (!S_ISREG(stb.st_mode)) {
+    err("%s: not a regular file: '%s'", __FUNCTION__, path);
+    goto done;
+  }
+  if (!stb.st_size) {
+    // empty file
+    rtf->data = xmalloc(1);
+    rtf->data[0] = 0;
+    rtf->is_here = 1;
+    goto done;
+  }
+
+  proc_size = stb.st_size;
+  if (stb.st_size > srgp->max_file_length) {
+    proc_size = srgp->max_file_length;
+  }
+  proc_data = xmalloc(proc_size + 1024);
+
+  {
+    long long rem_size = proc_size;
+    unsigned char *p = proc_data;
+    while (rem_size > 0) {
+      ssize_t r = read(fd, p, rem_size);
+      if (r < 0) {
+        err("%s: read error from '%s': %s", __FUNCTION__, path, os_ErrorMsg());
+        goto done;
+      }
+      if (!r) {
+        err("%s: file truncated '%s'", __FUNCTION__, path);
+        proc_size -= rem_size;
+        break;
+      }
+      rem_size -= r;
+      p += r;
+    }
+    proc_data[proc_size] = 0;
+  }
+  close(fd); fd = -1;
+
+  if (need_base64(proc_data, proc_size)) {
+    // binary file
+    rtf->orig_size = stb.st_size;
+    rtf->is_here = 1;
+    rtf->is_binary = 1;
+    rtf->is_too_long = (stb.st_size > proc_size);
+    rtf->is_base64 = 1;
+    rtf->data = xmalloc(proc_size * 4 / 3 + 64);
+    int len = base64_encode(proc_data, proc_size, rtf->data);
+    rtf->data[len] = 0;
+    rtf->stored_size = len;
+    goto done;
+  }
+
+  if (proc_size != stb.st_size && utf8_mode) {
+    proc_size = utf8_trim_last_codepoint(proc_data, proc_size);
+  }
+
+  ssize_t max_len = get_max_line_length(proc_data, proc_size);
+  if (max_len > srgp->max_line_length) {
+    unsigned char *out_data = NULL;
+    ssize_t out_size = 0;
+    rtf->is_too_long = proc_size != stb.st_size;
+    trim_long_lines(proc_data, proc_size, utf8_mode, srgp->max_line_length,
+                    &out_data, &out_size);
+    xfree(proc_data); proc_data = out_data; out_data = NULL;
+    proc_size = out_size; out_size = 0;
+    rtf->is_too_wide = 1;
+  } else {
+    rtf->is_too_long = proc_size != stb.st_size;
+  }
+  if (rtf->is_too_long) {
+    if (utf8_mode) {
+      static const char append_str[] = "\n…\n";
+      proc_data = xrealloc(proc_data, proc_size + 64);
+      strcpy(proc_data + proc_size, append_str);
+      proc_size += sizeof(append_str) - 1;
+    } else {
+      static const char append_str[] = "\n...\n";
+      proc_data = xrealloc(proc_data, proc_size + 64);
+      strcpy(proc_data + proc_size, append_str);
+      proc_size += sizeof(append_str) - 1;
+    }
+  }
+  if (utf8_mode) {
+    utf8_fix_string(proc_data, NULL);
+    // FIXME: set is_fixed depending on the number of utf8 fixes
+  }
+  rtf->data = proc_data; proc_data = NULL;
+  rtf->orig_size = stb.st_size;
+  rtf->stored_size = proc_size;
+  rtf->is_here = 1;
+
+done:;
+  xfree(proc_data);
+  if (fd >= 0) close(fd);
 }
 
 static int
@@ -2785,7 +3471,7 @@ run_one_test(
         const struct section_tester_data *tst,
         struct AgentClient *agent,
         int cur_test,
-        struct testinfo_vector *tests,
+        struct run_test_info_vector *tests,
         full_archive_t far,
         const unsigned char *exe_name,
         const unsigned char *report_path,
@@ -2802,11 +3488,18 @@ run_one_test(
         int *p_has_max_rss,
         long *p_report_time_limit_ms,
         long *p_report_real_time_limit_ms,
+        int utf8_mode,
         const unsigned char *mirror_dir,
         const struct remap_spec *remaps,
         int user_input_mode,
         const unsigned char *inp_data,
-        size_t inp_size)
+        size_t inp_size,
+        const unsigned char *src_path,
+        const unsigned char *test_dir,
+        const unsigned char *corr_dir,
+        const unsigned char *info_dir,
+        const unsigned char *tgz_dir,
+        const struct run_properties *run_props)
 {
   const struct section_global_data *global = state->global;
 
@@ -2845,7 +3538,7 @@ run_one_test(
 
   unsigned char mem_limit_buf[PATH_MAX];
 
-  struct testinfo *cur_info = NULL;
+  struct run_test_info *cur_info = NULL;
   int time_limit_value_ms = 0;
   int status = RUN_CHECK_FAILED;
   int errcode = 0;
@@ -2878,6 +3571,13 @@ run_one_test(
   struct termios term_attrs;
 #endif
 
+  unsigned char *interpreter_args[4];
+  int interpreter_cnt = 0;
+  unsigned char *interpreter_str = NULL;
+
+  uint64_t test_random_value;
+  int clean_up_executed = 0;
+
   test_checker_out_path[0] = 0;
   memset(&tstinfo, 0, sizeof(tstinfo));
 
@@ -2895,17 +3595,20 @@ run_one_test(
     return -1;
   }
 
+  random_init();
+  test_random_value = random_u64();
+
   test_base[0] = 0;
   test_src[0] = 0;
   if (srpp->test_pat && srpp->test_pat[0]) {
     snprintf(test_base, sizeof(test_base), srpp->test_pat, cur_test);
-    snprintf(test_src, sizeof(test_src), "%s/%s", srpp->test_dir, test_base);
+    snprintf(test_src, sizeof(test_src), "%s/%s", test_dir, test_base);
   }
   corr_base[0] = 0;
   corr_src[0] = 0;
   if (srpp->corr_pat && srpp->corr_pat[0]) {
     snprintf(corr_base, sizeof(corr_base), srpp->corr_pat, cur_test);
-    snprintf(corr_src, sizeof(corr_src), "%s/%s", srpp->corr_dir, corr_base);
+    snprintf(corr_src, sizeof(corr_src), "%s/%s", corr_dir, corr_base);
   }
   if (srpp->use_corr > 0 && corr_src[0]) {
     mirror_file(agent, corr_src, sizeof(corr_src), mirror_dir);
@@ -2914,7 +3617,7 @@ run_one_test(
   info_src[0] = 0;
   if (srpp->use_info > 0) {
     snprintf(info_base, sizeof(info_base), srpp->info_pat, cur_test);
-    snprintf(info_src, sizeof(info_src), "%s/%s", srpp->info_dir, info_base);
+    snprintf(info_src, sizeof(info_src), "%s/%s", info_dir, info_base);
   }
   tgz_base[0] = 0;
   tgzdir_base[0] = 0;
@@ -2922,9 +3625,9 @@ run_one_test(
   tgzdir_src[0] = 0;
   if (srpp->use_tgz > 0) {
     snprintf(tgz_base, sizeof(tgz_base), srpp->tgz_pat, cur_test);
-    snprintf(tgz_src, sizeof(tgz_src), "%s/%s", srpp->tgz_dir, tgz_base);
+    snprintf(tgz_src, sizeof(tgz_src), "%s/%s", tgz_dir, tgz_base);
     snprintf(tgzdir_base, sizeof(tgzdir_base), srpp->tgzdir_pat, cur_test);
-    snprintf(tgzdir_src, sizeof(tgzdir_src), "%s/%s", srpp->tgz_dir, tgzdir_base);
+    snprintf(tgzdir_src, sizeof(tgzdir_src), "%s/%s", tgz_dir, tgzdir_base);
   }
 
   // avoid check access operation if the test count is known
@@ -2949,11 +3652,6 @@ run_one_test(
   cur_info = &tests->data[cur_test];
   ++tests->size;
 
-  cur_info->input_size = -1;
-  cur_info->output_size = -1;
-  cur_info->error_size = -1;
-  cur_info->correct_size = -1;
-  cur_info->chk_out_size = -1;
   cur_info->visibility = TV_NORMAL;
   if (open_tests_val && cur_test > 0 && cur_test < open_tests_count) {
     cur_info->visibility = open_tests_val[cur_test];
@@ -3040,15 +3738,7 @@ run_one_test(
       if (i < tstinfo.ok_language.u) {
         // mark this test as successfully passed
         status = RUN_OK; // FIXME: RUN_SKIPPED?
-        cur_info->input = xstrdup("");
-        cur_info->input_size = 0;
-        cur_info->output = xstrdup("");
-        cur_info->output_size = 0;
-        cur_info->error = xstrdup("");
-        cur_info->error_size = 0;
-        cur_info->correct = xstrdup("");
-        cur_info->correct_size = 0;
-        cur_info->chk_out_size = asprintf(&cur_info->chk_out, "auto-OK for language %s", srgp->lang_short_name);
+        rtf_printf(&cur_info->chk_out, "auto-OK for language %s", srgp->lang_short_name);
         //cur_info->comment = xstrdup(cur_info->chk_out);
         // FIXME: set comment or team_comment
         goto cleanup;
@@ -3142,24 +3832,54 @@ run_one_test(
       zf->ops->close(zf);
       goto check_failed;
     }
+    // TODO: support run_props in zip file
     zf->ops->close(zf); zf = NULL;
     unsigned char target_path[PATH_MAX];
     snprintf(target_path, sizeof(target_path), "%s/%s", exe_dir, exe_name);
-    if (generic_write_file(bytes_s, bytes_z, 0, NULL, target_path, NULL) < 0) {
-      if (log_f) {
-        fprintf(log_f, "cannot save file '%s'\n", target_path);
-        fclose(log_f);
+    if (srgp->prepended_size > 0) {
+      if (copy_exe_file_and_extract_args(NULL, NULL, NULL,
+                                         bytes_s, bytes_z, srgp->prepended_size,
+                                         &interpreter_str,
+                                         exe_dir, exe_name, NULL,
+                                         interpreter_args, &interpreter_cnt) < 0) {
+        if (log_f) {
+          fprintf(log_f, "cannot save file '%s'\n", target_path);
+          fclose(log_f);
+        }
+        xfree(bytes_s);
+        goto check_failed;
       }
-      xfree(bytes_s);
-      goto check_failed;
+    } else {
+      if (generic_write_file(bytes_s, bytes_z, 0, NULL, target_path, NULL) < 0) {
+        if (log_f) {
+          fprintf(log_f, "cannot save file '%s'\n", target_path);
+          fclose(log_f);
+        }
+        xfree(bytes_s);
+        goto check_failed;
+      }
     }
     xfree(bytes_s);
     if (log_f) fclose(log_f);
   } else {
-    if (generic_copy_file(0, global->run_work_dir, exe_name, "", 0, exe_dir, exe_name, "") < 0) {
-      append_msg_to_log(check_out_path, "failed to copy %s/%s -> %s/%s", global->run_work_dir, exe_name,
-                        exe_dir, exe_name);
-      goto check_failed;
+    if (srgp->prepended_size > 0) {
+      if (copy_exe_file_and_extract_args(global->run_work_dir,
+                                         exe_name, NULL,
+                                         NULL, 0,
+                                         srgp->prepended_size,
+                                         &interpreter_str,
+                                         exe_dir, exe_name, NULL,
+                                         interpreter_args, &interpreter_cnt) < 0) {
+        append_msg_to_log(check_out_path, "failed to copy %s/%s -> %s/%s", global->run_work_dir, exe_name,
+                          exe_dir, exe_name);
+        goto check_failed;
+      }
+    } else {
+      if (generic_copy_file(0, global->run_work_dir, exe_name, "", 0, exe_dir, exe_name, "") < 0) {
+        append_msg_to_log(check_out_path, "failed to copy %s/%s -> %s/%s", global->run_work_dir, exe_name,
+                          exe_dir, exe_name);
+        goto check_failed;
+      }
     }
   }
 
@@ -3210,6 +3930,16 @@ run_one_test(
     }
   }
 
+  if (run_props && run_props->is_archive > 0) {
+    if (!run_props->start_cmd || !run_props->start_cmd[0]) {
+      append_msg_to_log(check_out_path, "start_cmd must be specified if is_archive set to true in run properties");
+      goto check_failed;
+    }
+    if (invoke_tar("/bin/tar", exe_path, working_dir, report_path) < 0) {
+      goto check_failed;
+    }
+  }
+
   int is_dos = srgp->is_dos;
   if (tst && tst->is_dos > 0) is_dos = tst->is_dos;
   if (is_dos > 0 && srpp->binary_input <= 0) copy_flag = CONVERT;
@@ -3230,16 +3960,12 @@ run_one_test(
                "%s/testcheckout_%d.txt",
                global->run_work_dir, cur_test);
 
-      int r = invoke_test_checker_cmd(srp, check_dir, input_path, test_checker_out_path);
+      int r = invoke_test_checker_cmd(srp, check_dir, input_path, test_checker_out_path, state->exec_user_serial);
       if (r == RUN_CHECK_FAILED) {
         status = RUN_CHECK_FAILED;
         goto check_failed;
       }
-      file_size = generic_file_size(0, test_checker_out_path, 0);
-      if (file_size >= 0) {
-        cur_info->test_checker_size = file_size;
-        generic_read_file(&cur_info->test_checker, 0, 0, 0, 0, test_checker_out_path, "");
-      }
+      read_run_test_file(srgp, &cur_info->test_checker, test_checker_out_path, utf8_mode);
       if (r != 0) {
         status = r;
         goto cleanup;
@@ -3266,9 +3992,11 @@ run_one_test(
   snprintf(error_path, sizeof(error_path), "%s/%s", check_dir, error_file);
 
   if (srpp->init_cmd && srpp->init_cmd[0]) {
-    status = invoke_init_cmd(srpp, "start", test_src, corr_src,
+    status = invoke_init_cmd(srp, "start", test_src, corr_src,
                              info_src, working_dir, check_out_path,
-                             &tstinfo);
+                             &tstinfo, src_path, cur_test,
+                             state->exec_user_serial,
+                             test_random_value);
     if (status != 0) {
       append_msg_to_log(check_out_path, "init_cmd failed to start with code 0");
       status = RUN_CHECK_FAILED;
@@ -3342,6 +4070,12 @@ run_one_test(
     }
   }
 
+  if (run_props && run_props->start_env) {
+    for (int i = 0; run_props->start_env[i]; ++i) {
+      task_SetEnv(tsk, run_props->start_env[i][0], run_props->start_env[i][1]);
+    }
+  }
+
   /*
   if (tst && tst->start_cmd && tst->start_cmd[0]) {
     info("starting: %s %s", tst->start_cmd, arg0_path);
@@ -3366,12 +4100,31 @@ run_one_test(
   }
   */
 
-  if (tstinfo.program_name && *tstinfo.program_name) {
-    task_AddArg(tsk, tstinfo.program_name);
-    task_SetPath(tsk, arg0_path);
+  if (run_props && run_props->start_cmd) {
+    if (!run_props->start_args || !run_props->start_args[0]) {
+      task_AddArg(tsk, run_props->start_cmd);
+      task_SetPathAsArg0(tsk);
+    } else {
+      task_SetPath(tsk, run_props->start_cmd);
+      for (int i = 0; run_props->start_args[i]; ++i) {
+        task_AddArg(tsk, run_props->start_args[i]);
+      }
+    }
+    if (run_props->is_archive <= 0) {
+      task_AddArg(tsk, arg0_path);
+    }
   } else {
-    task_AddArg(tsk, arg0_path);
-    task_SetPathAsArg0(tsk);
+    if (interpreter_cnt > 0) {
+      task_pnAddArgs(tsk, interpreter_cnt, (char**) interpreter_args);
+    }
+
+    if (tstinfo.program_name && *tstinfo.program_name) {
+      task_AddArg(tsk, tstinfo.program_name);
+      task_SetPath(tsk, arg0_path);
+    } else {
+      task_AddArg(tsk, arg0_path);
+      task_SetPathAsArg0(tsk);
+    }
   }
 
   if (srpp->use_info > 0 && tstinfo.cmd.u >= 1) {
@@ -3441,8 +4194,27 @@ run_one_test(
     }
   }
 
+  int ejudge_env_flag = (tst && tst->enable_ejudge_env > 0) || (srgp->enable_ejudge_env > 0);
+
   if (tst && tst->clear_env > 0) task_ClearEnv(tsk);
-  setup_environment(tsk, start_env, tstinfo.env.u, tstinfo.env.v, 0);
+  setup_environment(tsk, start_env, tstinfo.env.u, tstinfo.env.v, ejudge_env_flag);
+  if (ejudge_env_flag) {
+    setup_ejudge_environment(tsk, srp, cur_test,
+                             -1 /* test_max_score */,
+                             0 /* output_only */,
+                             src_path,
+                             state->exec_user_serial,
+                             test_random_value);
+    if (srpp->input_file && srpp->input_file[0]) {
+      task_SetEnv(tsk, "INPUT_FILE", srpp->input_file);
+    }
+    if (srpp->output_file && srpp->output_file[0]) {
+      task_SetEnv(tsk, "OUTPUT_FILE", srpp->output_file);
+    }
+  }
+  if (srgp->run_env_file) {
+    read_env_file(tsk, srgp->run_env_file);
+  }
 
   if (tstinfo.time_limit_ms > 0) {
     task_SetMaxTimeMillis(tsk, tstinfo.time_limit_ms);
@@ -3494,6 +4266,8 @@ run_one_test(
       task_SetVMSize(tsk, max_vm_size);
     if (max_rss_size > 0)
       task_SetRSSSize(tsk, max_rss_size);
+    if (srpp->disable_vm_size_limit > 0)
+      task_DisableVMSizeLimit(tsk);
   } else {
     switch (tst->memory_limit_type_val) {
     case MEMLIMIT_TYPE_DEFAULT:
@@ -3510,9 +4284,16 @@ run_one_test(
         task_SetVMSize(tsk, max_vm_size);
       if (max_rss_size > 0)
         task_SetRSSSize(tsk, max_rss_size);
+      /*
       if (tst->enable_memory_limit_error > 0 && srgp->enable_memory_limit_error > 0 && srgp->secure_run > 0) {
         task_EnableMemoryLimitError(tsk);
       }
+      */
+      if (srgp->enable_memory_limit_error > 0) {
+        task_EnableMemoryLimitError(tsk);
+      }
+      if (srpp->disable_vm_size_limit > 0)
+        task_DisableVMSizeLimit(tsk);
       break;
     case MEMLIMIT_TYPE_JAVA:
       make_java_limits(mem_limit_buf, sizeof(mem_limit_buf), max_vm_size, max_stack_size);
@@ -3602,6 +4383,7 @@ run_one_test(
     task_FormatEnv(tsk, "EJUDGE_JAVA_COMPILER", "%s", srgp->lang_short_name);
   }
 
+  /*
   if (tst && tst->enable_memory_limit_error > 0 && srgp->secure_run > 0 && srgp->detect_violations > 0 && srgp->enable_container <= 0) {
     switch (tst->secure_exec_type_val) {
     case SEXEC_TYPE_STATIC:
@@ -3610,6 +4392,10 @@ run_one_test(
       task_EnableSecurityViolationError(tsk);
       break;
     }
+  }
+  */
+  if (srgp->detect_violations > 0) {
+    task_EnableSecurityViolationError(tsk);
   }
 
 #ifdef HAVE_TERMIOS_H
@@ -3672,7 +4458,9 @@ run_one_test(
   if (interactor_cmd) {
     tsk_int = invoke_interactor(interactor_cmd, test_src, output_path, corr_src, info_src,
                                 working_dir, check_out_path,
-                                &tstinfo, pfd1[0], pfd2[1], cfd[1], task_GetPid(tsk), srgp, srpp, cur_test);
+                                &tstinfo, pfd1[0], pfd2[1], cfd[1], task_GetPid(tsk), srp, cur_test, src_path,
+                                state->exec_user_serial,
+                                test_random_value);
     if (!tsk_int) {
       append_msg_to_log(check_out_path, "interactor failed to start");
     }
@@ -3756,57 +4544,45 @@ run_one_test(
 
   // input file
   if (user_input_mode) {
-    cur_info->input_size = inp_size;
-    cur_info->input = xmalloc(inp_size + 1);
-    memcpy(cur_info->input, inp_data, inp_size);
-    cur_info->input[inp_size] = 0;
+    struct run_test_file *rtf = &cur_info->input;
+    rtf->data = xmalloc(inp_size + 1);
+    memcpy(rtf->data, inp_data, inp_size);
+    rtf->data[inp_size] = 0;
+    rtf->orig_size = inp_size;
+    rtf->stored_size = inp_size;
+    rtf->is_here = 1;
   } else {
-    file_size = -1;
     if (srgp->enable_full_archive > 0) {
       filehash_get(test_src, cur_info->input_digest);
       cur_info->has_input_digest = 1;
     } else {
-      if (srpp->binary_input <= 0) {
-        file_size = generic_file_size(0, test_src, 0);
-      }
-      if (file_size >= 0) {
-        cur_info->input_size = file_size;
-        if (srgp->max_file_length > 0 && file_size <= srgp->max_file_length) {
-          generic_read_file(&cur_info->input, 0, 0, 0, 0, test_src, "");
-        }
-      }
+      read_run_test_file(srgp, &cur_info->input, test_src, utf8_mode);
     }
   }
 
   // output file
-  file_size = -1;
-  if (srpp->binary_input <= 0) {
+  if (far) {
     file_size = generic_file_size(0, output_path, 0);
-  }
-  if (file_size >= 0) {
-    cur_info->output_size = file_size;
-    if (srgp->max_file_length > 0 && srgp->enable_full_archive <= 0 && file_size <= srgp->max_file_length) {
-      generic_read_file(&cur_info->output, 0, 0, 0, 0, output_path, "");
-    }
-    if (far) {
+    if (file_size >= 0) {
+      cur_info->output.is_archived = 1;
       snprintf(arch_entry_name, sizeof(arch_entry_name), "%06d.o", cur_test);
       full_archive_append_file(far, arch_entry_name, 0, output_path);
     }
+  } else {
+    read_run_test_file(srgp, &cur_info->output, output_path, utf8_mode);
   }
 
   // error file
-  file_size = -1;
   if (error_path[0]) {
-    file_size = generic_file_size(0, error_path, 0);
-  }
-  if (file_size >= 0) {
-    cur_info->error_size = file_size;
-    if (srgp->max_file_length > 0 && srgp->enable_full_archive <= 0 && file_size <= srgp->max_file_length) {
-      generic_read_file(&cur_info->error, 0, 0, 0, 0, error_path, "");
-    }
     if (far) {
-      snprintf(arch_entry_name, sizeof(arch_entry_name), "%06d.e", cur_test);
-      full_archive_append_file(far, arch_entry_name, 0, error_path);
+      file_size = generic_file_size(0, error_path, 0);
+      if (file_size >= 0) {
+        cur_info->error.is_archived = 1;
+        snprintf(arch_entry_name, sizeof(arch_entry_name), "%06d.e", cur_test);
+        full_archive_append_file(far, arch_entry_name, 0, error_path);
+      }
+    } else {
+      read_run_test_file(srgp, &cur_info->error, error_path, utf8_mode);
     }
   }
 
@@ -3884,7 +4660,7 @@ run_one_test(
   }
 
   if (tst && tst->memory_limit_type_val == MEMLIMIT_TYPE_JAVA && srgp->enable_memory_limit_error > 0
-      && task_IsAbnormal(tsk) && is_java_memory_limit(cur_info->error, cur_info->error_size)) {
+      && task_IsAbnormal(tsk) && is_java_memory_limit(cur_info->error.data, cur_info->error.orig_size)) {
     status = RUN_MEM_LIMIT_ERR;
     if (tsk_int) goto read_checker_output;
     goto cleanup;
@@ -3905,11 +4681,23 @@ run_one_test(
 
   // terminated with a signal
   if (task_Status(tsk) == TSK_SIGNALED) {
-    cur_info->code = 256; /* FIXME: magic */
-    cur_info->termsig = task_TermSignal(tsk);
-    status = RUN_RUN_TIME_ERR;
-    if (tsk_int) goto read_checker_output;
-    goto cleanup;
+    int ignore_term_signal = 0;
+    if (srpp->use_info > 0 && tstinfo.ignore_term_signal > 0) {
+      ignore_term_signal = 1;
+    } else {
+      ignore_term_signal = srpp->ignore_term_signal;
+    }
+    if (ignore_term_signal <= 0) {
+      cur_info->code = 256; /* FIXME: magic */
+      cur_info->termsig = task_TermSignal(tsk);
+      status = RUN_RUN_TIME_ERR;
+      if (tsk_int) goto read_checker_output;
+      goto cleanup;
+    } else {
+      // save info, but proceed with testing
+      cur_info->code = 256;
+      cur_info->termsig = task_TermSignal(tsk);
+    }
   }
 
   if (error_code[0]) {
@@ -3969,7 +4757,7 @@ run_checker:;
     goto cleanup;
   }
 
-  if (disable_stderr > 0 && cur_info->error_size > 0) {
+  if (disable_stderr > 0 && cur_info->error.orig_size > 0) {
     append_msg_to_log(check_out_path, "non-empty output to stderr");
     if (srpp->disable_pe > 0) {
       status = RUN_WRONG_ANSWER_ERR;
@@ -3985,15 +4773,7 @@ run_checker:;
       filehash_get(corr_src, cur_info->correct_digest);
       cur_info->has_correct_digest = 1;
     } else {
-      if (srpp->binary_input <= 0) {
-        file_size = generic_file_size(0, corr_src, 0);
-      }
-      if (file_size >= 0) {
-        cur_info->correct_size = file_size;
-        if (srgp->max_file_length > 0 && file_size <= srgp->max_file_length) {
-          generic_read_file(&cur_info->correct, 0, 0, 0, 0, corr_src, "");
-        }
-      }
+      read_run_test_file(srgp, &cur_info->correct, corr_src, utf8_mode);
     }
   }
 
@@ -4014,30 +4794,42 @@ run_checker:;
     check_cmd = local_check_cmd;
   }
 
-  status = invoke_checker(srgp, srpp, cur_test, cur_info,
+  status = invoke_checker(srp, cur_test, cur_info,
                           check_cmd, test_src, output_path_to_check,
                           corr_src, info_src, tgzdir_src,
                           working_dir, score_out_path, check_out_path,
-                          check_dir, &tstinfo, test_score_count, test_score_val, 0);
+                          check_dir, &tstinfo, test_score_count, test_score_val,
+                          0, src_path,
+                          state->exec_user_serial,
+                          test_random_value);
 
   // read the checker output
 read_checker_output:;
   if (init_cmd_started) {
-    int new_status = invoke_init_cmd(srpp, "stop", test_src,
+    int new_status = invoke_init_cmd(srp, "stop", test_src,
                                      corr_src, info_src, working_dir, check_out_path,
-                                     &tstinfo);
+                                     &tstinfo, src_path, cur_test,
+                                     state->exec_user_serial,
+                                     test_random_value);
     if (!status) status = new_status;
     init_cmd_started = 0;
   }
+  if (srgp->clean_up_cmd && srgp->clean_up_cmd[0] && !clean_up_executed) {
+    invoke_clean_up_cmd(srp, working_dir, check_out_path,
+                        src_path, cur_test, state->exec_user_serial,
+                        test_random_value);
+    clean_up_executed = 1;
+  }
 
-  file_size = generic_file_size(0, check_out_path, 0);
-  if (file_size >= 0) {
-    cur_info->chk_out_size = file_size;
-    generic_read_file(&cur_info->chk_out, 0, 0, 0, 0, check_out_path, "");
-    if (far) {
+  if (far) {
+    file_size = generic_file_size(0, check_out_path, 0);
+    if (file_size >= 0) {
+      cur_info->chk_out.is_archived = 1;
       snprintf(arch_entry_name, sizeof(arch_entry_name), "%06d.c", cur_test);
       full_archive_append_file(far, arch_entry_name, 0, check_out_path);
     }
+  } else {
+    read_run_test_file(srgp, &cur_info->chk_out, check_out_path, utf8_mode);
   }
 
 cleanup:;
@@ -4047,10 +4839,18 @@ cleanup:;
   }
 
   if (init_cmd_started) {
-    int new_status = invoke_init_cmd(srpp, "stop", test_src, corr_src,  info_src, working_dir, check_out_path,
-                                     &tstinfo);
+    int new_status = invoke_init_cmd(srp, "stop", test_src, corr_src,  info_src, working_dir, check_out_path,
+                                     &tstinfo, src_path, cur_test,
+                                     state->exec_user_serial,
+                                     test_random_value);
     if (!status) status = new_status;
     init_cmd_started = 0;
+  }
+  if (srgp->clean_up_cmd && srgp->clean_up_cmd[0] && !clean_up_executed) {
+    invoke_clean_up_cmd(srp, working_dir, check_out_path,
+                        src_path, cur_test, state->exec_user_serial,
+                        test_random_value);
+    clean_up_executed = 1;
   }
 
   cur_info->status = status;
@@ -4071,6 +4871,7 @@ cleanup:;
   if (check_dir[0]) {
     clear_directory(check_dir);
   }
+  xfree(interpreter_str);
 
   return status;
 
@@ -4080,7 +4881,7 @@ check_failed:
 }
 
 static void
-init_testinfo_vector(struct testinfo_vector *tv)
+init_testinfo_vector(struct run_test_info_vector *tv)
 {
   if (!tv) return;
 
@@ -4091,17 +4892,12 @@ init_testinfo_vector(struct testinfo_vector *tv)
 }
 
 static void
-free_testinfo_vector(struct testinfo_vector *tv)
+free_testinfo_vector(struct run_test_info_vector *tv)
 {
   if (tv == NULL || tv->size <= 0 || tv->data == NULL) return;
 
   for (int i = 0; i < tv->size; ++i) {
-    struct testinfo *ti = &tv->data[i];
-    xfree(ti->input);
-    xfree(ti->output);
-    xfree(ti->error);
-    xfree(ti->correct);
-    xfree(ti->chk_out);
+    struct run_test_info *ti = &tv->data[i];
     xfree(ti->args);
     xfree(ti->comment);
     xfree(ti->team_comment);
@@ -4110,7 +4906,12 @@ free_testinfo_vector(struct testinfo_vector *tv)
     xfree(ti->interactor_stats_str);
     xfree(ti->checker_stats_str);
     xfree(ti->checker_token);
-    xfree(ti->test_checker);
+    xfree(ti->input.data);
+    xfree(ti->output.data);
+    xfree(ti->correct.data);
+    xfree(ti->error.data);
+    xfree(ti->chk_out.data);
+    xfree(ti->test_checker.data);
   }
   memset(tv->data, 0, sizeof(tv->data[0]) * tv->size);
   xfree(tv->data);
@@ -4122,7 +4923,9 @@ invoke_prepare_cmd(
         const unsigned char *prepare_cmd,
         const unsigned char *working_dir,
         const unsigned char *exe_name,
-        const unsigned char *messages_path)
+        const unsigned char *messages_path,
+        const unsigned char *src_path,
+        int exec_user_serial)
 {
   tpTask tsk = task_New();
   int retval = -1;
@@ -4136,6 +4939,15 @@ invoke_prepare_cmd(
   task_SetRedir(tsk, 1, TSR_FILE, messages_path, TSK_REWRITE, TSK_FULL_RW);
   task_SetRedir(tsk, 2, TSR_DUP, 1);
   task_EnableAllSignals(tsk);
+
+  if (src_path) {
+    task_SetEnv(tsk, "EJUDGE_SOURCE_PATH", src_path);
+  }
+  if (exec_user_serial > 0) {
+    char buf[32];
+    sprintf(buf, "%d", exec_user_serial);
+    task_SetEnv(tsk, "EJUDGE_SUPER_RUN_SERIAL", buf);
+  }
 
   if (task_Start(tsk) < 0) {
     append_msg_to_log(messages_path, "failed to start prepare_cmd %s", prepare_cmd);
@@ -4159,7 +4971,7 @@ cleanup:
 static int
 handle_test_sets(
         const unsigned char *messages_path,
-        struct testinfo_vector *tv,
+        struct run_test_info_vector *tv,
         int score,
         int test_sets_count,
         struct testset_info *test_sets_val)
@@ -4267,18 +5079,19 @@ cleanup:
 static int
 check_output_only(
         const struct section_global_data *global,
-        const struct super_run_in_global_packet *srgp,
-        const struct super_run_in_problem_packet *srpp,
+        const struct super_run_in_packet *srp,
         struct run_reply_packet *reply_pkt,
         struct AgentClient *agent,
         full_archive_t far,
         const unsigned char *exe_name,
-        struct testinfo_vector *tests,
+        struct run_test_info_vector *tests,
         const unsigned char *check_cmd,
-        const unsigned char *mirror_dir)
+        const unsigned char *mirror_dir,
+        int utf8_mode,
+        int exec_user_serial)
 {
   int cur_test = 1;
-  struct testinfo *cur_info = NULL;
+  struct run_test_info *cur_info = NULL;
   int status = RUN_CHECK_FAILED;
   long long file_size = 0;
 
@@ -4291,6 +5104,9 @@ check_output_only(
   unsigned char corr_base[PATH_MAX];
   unsigned char test_src[PATH_MAX];
   unsigned char corr_src[PATH_MAX];
+
+  const struct super_run_in_global_packet *srgp = srp->global;
+  const struct super_run_in_problem_packet *srpp = srp->problem;
 
   // check_cmd, check_dir, global->run_work_dir
   ASSERT(cur_test == tests->size);
@@ -4332,22 +5148,18 @@ check_output_only(
   unlink(check_out_path);
   unlink(score_out_path);
 
-  cur_info->input_size = -1;
-  cur_info->output_size = -1;
-  cur_info->error_size = -1;
-  cur_info->correct_size = -1;
-  cur_info->chk_out_size = -1;
   cur_info->visibility = TV_NORMAL;
   cur_info->user_status = -1;
   cur_info->user_nominal_score = -1;
   cur_info->user_score = -1;
 
   snprintf(output_path, sizeof(output_path), "%s/%s", global->run_work_dir, exe_name);
-  status = invoke_checker(srgp, srpp, cur_test, cur_info,
+  status = invoke_checker(srp, cur_test, cur_info,
                           check_cmd, test_src, output_path,
                           corr_src, NULL, NULL,
                           global->run_work_dir, score_out_path, check_out_path,
-                          global->run_work_dir, NULL, 0, NULL, 1);
+                          global->run_work_dir, NULL, 0, NULL, 1, NULL,
+                          exec_user_serial, 0);
 
   cur_info->status = status;
   cur_info->max_score = srpp->full_score;
@@ -4392,6 +5204,13 @@ check_output_only(
     reply_pkt->user_status = cur_info->user_status;
     reply_pkt->user_score = cur_info->user_score;
     reply_pkt->user_tests_passed = cur_info->user_tests_passed;
+    if (reply_pkt->user_status == RUN_OK && srpp->variable_full_score <= 0) {
+      if (srpp->full_user_score >= 0) {
+        reply_pkt->user_score = srpp->full_user_score;
+      } else if (srpp->full_score >= 0) {
+        reply_pkt->user_score = srpp->full_score;
+      }
+    }
   } else {
     reply_pkt->has_user_score = 0;
     reply_pkt->user_status = 0;
@@ -4400,19 +5219,15 @@ check_output_only(
   }
 
   // output file
-  file_size = -1;
-  if (srpp->binary_input <= 0) {
+  if (far) {
     file_size = generic_file_size(0, output_path, 0);
-  }
-  if (file_size >= 0) {
-    cur_info->output_size = file_size;
-    if (srgp->max_file_length > 0 && srgp->enable_full_archive <= 0 && file_size <= srgp->max_file_length) {
-      generic_read_file(&cur_info->output, 0, 0, 0, 0, output_path, "");
-    }
-    if (far) {
+    if (file_size >= 0) {
+      cur_info->output.is_archived = 1;
       snprintf(arch_entry_name, sizeof(arch_entry_name), "%06d.o", cur_test);
       full_archive_append_file(far, arch_entry_name, 0, output_path);
     }
+  } else {
+    read_run_test_file(srgp, &cur_info->output, output_path, utf8_mode);
   }
 
   file_size = -1;
@@ -4421,26 +5236,19 @@ check_output_only(
       filehash_get(corr_src, cur_info->correct_digest);
       cur_info->has_correct_digest = 1;
     } else {
-      if (srpp->binary_input <= 0) {
-        file_size = generic_file_size(0, corr_src, 0);
-      }
-      if (file_size >= 0) {
-        cur_info->correct_size = file_size;
-        if (srgp->max_file_length > 0 && file_size <= srgp->max_file_length) {
-          generic_read_file(&cur_info->correct, 0, 0, 0, 0, corr_src, "");
-        }
-      }
+      read_run_test_file(srgp, &cur_info->correct, corr_src, utf8_mode);
     }
   }
 
-  file_size = generic_file_size(0, check_out_path, 0);
-  if (file_size >= 0) {
-    cur_info->chk_out_size = file_size;
-    generic_read_file(&cur_info->chk_out, 0, 0, 0, 0, check_out_path, "");
-    if (far) {
+  if (far) {
+    file_size = generic_file_size(0, check_out_path, 0);
+    if (file_size >= 0) {
+      cur_info->chk_out.is_archived = 1;
       snprintf(arch_entry_name, sizeof(arch_entry_name), "%06d.c", cur_test);
       full_archive_append_file(far, arch_entry_name, 0, check_out_path);
     }
+  } else {
+    read_run_test_file(srgp, &cur_info->chk_out, check_out_path, utf8_mode);
   }
 
   return status;
@@ -4513,7 +5321,7 @@ static void
 append_skipped_test(
         const struct super_run_in_problem_packet *srpp,
         int cur_test,
-        struct testinfo_vector *tests,
+        struct run_test_info_vector *tests,
         int open_tests_count,
         const int *open_tests_val,
         int test_score_count,
@@ -4524,7 +5332,7 @@ append_skipped_test(
     if (!tests->reserved) tests->reserved = 32;
     tests->data = (typeof(tests->data)) xrealloc(tests->data, tests->reserved * sizeof(tests->data[0]));
   }
-  struct testinfo *cur_info = &tests->data[cur_test];
+  struct run_test_info *cur_info = &tests->data[cur_test];
   memset(cur_info, 0, sizeof(*cur_info));
   ++tests->size;
 
@@ -4555,15 +5363,10 @@ run_tests(
         const struct super_run_in_packet *srp,
         struct run_reply_packet *reply_pkt,
         struct AgentClient *agent,
-        int accept_testing,
-        int accept_partial,
-        int cur_variant,
         char const *exe_name,
         char const *new_base,
         char *report_path,                /* path to the report */
         char *full_report_path,           /* path to the full output dir */
-        const unsigned char *user_spelling,
-        const unsigned char *problem_spelling,
         const unsigned char *mirror_dir,
         int utf8_mode,
         struct run_listener *listener,
@@ -4571,7 +5374,9 @@ run_tests(
         const struct remap_spec *remaps,
         int user_input_mode,
         const unsigned char *inp_data,
-        size_t inp_size)
+        size_t inp_size,
+        const unsigned char *src_path,
+        const struct run_properties *run_props)
 {
   const struct section_global_data *global = state->global;
   const struct super_run_in_global_packet *srgp = srp->global;
@@ -4580,7 +5385,7 @@ run_tests(
 
   full_archive_t far = NULL;
 
-  struct testinfo_vector tests;
+  struct run_test_info_vector tests;
   int cur_test = 0;
   int has_real_time = 0;
   int has_max_memory_used = 0;
@@ -4603,6 +5408,9 @@ run_tests(
   unsigned char check_cmd[PATH_MAX];
   unsigned char b_interactor_cmd[PATH_MAX];
   const unsigned char *interactor_cmd = NULL;
+  unsigned char b_test_generator_cmd[PATH_MAX];
+  const unsigned char *test_generator_cmd = NULL;
+  unsigned char valuer_cmd[PATH_MAX];
 
   int *open_tests_val = NULL;
   int open_tests_count = 0;
@@ -4645,6 +5453,16 @@ run_tests(
   int valuer_user_score = -1;
   int valuer_user_tests_passed = -1;
 
+  const unsigned char *test_dir = srpp->test_dir;
+  const unsigned char *corr_dir = srpp->corr_dir;
+  const unsigned char *info_dir = srpp->info_dir;
+  const unsigned char *tgz_dir = srpp->tgz_dir;
+  unsigned char b_test_dir[PATH_MAX];
+
+  int valuer_group_count = 0;
+  int valuer_group_scores[EJ_MAX_TEST_GROUP + 1] = {};
+
+  valuer_cmd[0] = 0;
   valuer_cmt_file[0] = 0;
   valuer_jcmt_file[0] = 0;
 
@@ -4699,6 +5517,15 @@ run_tests(
     snprintf(check_dir, sizeof(check_dir), "%s", global->run_check_dir);
   }
 
+  if (srpp->standard_valuer && srpp->standard_valuer[0]) {
+    snprintf(valuer_cmd, sizeof(valuer_cmd), "%s/%s",
+             global->ejudge_checkers_dir, srpp->standard_valuer);
+    mirror_file(agent, valuer_cmd, sizeof(valuer_cmd), mirror_dir);
+  } else if (srpp->valuer_cmd && srpp->valuer_cmd[0]) {
+    snprintf(valuer_cmd, sizeof(valuer_cmd), "%s", srpp->valuer_cmd);
+    mirror_file(agent, valuer_cmd, sizeof(valuer_cmd), mirror_dir);
+  }
+
   if (srpp->standard_checker && srpp->standard_checker[0]) {
     snprintf(check_cmd, sizeof(check_cmd), "%s/%s",
              global->ejudge_checkers_dir, srpp->standard_checker);
@@ -4734,11 +5561,21 @@ run_tests(
     mirror_file(agent, b_interactor_cmd, sizeof(b_interactor_cmd), mirror_dir);
   }
 
+  if (srpp->test_generator_cmd && srpp->test_generator_cmd[0]) {
+    snprintf(b_test_generator_cmd, sizeof(b_test_generator_cmd), "%s",
+             srpp->test_generator_cmd);
+    test_generator_cmd = b_test_generator_cmd;
+    mirror_file(agent, b_test_generator_cmd, sizeof(b_test_generator_cmd),
+                mirror_dir);
+  }
+
   if (srpp->type_val) {
-    status = check_output_only(global, srgp, srpp, reply_pkt,
+    status = check_output_only(global, srp, reply_pkt,
                                agent,
                                far, exe_name, &tests, check_cmd,
-                               mirror_dir);
+                               mirror_dir,
+                               utf8_mode,
+                               state->exec_user_serial);
     has_user_score = reply_pkt->has_user_score;
     if (has_user_score) {
       user_status = reply_pkt->user_status;
@@ -4749,7 +5586,7 @@ run_tests(
   }
 
   if (srpp->open_tests && srpp->open_tests[0]) {
-    if (prepare_parse_open_tests(stderr, srpp->open_tests, &open_tests_val, &open_tests_count) < 0) {
+    if (prepare_parse_open_tests(stderr, srpp->open_tests, &open_tests_val, NULL, &open_tests_count) < 0) {
       append_msg_to_log(messages_path, "failed to parse open_tests = '%s'", srpp->open_tests);
       goto check_failed;
     }
@@ -4801,8 +5638,35 @@ run_tests(
     goto check_failed;
   }
 
+  if (test_generator_cmd && test_generator_cmd[0]) {
+    int r = snprintf(b_test_dir, sizeof(b_test_dir), "%s/tests",
+                     global->run_work_dir);
+    if (r >= (int) sizeof(b_test_dir)) {
+      append_msg_to_log(messages_path, "test_dir path too long");
+      goto check_failed;
+    }
+    if (mkdir(b_test_dir, 0700) < 0) {
+      append_msg_to_log(messages_path, "mkdir '%s' failed: %s",
+                        b_test_dir, strerror(errno));
+      goto check_failed;
+    }
+    r = invoke_test_generator_cmd(srp, test_generator_cmd,
+                                  b_test_dir, src_path, messages_path,
+                                  state->exec_user_serial);
+    if (r != 0) {
+      append_msg_to_log(messages_path, "test generator failed");
+      goto check_failed;
+    }
+    test_dir = b_test_dir;
+    corr_dir = b_test_dir;
+    info_dir = b_test_dir;
+    tgz_dir = b_test_dir;
+  }
+
   if (!srpp->type_val && tst && tst->prepare_cmd && tst->prepare_cmd[0]) {
-    if (invoke_prepare_cmd(tst->prepare_cmd, global->run_work_dir, exe_name, messages_path) < 0) {
+    if (invoke_prepare_cmd(tst->prepare_cmd, global->run_work_dir, exe_name,
+                           messages_path, src_path,
+                           state->exec_user_serial) < 0) {
       goto check_failed;
     }
   }
@@ -4812,7 +5676,7 @@ run_tests(
 
 #ifndef __WIN32__
   if (!user_input_mode &&
-      srpp->interactive_valuer > 0 && srpp->valuer_cmd && srpp->valuer_cmd[0]
+      srpp->interactive_valuer > 0 && valuer_cmd[0]
       && srgp->accepting_mode <= 0) {
     if (pipe(evfds) < 0
         || fcntl(evfds[0], F_SETFD, FD_CLOEXEC) < 0
@@ -4826,10 +5690,13 @@ run_tests(
     snprintf(valuer_cmt_file, sizeof(valuer_cmt_file), "%s/score_cmt", global->run_work_dir);
     snprintf(valuer_jcmt_file, sizeof(valuer_jcmt_file), "%s/score_jcmt", global->run_work_dir);
     valuer_tsk = start_interactive_valuer(global, srp, agent, mirror_dir,
+                                          valuer_cmd,
                                           messages_path,
                                           valuer_cmt_file,
                                           valuer_jcmt_file,
-                                          evfds[0], vefds[1]);
+                                          evfds[0], vefds[1],
+                                          src_path,
+                                          state->exec_user_serial);
     if (!valuer_tsk) {
       append_msg_to_log(messages_path, "failed to start interactive valuer");
       goto check_failed;
@@ -4846,7 +5713,7 @@ run_tests(
   while (1) {
     ++cur_test;
     if (srgp->scoring_system_val == SCORE_OLYMPIAD
-        && accept_testing
+        && srgp->accepting_mode
         && cur_test > srpp->tests_to_accept) break;
 
     int tl_retry = 0;
@@ -4869,10 +5736,17 @@ run_tests(
                             &has_real_time, &has_max_memory_used,
                             &has_max_rss,
                             &report_time_limit_ms, &report_real_time_limit_ms,
+                            utf8_mode,
                             mirror_dir, remaps,
                             user_input_mode,
                             inp_data,
-                            inp_size);
+                            inp_size,
+                            src_path,
+                            test_dir,
+                            corr_dir,
+                            info_dir,
+                            tgz_dir,
+                            run_props);
       if (status != RUN_TIME_LIMIT_ERR && status != RUN_WALL_TIME_LIMIT_ERR)
         break;
       if (++tl_retry >= tl_retry_count) break;
@@ -4892,11 +5766,11 @@ run_tests(
       if (srgp->scoring_system_val == SCORE_ACM) break;
       if (srgp->scoring_system_val == SCORE_MOSCOW) break;
       if (srgp->scoring_system_val == SCORE_OLYMPIAD
-          && accept_testing && !accept_partial) break;
+          && srgp->accepting_mode && !srpp->accept_partial) break;
       if (srgp->scoring_system_val == SCORE_KIROV && srpp->stop_on_first_fail > 0) {
         while (1) {
           ++cur_test;
-          if (!does_test_exist(config, state, srp, cur_test)) break;
+          if (!does_test_exist(config, state, srp, srpp->test_dir, cur_test)) break;
           append_skipped_test(srpp, cur_test, &tests,
                               open_tests_count, open_tests_val,
                               test_score_count, test_score_val);
@@ -4928,12 +5802,15 @@ run_tests(
       if (parse_valuer_score(messages_path, buf, buflen, 1, srpp->full_score,
                              srpp->valuer_sets_marked,
                              srgp->separate_user_score,
+                             srpp->enable_group_merge > 0,
                              &reply_next_num,
                              &valuer_score,
                              &valuer_marked,
                              &valuer_user_status,
                              &valuer_user_score,
-                             &valuer_user_tests_passed) < 0) {
+                             &valuer_user_tests_passed,
+                             &valuer_group_count,
+                             valuer_group_scores) < 0) {
         append_msg_to_log(messages_path, "interactive valuer protocol error");
         goto check_failed;
       }
@@ -4982,12 +5859,15 @@ run_tests(
     if (parse_valuer_score(messages_path, buf, buflen, 0, srpp->full_score,
                            srpp->valuer_sets_marked,
                            srgp->separate_user_score,
+                           srpp->enable_group_merge > 0,
                            NULL,
                            &valuer_score,
                            &valuer_marked,
                            &valuer_user_status,
                            &valuer_user_score,
-                           &valuer_user_tests_passed) < 0) {
+                           &valuer_user_tests_passed,
+                           &valuer_group_count,
+                           valuer_group_scores) < 0) {
       append_msg_to_log(messages_path, "interactive valuer protocol error");
       goto check_failed;
     }
@@ -5005,7 +5885,7 @@ run_tests(
 
   // no tests?
   if (srgp->scoring_system_val == SCORE_OLYMPIAD
-      && accept_testing > 0 && srpp->tests_to_accept <= 0) {
+      && srgp->accepting_mode > 0 && srpp->tests_to_accept <= 0) {
     // no tests is ok
   } else if (tests.size <= 1) {
     append_msg_to_log(messages_path, "No tests found");
@@ -5030,7 +5910,7 @@ run_tests(
     goto done;
   }
 
-  if (srgp->scoring_system_val == SCORE_OLYMPIAD && accept_testing) {
+  if (srgp->scoring_system_val == SCORE_OLYMPIAD && srgp->accepting_mode) {
     status = RUN_ACCEPTED;
     failed_test = 0;
     for (cur_test = 1; cur_test <= srpp->tests_to_accept; ++cur_test) {
@@ -5040,7 +5920,7 @@ run_tests(
         break;
       }
     }
-    if (accept_partial) {
+    if (srpp->accept_partial) {
       status = RUN_ACCEPTED;
     } else if (srpp->min_tests_to_accept >= 0 && failed_test > srpp->min_tests_to_accept) {
       status = RUN_ACCEPTED;
@@ -5078,7 +5958,7 @@ run_tests(
       }
     }
 
-    if (total_max_score > srpp->full_score && (!srpp->valuer_cmd || !srpp->valuer_cmd[0])) {
+    if (total_max_score > srpp->full_score && !valuer_cmd[0]) {
       append_msg_to_log(messages_path, "Max total score (%d) is greater than full_score",
                         total_max_score, srpp->full_score);
       goto check_failed;
@@ -5108,7 +5988,7 @@ run_tests(
 
     play_sound(global, messages_path, srgp->disable_sound, status,
                tests.size - failed_test_count, total_score,
-               user_spelling, problem_spelling);
+               srgp->user_spelling, srpp->spelling);
   } else {
     reply_pkt->failed_test = tests.size - 1;
     reply_pkt->score = -1;
@@ -5117,7 +5997,7 @@ run_tests(
       if (status != RUN_OK) {
         if (srpp->scoring_checker > 0) {
           reply_pkt->score = tests.data[tests.size - 1].score;
-        } else if (!srpp->valuer_cmd || !srpp->valuer_cmd[0]) {
+        } else if (!valuer_cmd[0]) {
           if (!score_tests_val) {
             append_msg_to_log(messages_path, "score_tests parameter is undefined");
             goto check_failed;
@@ -5131,16 +6011,19 @@ run_tests(
     }
   }
 
-  if (!user_input_mode && srpp->valuer_cmd && srpp->valuer_cmd[0] && srgp->accepting_mode <= 0) {
+  if (!user_input_mode && valuer_cmd[0] && srgp->accepting_mode <= 0) {
     if (srpp->interactive_valuer <= 0
         && reply_pkt->status != RUN_CHECK_FAILED) {
       if (invoke_valuer(global, srp, agent, mirror_dir,
+                        valuer_cmd,
                         tests.size, tests.data,
-                        cur_variant, srpp->full_score,
+                        srgp->variant, srpp->full_score,
+                        state->exec_user_serial,
                         &total_score, &marked_flag,
                         &user_status, &user_score, &user_tests_passed,
+                        &valuer_group_count, valuer_group_scores,
                         &valuer_errors, &valuer_comment,
-                        &valuer_judge_comment) < 0) {
+                        &valuer_judge_comment, src_path) < 0) {
         goto check_failed;
       } else {
         reply_pkt->score = total_score;
@@ -5173,6 +6056,14 @@ run_tests(
       if (tests.data[cur_test].visibility != TV_HIDDEN)
         ++user_run_tests;
     }
+    if (user_tests_passed < 0) {
+      user_tests_passed = 0;
+      for (cur_test = 1; cur_test < tests.size; ++cur_test) {
+        if (tests.data[cur_test].visibility != TV_HIDDEN
+            && tests.data[cur_test].status == RUN_OK)
+          ++user_tests_passed;
+      }
+    }
     if (user_status < 0) {
       user_status = RUN_OK;
       for (cur_test = 1; cur_test < tests.size; ++cur_test) {
@@ -5187,60 +6078,21 @@ run_tests(
       user_score = 0;
       for (cur_test = 1; cur_test < tests.size; ++cur_test) {
         if (tests.data[cur_test].visibility != TV_HIDDEN) {
-          if (tests.data[cur_test].user_score > 0) {
+          if (tests.data[cur_test].user_score >= 0) {
             user_score += tests.data[cur_test].user_score;
-          } else if (tests.data[cur_test].score > 0) {
+          } else if (tests.data[cur_test].score >= 0) {
             user_score += tests.data[cur_test].score;
           }
         }
       }
     }
-    /*
-    if (user_max_score < 0) {
-      user_max_score = 0;
-      for (cur_test = 1; cur_test < tests.size; ++cur_test) {
-        if (tests.data[cur_test].visibility != TV_HIDDEN) {
-          if (tests.data[cur_test].user_nominal_score > 0) {
-            user_max_score += tests.data[cur_test].user_nominal_score;
-          } else if (tests.data[cur_test].score > 0) {
-            user_max_score += tests.data[cur_test].nominal_score;
-          }
-        }
-      }
-    }
-    */
-    if (srgp->scoring_system_val == SCORE_KIROV
-        || (srgp->scoring_system_val == SCORE_OLYMPIAD && srgp->accepting_mode <= 0)) {
-      if (user_score < 0) {
-        if (srpp->variable_full_score <= 0 && user_status == RUN_OK) {
-          if (srpp->full_user_score >= 0) {
-            user_score = srpp->full_user_score;
-          } else {
-            user_score = srpp->full_score;
-          }
+    // user_run_tests, user_status, user_score computed
+    if (srgp->scoring_system_val == SCORE_KIROV || (srgp->scoring_system_val == SCORE_OLYMPIAD && srgp->accepting_mode <= 0)) {
+      if (srpp->variable_full_score <= 0 && user_status == RUN_OK) {
+        if (srpp->full_user_score >= 0) {
+          user_score = srpp->full_user_score;
         } else {
-          user_score = 0;
-          for (cur_test = 1; cur_test < tests.size; ++cur_test) {
-            if (tests.data[cur_test].visibility != TV_HIDDEN
-                && tests.data[cur_test].score >= 0) {
-              user_score += tests.data[cur_test].score;
-            }
-          }
-          if (srpp->variable_full_score <= 0) {
-            if (srpp->full_user_score >= 0 && user_score > srpp->full_user_score) {
-              user_score = srpp->full_user_score;
-            } else if (user_score > srpp->full_score) {
-              user_score = srpp->full_score;
-            }
-          }
-        }
-      }
-      if (user_tests_passed < 0) {
-        user_tests_passed = 0;
-        for (cur_test = 1; cur_test < tests.size; ++cur_test) {
-          if (tests.data[cur_test].visibility != TV_HIDDEN
-              && tests.data[cur_test].status == RUN_OK)
-            ++user_tests_passed;
+          user_score = srpp->full_score;
         }
       }
     }
@@ -5261,10 +6113,19 @@ done:;
   reply_pkt->user_status = user_status;
   reply_pkt->user_score = user_score;
   reply_pkt->user_tests_passed = user_tests_passed;
+  if (srpp->enable_group_merge > 0) {
+    if (valuer_group_count >= 0 && valuer_group_count <= EJ_MAX_TEST_GROUP) {
+      reply_pkt->group_count = valuer_group_count;
+      if (valuer_group_count > 0) {
+        memcpy(reply_pkt->group_scores, valuer_group_scores, valuer_group_count * sizeof(reply_pkt->group_scores[0]));
+      }
+    }
+  }
 
   generate_xml_report(srp, reply_pkt, report_path,
                       tests.size, tests.data, utf8_mode,
-                      cur_variant, total_score, srpp->full_score, srpp->full_user_score,
+                      srgp->variant, total_score,
+                      srpp->full_score, srpp->full_user_score,
                       srpp->use_corr, srpp->use_info,
                       report_time_limit_ms, report_real_time_limit_ms,
                       has_real_time, has_max_memory_used,
@@ -5273,7 +6134,8 @@ done:;
                       user_run_tests,
                       additional_comment, valuer_comment,
                       valuer_judge_comment, valuer_errors,
-                      cpu_model, cpu_mhz, hostname);
+                      cpu_model, cpu_mhz, hostname,
+                      valuer_group_count, valuer_group_scores);
 
   get_current_time(&reply_pkt->ts7, &reply_pkt->ts7_us);
 

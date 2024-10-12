@@ -1,6 +1,6 @@
 /* -*- c -*- */
 
-/* Copyright (C) 2012-2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2012-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -55,6 +55,7 @@ super_run_in_global_packet_init(struct generic_section_config *gp)
   p->testlib_mode = -1;
 
   p->scoring_system_val = -1;
+  p->enable_ejudge_env = -1;
 }
 
 void
@@ -128,6 +129,7 @@ super_run_in_problem_packet_init(struct generic_section_config *gp)
   p->combined_stdin = -1;
   p->combined_stdout = -1;
   p->ignore_exit_code = -1;
+  p->ignore_term_signal = -1;
   p->binary_input = -1;
   p->binary_output = -1;
   p->real_time_limit_ms = -1;
@@ -157,6 +159,8 @@ super_run_in_problem_packet_init(struct generic_section_config *gp)
   p->stop_on_first_fail = -1;
   p->enable_control_socket = -1;
   p->test_count = -1;
+  p->disable_vm_size_limit = -1;
+  p->enable_group_merge = -1;
 
   p->type_val = -1;
 }
@@ -179,6 +183,7 @@ super_run_in_problem_packet_set_default(struct generic_section_config *gp)
   if (p->combined_stdin < 0) p->combined_stdin = 0;
   if (p->combined_stdout < 0) p->combined_stdout = 0;
   if (p->ignore_exit_code < 0) p->ignore_exit_code = 0;
+  if (p->ignore_term_signal < 0) p->ignore_term_signal = 0;
   if (p->binary_input < 0) p->binary_input = 0;
   if (p->binary_output < 0) p->binary_output = 0;
   if (p->real_time_limit_ms < 0) p->real_time_limit_ms = 0;
@@ -242,6 +247,7 @@ super_run_in_tester_packet_init(struct generic_section_config *gp)
   p->no_core_dump = -1;
   p->enable_memory_limit_error = -1;
   p->clear_env = -1;
+  p->enable_ejudge_env = -1;
 }
 
 void
@@ -256,6 +262,7 @@ super_run_in_tester_packet_set_default(struct generic_section_config *gp)
   if (p->no_core_dump < 0) p->no_core_dump = 0;
   if (p->enable_memory_limit_error < 0) p->enable_memory_limit_error = 0;
   if (p->clear_env < 0) p->clear_env = 0;
+  if (p->enable_ejudge_env < 0) p->enable_ejudge_env = 0;
 }
 
 struct super_run_in_tester_packet *

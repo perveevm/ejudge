@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2006-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2006-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -357,6 +357,7 @@ cmd_http_request(
   hr.out_f = open_memstream(&hr.out_t, &hr.out_z);
   ns_handle_http_request(state, hr.out_f, &hr);
   close_memstream(hr.out_f); hr.out_f = NULL;
+  if (hr.status_code == 0) hr.status_code = 200;
 
   if (!hr.disable_log) {
     *pbuf = 0;
@@ -425,7 +426,8 @@ cmd_http_request(
     size_t hdr_z = 0;
     FILE *hdr_f = open_memstream(&hdr_t, &hdr_z);
 
-    fprintf(hdr_f, "Content-Type: %s\n", "text/json");
+    fprintf(hdr_f, "Status: %d\n", hr.status_code);
+    fprintf(hdr_f, "Content-Type: %s\n", "application/json");
     fprintf(hdr_f, "Cache-Control: no-cache\n");
     fprintf(hdr_f, "Pragma: no-cache\n");
     putc('\n', hdr_f);
@@ -442,6 +444,7 @@ cmd_http_request(
     size_t hdr_z = 0;
     FILE *hdr_f = open_memstream(&hdr_t, &hdr_z);
 
+    fprintf(hdr_f, "Status: %d\n", hr.status_code);
     fprintf(hdr_f, "Content-Type: %s\n", hr.content_type);
     fprintf(hdr_f, "Cache-Control: no-cache\n");
     fprintf(hdr_f, "Pragma: no-cache\n");
@@ -469,6 +472,7 @@ cmd_http_request(
       goto cleanup;
     }
     hr.out_f = open_memstream(&hr.out_t, &hr.out_z);
+    fprintf(hr.out_f, "Status: %d\n", hr.status_code);
     fprintf(hr.out_f, "Content-type: text/plain\n\n");
     close_memstream(hr.out_f); hr.out_f = NULL;
   }
@@ -488,8 +492,6 @@ cmd_http_request(
   xfree(hr.login);
   xfree(hr.name);
   xfree(hr.name_arm);
-  xfree(hr.script_part);
-  xfree(hr.body_attr);
   if (hr.user_info) {
     userlist_free(&hr.user_info->b);
   }
@@ -611,8 +613,6 @@ handle_ws_request(
   xfree(hr.login);
   xfree(hr.name);
   xfree(hr.name_arm);
-  xfree(hr.script_part);
-  xfree(hr.body_attr);
   cJSON_Delete(root);
 }
 
@@ -835,12 +835,14 @@ setup_spool_dirs(const struct ejudge_cfg *config, struct server_framework_state 
   unsigned char compile_status_dir_buf[PATH_MAX];
   unsigned char compile_status_in_buf[PATH_MAX];
   unsigned char compile_status_out_buf[PATH_MAX];
+  unsigned char compile_status_pp_buf[PATH_MAX];
 
   r = snprintf(compile_status_buf, sizeof(compile_status_buf), "%s/%s/status", compile_spool_dir, contest_server_id);
   r = snprintf(compile_report_buf, sizeof(compile_report_buf), "%s/%s/report", compile_spool_dir, contest_server_id);
   r = snprintf(compile_status_dir_buf, sizeof(compile_status_dir_buf), "%s/dir", compile_status_buf);
   r = snprintf(compile_status_in_buf, sizeof(compile_status_in_buf), "%s/in", compile_status_buf);
   r = snprintf(compile_status_out_buf, sizeof(compile_status_out_buf), "%s/out", compile_status_buf);
+  r = snprintf(compile_status_pp_buf, sizeof(compile_status_pp_buf), "%s/postponed", compile_status_buf);
 
   const unsigned char *compile_group = NULL;
 #if defined EJUDGE_COMPILE_USER
@@ -859,8 +861,12 @@ setup_spool_dirs(const struct ejudge_cfg *config, struct server_framework_state 
   if (os_MakeDirPath2(compile_status_out_buf, "0700", NULL) < 0) {
     startup_error("failed to create compile spool: %s", os_ErrorMsg());
   }
+  if (os_MakeDirPath2(compile_status_pp_buf, "0700", NULL) < 0) {
+    startup_error("failed to create compile spool: %s", os_ErrorMsg());
+  }
 
   nsf_add_directory_watch(config, state, compile_status_buf, compile_report_buf, NULL, ns_compile_dir_ready, NULL);
+  nsf_add_post_select(config, state, compile_status_dir_buf, compile_status_pp_buf, ns_postponed_callback, NULL);
 #endif
 
 #if defined EJUDGE_RUN_SPOOL_DIR
@@ -870,6 +876,7 @@ setup_spool_dirs(const struct ejudge_cfg *config, struct server_framework_state 
   unsigned char run_status_dir_buf[PATH_MAX];
   unsigned char run_status_in_buf[PATH_MAX];
   unsigned char run_status_out_buf[PATH_MAX];
+  unsigned char run_status_pp_buf[PATH_MAX];
   unsigned char run_report_buf[PATH_MAX];
   unsigned char run_full_archive_buf[PATH_MAX];
 
@@ -879,6 +886,7 @@ setup_spool_dirs(const struct ejudge_cfg *config, struct server_framework_state 
   r = snprintf(run_status_dir_buf, sizeof(run_status_dir_buf), "%s/dir", run_status_buf);
   r = snprintf(run_status_in_buf, sizeof(run_status_in_buf), "%s/in", run_status_buf);
   r = snprintf(run_status_out_buf, sizeof(run_status_out_buf), "%s/out", run_status_buf);
+  r = snprintf(run_status_pp_buf, sizeof(run_status_pp_buf), "%s/postponed", run_status_buf);
 
   if (os_MakeDirPath(run_report_buf, 0700) < 0) {
     startup_error("failed to create run spool '%s': %s",
@@ -900,10 +908,15 @@ setup_spool_dirs(const struct ejudge_cfg *config, struct server_framework_state 
     startup_error("failed to create run spool '%s': %s",
                   run_status_out_buf, os_ErrorMsg());
   }
+  if (os_MakeDirPath(run_status_pp_buf, 0700) < 0) {
+    startup_error("failed to create run spool '%s': %s",
+                  run_status_pp_buf, os_ErrorMsg());
+  }
 
   nsf_add_directory_watch(config, state,
                           run_status_buf, run_report_buf, run_full_archive_buf,
                           ns_run_dir_ready, NULL);
+  nsf_add_post_select(config, state, run_status_dir_buf, run_status_pp_buf, ns_postponed_callback, NULL);
 #endif /* EJUDGE_RUN_SPOOL_DIR */
 }
 
@@ -1040,6 +1053,7 @@ main(int argc, char *argv[])
   if (ejudge_config->contests_ws_port > 0) {
     params.ws_port = ejudge_config->contests_ws_port;
   }
+  params.config = ejudge_config;
 
   if (load_plugins() < 0) return 1;
 

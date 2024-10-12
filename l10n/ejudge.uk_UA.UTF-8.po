@@ -6,7 +6,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: 3.0\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2023-06-10 07:29+0300\n"
+"POT-Creation-Date: 2024-10-02 00:48+0300\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: Ukrainian <uk@li.org>\n"
@@ -37,6 +37,10 @@ msgstr ""
 
 #, c-format
 msgid " / <b>%d unread message(s)</b>"
+msgstr ""
+
+#, c-format
+msgid " memory-limit exceeded"
 msgstr ""
 
 msgid " or standard input"
@@ -82,6 +86,10 @@ msgid "/&lt;User_Name&gt;/&lt;Problem&gt;/&lt;File&gt;"
 msgstr ""
 
 #, c-format
+msgid "; max used memory:"
+msgstr ""
+
+#, c-format
 msgid "<b>====== Test #%d =======</b>\n"
 msgstr ""
 
@@ -104,11 +112,19 @@ msgid "<big>%d total tests runs, %d passed, %d failed.<br>\n"
 msgstr ""
 
 #, c-format
+msgid "<big>Failed test: %d.</big>\n"
+msgstr ""
+
+#, c-format
 msgid "<big>Failed test: %d.<br/><br/></big>\n"
 msgstr ""
 
 #, c-format
 msgid "<big>Failed test: %d.<br><br></big>\n"
+msgstr ""
+
+#, c-format
+msgid "<big>Score gained: %d (out of %d).</big>\n"
 msgstr ""
 
 msgid "<font color=\"green\">OK</font>"
@@ -422,6 +438,9 @@ msgstr ""
 msgid "Allow viewing the judge comment of the valuer"
 msgstr ""
 
+msgid "Already exists"
+msgstr ""
+
 #, c-format
 msgid "An e-mail messages is sent to the address <tt>%s</tt>."
 msgstr ""
@@ -458,6 +477,12 @@ msgid "Apr"
 msgstr ""
 
 msgid "Archive creation with tar failed"
+msgstr ""
+
+msgid "Are you sure you want to finish your contest?"
+msgstr ""
+
+msgid "Are you sure you want to stop your virtual contest?"
 msgstr ""
 
 msgid "Area"
@@ -1186,6 +1211,9 @@ msgstr ""
 msgid "Down all"
 msgstr ""
 
+msgid "Download"
+msgstr ""
+
 msgid "Download OK and PR runs"
 msgstr ""
 
@@ -1456,7 +1484,19 @@ msgstr ""
 msgid "Final visibility rules are active"
 msgstr ""
 
+msgid "Finish contest"
+msgstr ""
+
+msgid "Finish contest?"
+msgstr ""
+
+msgid "Finish exam"
+msgstr ""
+
 msgid "Finish session"
+msgstr ""
+
+msgid "Finish the contest"
 msgstr ""
 
 msgid "Finish the exam"
@@ -1595,6 +1635,12 @@ msgid "Group"
 msgstr ""
 
 msgid "Group (En)"
+msgstr ""
+
+msgid "Group Info"
+msgstr ""
+
+msgid "Group scores"
 msgstr ""
 
 msgid "Guest"
@@ -1785,6 +1831,9 @@ msgid ""
 msgstr ""
 
 msgid "In reply to"
+msgstr ""
+
+msgid "Include hidden (#) runs"
 msgstr ""
 
 msgid "Incomplete?"
@@ -2028,6 +2077,9 @@ msgstr ""
 msgid "Jan"
 msgstr ""
 
+msgid "Job status"
+msgstr ""
+
 msgid "Judge"
 msgstr ""
 
@@ -2269,6 +2321,10 @@ msgid "Max number of users was"
 msgstr ""
 
 msgid "Max problem submit count is exceeded"
+msgstr ""
+
+#, c-format
+msgid "Max running time:"
 msgstr ""
 
 #, c-format
@@ -2597,6 +2653,9 @@ msgid "Open date"
 msgstr ""
 
 msgid "Open for participation"
+msgstr ""
+
+msgid "Open tests"
 msgstr ""
 
 msgid "Operation completed"
@@ -3367,7 +3426,7 @@ msgid ""
 msgstr ""
 
 #, c-format
-msgid "Score gained: %d (out of %d).<br/><br/></big>\n"
+msgid "Score gained: %d (out of %d).</big>\n"
 msgstr ""
 
 #, c-format
@@ -3528,6 +3587,9 @@ msgid "Set the registration status of the selected users to PENDING"
 msgstr ""
 
 msgid "Set the registration status of the selected users to REJECTED"
+msgstr ""
+
+msgid "Set up github/gitlab integration and push solution"
 msgstr ""
 
 msgid "Settings"
@@ -4212,6 +4274,9 @@ msgstr ""
 msgid "Use user Name"
 msgstr ""
 
+msgid "Used memory RSS (KiB)"
+msgstr ""
+
 msgid "User"
 msgstr ""
 
@@ -4250,6 +4315,12 @@ msgstr ""
 msgid "User info"
 msgstr ""
 
+msgid "User is banned"
+msgstr ""
+
+msgid "User is locked"
+msgstr ""
+
 msgid "User is simple registered"
 msgstr ""
 
@@ -4269,6 +4340,9 @@ msgid "User name"
 msgstr ""
 
 msgid "User name (for standings)"
+msgstr ""
+
+msgid "User not registered for contest"
 msgstr ""
 
 msgid ""
@@ -4947,6 +5021,10 @@ msgid "this user cannot participate in this contest"
 msgstr ""
 
 msgid "this user is not registered for this contest"
+msgstr ""
+
+#, c-format
+msgid "time-limit exceeded"
 msgstr ""
 
 msgid "transitive user contest sharing"

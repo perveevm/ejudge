@@ -3,7 +3,7 @@
 #ifndef __RLDB_PLUGIN_H__
 #define __RLDB_PLUGIN_H__
 
-/* Copyright (C) 2008-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2008-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -104,6 +104,8 @@ struct rldb_plugin_iface
         int judge_id,
         const ej_uuid_t *judge_uuid,
         unsigned int verdict_bits,
+        int group_count,
+        const int *group_scores,
         struct run_entry *ure);
   // start the contest
   int (*start)(struct rldb_plugin_cnts *, time_t);
@@ -130,7 +132,7 @@ struct rldb_plugin_iface
         int new_hidden,
         struct run_entry *ure);
   // set the judge_id value
-  __attribute__((deprecated)) int (*deprecated_set_judge_id)(struct rldb_plugin_cnts *,
+  int (*deprecated_set_judge_id)(struct rldb_plugin_cnts *,
                       int run_id,
                       int new_judge_id);
   // set the pages value
@@ -153,7 +155,7 @@ struct rldb_plugin_iface
   // insert the whole header
   int (*put_header)(struct rldb_plugin_cnts *, const struct run_header *);
   // change the status (extended version)
-  __attribute__((deprecated)) int (*deprecated_change_status_2)(struct rldb_plugin_cnts *,
+  int (*deprecated_change_status_2)(struct rldb_plugin_cnts *,
                          int run_id,
                          int new_status,
                          int new_test,
@@ -177,6 +179,8 @@ struct rldb_plugin_iface
         int user_tests_passed,
         int user_score,
         unsigned int verdict_bits,
+        int group_count,
+        const int *group_scores,
         struct run_entry *ure);
   // change the status (brief version)
   int (*change_status_4)(
@@ -195,7 +199,7 @@ struct rldb_plugin_iface
         struct run_entry **p_entries);
 
   // write a new run to the database, including problem UUID
-  __attribute__((deprecated)) int (*deprecated_add_entry_2)(
+  int (*deprecated_add_entry_2)(
         struct rldb_plugin_cnts *,
         int i,
         const struct run_entry *,
@@ -239,6 +243,8 @@ struct rldb_plugin_iface
   int (*append_run)(
         struct rldb_plugin_cnts *cdata,
         const struct run_entry *re,
+        int group_count,
+        const int *group_scores,
         uint64_t mask,
         struct timeval *p_tv,
         int64_t *p_serial_id,
@@ -250,6 +256,11 @@ struct rldb_plugin_iface
         struct rldb_plugin_cnts *cdata,
         int run_id,
         int is_checked);
+
+  // get group scores by group score index
+  const int * (*get_group_scores)(
+        struct rldb_plugin_cnts *cdata,
+        uint32_t index);
 };
 
 /* default plugin: compiled into new-server */

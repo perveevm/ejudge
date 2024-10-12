@@ -1,6 +1,6 @@
 /* -*- c -*- */
 
-/* Copyright (C) 2012-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2012-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -32,6 +32,7 @@
 #include "ejudge/ej_uuid.h"
 #include "ejudge/super_run_status.h"
 #include "ejudge/agent_client.h"
+#include "ejudge/run_props.h"
 
 #include "ejudge/xalloc.h"
 #include "ejudge/osdeps.h"
@@ -50,6 +51,8 @@
 #include <sys/time.h>
 #include <sys/inotify.h>
 #include <sys/epoll.h>
+#include <sys/mman.h>
+#include <fcntl.h>
 
 enum { DEFAULT_WAIT_TIMEOUT_MS = 300000 }; // 5m
 
@@ -101,6 +104,7 @@ static int ignore_rejudge = 0;
 
 static unsigned char **host_names = NULL;
 static unsigned char *mirror_dir = NULL;
+static unsigned char *local_cache = NULL;
 
 #define HEARTBEAT_SAVE_INTERVAL_MS 500
 static long long last_heartbear_save_time = 0;
@@ -249,6 +253,130 @@ static const struct run_listener_ops super_run_listener_ops =
 };
 
 static int
+do_copy_regular_file(
+        const unsigned char *dst_path,
+        const unsigned char *src_path)
+{
+  int src_fd = -1;
+  int retval = -1;
+  size_t src_size = 0;
+  unsigned char *src_ptr = MAP_FAILED;
+  int dst_fd = -1;
+  int need_unlink = 0;
+  unsigned char *dst_ptr = MAP_FAILED;
+
+  src_fd = open(src_path, O_RDONLY | O_CLOEXEC | O_NOCTTY | O_NONBLOCK, 0);
+  if (src_fd < 0) {
+    err("%s: open '%s' failed: %s", __FUNCTION__, src_path, os_ErrorMsg());
+    goto done;
+  }
+  struct stat stb;
+  if (fstat(src_fd, &stb) < 0) {
+    err("%s: fstat failed: %s", __FUNCTION__, os_ErrorMsg());
+    goto done;
+  }
+  if (!S_ISREG(stb.st_mode)) {
+    err("%s: '%s' is not regular", __FUNCTION__, src_path);
+    goto done;
+  }
+  if (stb.st_size < 0 || stb.st_size > 128 * 1024 * 1024) {
+    err("%s: '%s' is too big", __FUNCTION__, src_path);
+    goto done;
+  }
+  src_size = stb.st_size;
+
+  dst_fd = open(dst_path, O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOCTTY | O_NONBLOCK, stb.st_mode & 0777);
+  if (dst_fd < 0) {
+    err("%s: open '%s' failed: %s", __FUNCTION__, dst_path, os_ErrorMsg());
+    goto done;
+  }
+  need_unlink = 1;
+  if (fstat(dst_fd, &stb) < 0) {
+    err("%s: fstat failed: %s", __FUNCTION__, os_ErrorMsg());
+    goto done;
+  }
+  if (!S_ISREG(stb.st_mode)) {
+    err("%s: '%s' is not regular", __FUNCTION__, dst_path);
+    goto done;
+  }
+
+  if (src_size > 0) {
+    src_ptr = mmap(NULL, src_size, PROT_READ, MAP_PRIVATE, src_fd, 0);
+    if (src_ptr == MAP_FAILED) {
+      err("%s: mmap of '%s' failed: %s", __FUNCTION__, src_path, os_ErrorMsg());
+      goto done;
+    }
+
+    if (posix_fallocate(dst_fd, 0, src_size) < 0) {
+      err("%s: fallocate failed: %s", __FUNCTION__, os_ErrorMsg());
+      goto done;
+    }
+    dst_ptr = mmap(NULL, src_size, PROT_READ | PROT_WRITE, MAP_SHARED, dst_fd, 0);
+    if (dst_ptr == MAP_FAILED) {
+      err("%s: mmap of '%s' failed: %s", __FUNCTION__, dst_path, os_ErrorMsg());
+      goto done;
+    }
+    memcpy(dst_ptr, src_ptr, src_size);
+  }
+
+  retval = 0;
+  need_unlink = 0;
+
+done:;
+  if (dst_ptr != MAP_FAILED) munmap(dst_ptr, src_size);
+  if (src_ptr != MAP_FAILED) munmap(src_ptr, src_size);
+  if (need_unlink) unlink(dst_path);
+  if (dst_fd >= 0) close(dst_fd);
+  if (src_fd >= 0) close(src_fd);
+  return retval;
+}
+
+static int
+move_from_local_cache(
+        const unsigned char *judge_uuid,
+        const unsigned char *dst_dir,
+        const unsigned char *dst_name,
+        const unsigned char *dst_sfx)
+{
+  unsigned char src_path[PATH_MAX];
+  unsigned char dst_path[PATH_MAX];
+  int r;
+
+  if (!dst_sfx) dst_sfx = "";
+  r = snprintf(src_path, sizeof(src_path), "%s/%s%s", local_cache, judge_uuid, dst_sfx);
+  if (r >= (int)sizeof(src_path)) {
+    err("%s: source path too long", __FUNCTION__);
+    return -1;
+  }
+
+  if (dst_dir && *dst_dir) {
+    r = snprintf(dst_path, sizeof(dst_path), "%s/%s%s", dst_dir, dst_name, dst_sfx);
+  } else {
+    r = snprintf(dst_path, sizeof(dst_path), "%s%s", dst_name, dst_sfx);
+  }
+  if (r >= (int)sizeof(dst_path)) {
+    err("%s: destination path too long", __FUNCTION__);
+    unlink(src_path);
+    return -1;
+  }
+
+  if (rename(src_path, dst_path) >= 0) {
+    return 0;
+  }
+  if (errno != EXDEV) {
+    err("%s: rename failed: %s", __FUNCTION__, os_ErrorMsg());
+    unlink(src_path);
+    return -1;
+  }
+  if (do_copy_regular_file(dst_path, src_path) < 0) {
+    unlink(src_path);
+    return -1;
+  }
+  unlink(src_path);
+  return 0;
+}
+
+static int
 handle_packet(
         serve_state_t state,
         const unsigned char *pkt_name,
@@ -283,6 +411,13 @@ handle_packet(
   struct super_run_listener run_listener;
   char *inp_data = NULL;
   size_t inp_size = 0;
+  char *prop_data = NULL;
+  size_t prop_size = 0;
+
+  unsigned char source_code_buf[PATH_MAX];
+  const unsigned char *source_code_path = NULL;
+
+  struct run_properties *run_props = NULL;
 
   memset(&reply_pkt, 0, sizeof(reply_pkt));
   memset(&run_listener, 0, sizeof(run_listener));
@@ -385,6 +520,9 @@ handle_packet(
     if (agent) {
       r = agent->ops->get_data_2(agent, pkt_name, srgp->exe_sfx,
                                  global->run_work_dir, run_base, srgp->exe_sfx);
+      if (local_cache && *local_cache && srgp->judge_uuid && *srgp->judge_uuid && srgp->cached_on_remote > 0) {
+        move_from_local_cache(srgp->judge_uuid, global->run_work_dir, run_base, srgp->exe_sfx);
+      }
     } else {
       r = generic_copy_file(REMOVE, super_run_exe_path, exe_pkt_name, "",
                             0, global->run_work_dir, exe_name, "");
@@ -398,6 +536,47 @@ handle_packet(
         generic_write_file(srp_b, srp_z, SAFE, super_run_spool_path, pkt_name, "");
       }
       goto cleanup;
+    }
+
+    // copy the source code file
+    if (srgp->src_file && *srgp->src_file) {
+      const unsigned char *src_sfx = srgp->src_sfx;
+      if (!src_sfx) src_sfx = "";
+      snprintf(source_code_buf, sizeof(source_code_buf), "%s/%s%s",
+               global->run_work_dir, srgp->src_file, src_sfx);
+      if (agent) {
+        r = agent->ops->get_data_2(agent, srgp->src_file, src_sfx,
+                                   global->run_work_dir, srgp->src_file,
+                                   src_sfx);
+        // FIXME: support local cache
+      } else {
+        r = generic_copy_file(REMOVE, super_run_exe_path,srgp->src_file, src_sfx,
+                              0, global->run_work_dir, srgp->src_file, src_sfx);
+      }
+      if (r < 0) {
+        err("failed to copy source code file");
+        goto cleanup;
+      }
+      source_code_path = source_code_buf;
+      (void) source_code_path;
+    }
+
+    if (srgp->has_run_props > 0 && srgp->zip_mode <= 0 && srgp->prop_file) {
+      if (agent) {
+        r = agent->ops->get_data(agent, srgp->prop_file, NULL, &prop_data, &prop_size);
+      } else {
+        r = generic_read_file(&prop_data, 0, &prop_size, REMOVE, super_run_exe_path, srgp->prop_file, NULL);
+      }
+      if (r < 0 || !prop_size || !prop_data) {
+        err("prop_file is nonexistant or empty");
+        goto cleanup;
+      }
+      unsigned char *msg = NULL;
+      if (run_properties_parse_json_str(prop_data, &run_props, &msg) < 0) {
+        err("prop_file parse failed: %s", msg);
+        xfree(msg);
+        goto cleanup;
+      }
     }
 
     if (srgp->submit_id > 0) {
@@ -458,17 +637,16 @@ handle_packet(
     //if (cr_serialize_lock(state) < 0) return -1;
     run_tests(ejudge_config, state, tst, srp, &reply_pkt,
               agent,
-              srgp->accepting_mode,
-              srpp->accept_partial, srgp->variant,
               exe_name, run_base,
               report_path, full_report_path,
-              srgp->user_spelling,
-              srpp->spelling, mirror_dir, utf8_mode,
+              mirror_dir, utf8_mode,
               &run_listener.b, super_run_name,
               remap_specs,
               srgp->submit_id > 0,
               inp_data,
-              inp_size);
+              inp_size,
+              source_code_path,
+              run_props);
     //if (cr_serialize_unlock(state) < 0) return -1;
   }
 
@@ -595,6 +773,8 @@ cleanup:
   srp = super_run_in_packet_free(srp);
   xfree(reply_pkt_buf); reply_pkt_buf = NULL;
   free(inp_data);
+  free(prop_data);
+  run_properties_free(run_props);
   clear_directory(global->run_work_dir);
   return retval;
 }
@@ -1530,6 +1710,13 @@ main(int argc, char *argv[])
       argv_restart[argc_restart++] = argv[cur_arg];
       argv_restart[argc_restart++] = argv[cur_arg + 1];
       cur_arg += 2;
+    } else if (!strcmp(argv[cur_arg], "--local-cache")) {
+      if (cur_arg + 1 >= argc) fatal("argument expected for --local-cache");
+      xfree(local_cache); local_cache = NULL;
+      local_cache = xstrdup(argv[cur_arg + 1]);
+      argv_restart[argc_restart++] = argv[cur_arg];
+      argv_restart[argc_restart++] = argv[cur_arg + 1];
+      cur_arg += 2;
     } else if (!strcmp(argv[cur_arg], "-i")) {
       if (cur_arg + 1 >= argc) fatal("argument expected for -i");
       if (parse_ignored_problem(argv[cur_arg + 1], &ignored_problems[ignored_problems_count++]) < 0) {
@@ -1690,8 +1877,8 @@ main(int argc, char *argv[])
   ejudge_config = ejudge_cfg_parse(ejudge_xml_path, 1);
   if (!ejudge_config) return 1;
 
-  int parallelism = ejudge_cfg_get_host_option_int(ejudge_config, host_names, "parallelism", 1, 0);
-  if (parallelism <= 0 || parallelism > 128) {
+  int parallelism = ejudge_cfg_get_host_option_int(ejudge_config, host_names, "parallelism", 1, -1);
+  if (parallelism < 0 || parallelism > 128) {
     fatal("invalid value of parallelism host option");
   }
 
