@@ -25,6 +25,8 @@
   if (ns_parse_run_mask(phr, &mask_size_str, &mask_str, &mask_size, &mask) < 0)
     FAIL(NEW_SRV_ERR_INV_RUN_SELECTION);
 
+  info("audit:%s:%d:%d", phr->action_str, phr->user_id, phr->contest_id);
+
   if (cs->xuser_state) {
     t_extra = cs->xuser_state->vt->get_entry(cs->xuser_state, phr->user_id);
     if (t_extra) problem_dir_prefix = t_extra->problem_dir_prefix;
@@ -51,6 +53,10 @@
 <tr><td><input type="radio" name="run_selection" value="2"/></td><td><s:_>Download OK runs</s:_></td></tr>
 <tr><td><input type="radio" name="run_selection" value="3"/></td><td><s:_>Download OK and PR runs</s:_></td></tr>
 <tr><td><input type="radio" name="run_selection" value="4" checked="checked"/></td><td><s:_>Download OK, PR, RJ, IG, PD, DQ runs</s:_></td></tr>
+</table>
+
+<table>
+<tr><td><input type="checkbox" name="enable_hidden" checked="checked"/></td><td><s:_>Include hidden (#) runs</s:_></td></tr>
 </table>
 
 <h2><s:_>File name pattern</s:_></h2>

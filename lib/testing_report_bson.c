@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2019-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2019-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -14,6 +14,7 @@
  * GNU General Public License for more details.
  */
 
+#include "bson/bson.h"
 #include "ejudge/config.h"
 
 #include "ejudge/runlog.h"
@@ -51,7 +52,7 @@ parse_file(bson_iter_t *bi, struct testing_report_file_content *fc)
         case Tag_original_size:
             {
                 long long original_size = -1;
-                if (ej_bson_parse_int64_new(bi, key, &original_size) < 0 || original_size < 0)
+                if (ej_bson_parse_int64_new(bi, key, &original_size) < 0)
                     return -1;
                 fc->orig_size = original_size;
             }
@@ -440,9 +441,11 @@ parse_testing_report_bson(bson_iter_t *bi, testing_report_xml_t r)
     bson_iter_t tests_iter;
     bson_iter_t ttrows_iter;
     bson_iter_t ttcells_iter;
+    bson_iter_t groups_iter;
     int has_tests = 0;
     int has_ttrows = 0;
     int has_ttcells = 0;
+    int has_group_scores = 0;
 
     r->run_id = -1;
     r->judge_id = -1;
@@ -664,6 +667,11 @@ parse_testing_report_bson(bson_iter_t *bi, testing_report_xml_t r)
             if (ej_bson_parse_int_new(bi, key, &r->verdict_bits, 1, 0, 0, 0) < 0)
                 return -1;
             break;
+        case Tag_group_scores:
+            if (bson_iter_type(bi) == BSON_TYPE_ARRAY && bson_iter_recurse(bi, &groups_iter)) {
+                has_group_scores = 1;
+            }
+            break;
         }
     }
 
@@ -722,6 +730,45 @@ parse_testing_report_bson(bson_iter_t *bi, testing_report_xml_t r)
         if (has_tests) {
             if (parse_array(&tests_iter, r, parse_test) < 0)
                 return -1;
+        }
+    }
+    if (has_group_scores) {
+        r->has_group_scores = 1;
+        int *vi = NULL;
+        int va = 0;
+        int vu = 0;
+        int index = -1;
+        while (bson_iter_next(&groups_iter)) {
+            const char *key = bson_iter_key(&groups_iter);
+            ++index;
+            errno = 0;
+            char *eptr = NULL;
+            long val = strtol(key, &eptr, 10);
+            if (errno || *eptr || eptr == key || val != index) {
+                free(vi);
+                return -1;
+            }
+            if (bson_iter_type(&groups_iter) != BSON_TYPE_INT32) {
+                free(vi);
+                return -1;
+            }
+            if (!va) {
+                va = 16;
+                XCALLOC(vi, va);
+            } else {
+                XREALLOC(vi, va *= 2);
+            }
+            int x = bson_iter_int32(&groups_iter);
+            if (x < 0) {
+                free(vi);
+                return -1;
+            }
+            vi[vu++] = x;
+        }
+        r->group_count = vu;
+        r->group_scores = vi;
+        if (r->group_count > 15) {
+            return -1;
         }
     }
 
@@ -819,22 +866,21 @@ unparse_file_content(
         bson_append_document_begin(b, tag, -1, &b_fc);
         if (fc->is_too_big) {
             bson_append_bool(&b_fc, tag_table[Tag_too_big], -1, 1);
-            bson_append_int64(&b_fc, tag_table[Tag_original_size], -1, fc->orig_size);
-        } else {
-            bson_append_int64(&b_fc, tag_table[Tag_size], -1, fc->size);
-            if (fc->is_base64 > 0) {
-                bson_append_bool(&b_fc, tag_table[Tag_base64], -1, 1);
-            }
-            if (fc->is_bzip2 > 0) {
-                bson_append_bool(&b_fc, tag_table[Tag_bzip2], -1, 1);
-            }
-            if (fc->data) {
-                if (fc->is_base64 > 0) {
-                    bson_append_utf8(&b_fc, tag_table[Tag_data], -1, fc->data, -1);
-                } else {
-                    bson_append_binary(&b_fc, tag_table[Tag_data], -1, BSON_SUBTYPE_USER, fc->data, fc->size);
-                }
-            }
+        }
+        bson_append_int64(&b_fc, tag_table[Tag_original_size], -1, fc->orig_size);
+        bson_append_int64(&b_fc, tag_table[Tag_size], -1, fc->size);
+        if (fc->is_base64 > 0) {
+          bson_append_bool(&b_fc, tag_table[Tag_base64], -1, 1);
+        }
+        if (fc->is_bzip2 > 0) {
+          bson_append_bool(&b_fc, tag_table[Tag_bzip2], -1, 1);
+        }
+        if (fc->data) {
+          if (fc->is_base64 > 0) {
+            bson_append_utf8(&b_fc, tag_table[Tag_data], -1, fc->data, -1);
+          } else {
+            bson_append_binary(&b_fc, tag_table[Tag_data], -1, BSON_SUBTYPE_USER, fc->data, fc->size);
+          }
         }
         bson_append_document_end(b, &b_fc);
     }
@@ -1153,6 +1199,18 @@ do_unparse(
             }
         }
         bson_append_array_end(b, &b_ttcells);
+    }
+
+    if (r->has_group_scores) {
+        bson_t b_scores;
+        bson_append_array_begin(b, tag_table[Tag_group_scores], -1, &b_scores);
+        for (int i = 0; i < r->group_count; ++i) {
+            char indbuf[32];
+            const char *key = NULL;
+            bson_uint32_to_string(i, &key, indbuf, sizeof indbuf);
+            bson_append_int32(&b_scores, key, -1, r->group_scores[i]);
+        }
+        bson_append_array_end(b, &b_scores);
     }
     return 0;
 }

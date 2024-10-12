@@ -2,7 +2,7 @@
 #ifndef __COMPILE_PACKET_H__
 #define __COMPILE_PACKET_H__
 
-/* Copyright (C) 2005-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2005-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -38,6 +38,9 @@ struct compile_request_packet
   int use_container;
   int vcs_mode;
   int not_ok_is_cf;
+  int preserve_numbers;
+  int enable_remote_cache;
+  int enable_run_props;            // 1, if an extended running properties (JSON) is supported
   int64_t submit_id;
   ej_uuid_t uuid;
   ej_uuid_t judge_uuid;
@@ -89,6 +92,10 @@ struct compile_reply_packet
   ej_uuid_t uuid;
   int zip_mode;       // reply file is an archive of executables
   ej_uuid_t judge_uuid;
+  int prepended_size;
+  int cached_on_remote;
+  int has_run_props;
+  unsigned char prop_sfx[16];
 };
 
 int

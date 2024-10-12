@@ -1,10 +1,10 @@
 #! /bin/bash
-# Copyright (c) 2019-2023 Alexander Chernov <cher@ejudge.ru>
+# Copyright (c) 2019-2024 Alexander Chernov <cher@ejudge.ru>
 
 # A script for compilation of C# programs using the dotnet compiler.
 # Usage: dotnet-cs in-file out-file
 
-# using EJUDGE_FLAGS we may pass additional flags
+prefix="@prefix@"
 
 LANG_CONFIG_DIR="@lang_config_dir@"
 [ "${EJUDGE_LANG_CONFIG}" = "" ] && EJUDGE_LANG_CONFIG="${LANG_CONFIG_DIR}/dotnet-cs.cfg"
@@ -39,10 +39,68 @@ unset LANGUAGE
 export DOTNET_NOLOGO=true
 export DOTNET_CLI_TELEMETRY_OPTOUT=true
 
-if ! "${DOTNETRUN}" new console -lang 'c#' -n solution
+if [ "$EJUDGE_HAS_PROJECT" = 1 ]
 then
-    echo "Compilation failed." >&2
-    exit 1
+    if [ x"${EJUDGE_SOLUTION_FILE}" = x ]
+    then
+        echo "EJUDGE_SOLUTION_FILE must be specified" >&2
+        exit 1
+    fi
+    mv "$1" "${EJUDGE_SOLUTION_FILE}.cs"
+
+    if ! "${DOTNETRUN}" build -c Release
+    then
+        echo "Compilation failed." >&2
+        exit 1
+    fi
+    if ! mv bin/Release/${DOTNETTARGET}/solution.dll "$2"
+    then
+        echo "Compilation output is missing" >&2
+        exit 1
+    fi
+    exit 0
+fi
+
+TEMPLATE_DIR="${prefix}/share/ejudge/template"
+TEMPLATE_FILE="${TEMPLATE_DIR}/dotnet-cs.tbz"
+
+if [ -w "${TEMPLATE_DIR}" ]
+then
+    if [ ! -f "${TEMPLATE_FILE}" ]
+    then
+        echo "No template file, creating." >&2
+
+        if ! "${DOTNETRUN}" new console -lang 'c#' -n solution
+        then
+            echo "Compilation failed." >&2
+            exit 1
+        fi
+
+        if ! tar cfz "${TEMPLATE_FILE}" solution
+        then
+            echo "Template file creation failed." >&2
+            exit 1
+        fi
+        rm -rf solution
+    fi
+
+    if [ ! -f "${TEMPLATE_FILE}" ]
+    then
+        echo "No template file, exiting." >&2
+        exit 1
+    fi
+
+    if ! tar xf "${TEMPLATE_FILE}"
+    then
+        echo "Failed to restore template file." >&2
+        exit 1
+    fi
+else
+    if ! "${DOTNETRUN}" new console -lang 'c#' -n solution
+    then
+        echo "Compilation failed." >&2
+        exit 1
+    fi
 fi
 
 cat "$1" > solution/Program.cs

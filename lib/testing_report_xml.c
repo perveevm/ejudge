@@ -1,6 +1,6 @@
 /* -*- c -*- */
 
-/* Copyright (C) 2005-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2005-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -29,6 +29,7 @@
 #include "ejudge/logger.h"
 
 #include <string.h>
+#include <errno.h>
 
 #ifndef EJUDGE_CHARSET
 #define EJUDGE_CHARSET EJ_INTERNAL_CHARSET
@@ -55,6 +56,9 @@
        [<checker>T</checker>]
     </test>
   </tests>
+  <group_scores>
+    <group_score>S</group_score>
+  </group_scores>
   <ttrows>
     <ttrow id="N" name="S" must-fail="B" />
   </ttrows>
@@ -94,6 +98,8 @@ enum
   TR_T_INTERACTOR_STATS_STR,
   TR_T_CHECKER_STATS_STR,
   TR_T_TEST_CHECKER,
+  TR_T_GROUP_SCORES,
+  TR_T_GROUP_SCORE,
 
   TR_T_LAST_TAG,
 };
@@ -197,6 +203,8 @@ static const char * const elem_map[] =
   [TR_T_INTERACTOR_STATS_STR] = "interactor-stats-str",
   [TR_T_CHECKER_STATS_STR] = "checker-stats-str",
   [TR_T_TEST_CHECKER] = "test-checker",
+  [TR_T_GROUP_SCORES] = "group-scores",
+  [TR_T_GROUP_SCORE] = "group-score",
 
   [TR_T_LAST_TAG] = 0,
 };
@@ -361,23 +369,13 @@ parse_file(
     xml_err_nested_elems(t);
     goto failure;
   }
-  if (oversized) {
-    if (orig_size < 0) {
-      orig_size = 0;
-    }
-    fc->data = NULL;
-    fc->size = 0;
-    fc->is_too_big = oversized;
-    fc->orig_size = orig_size;
-    fc->is_base64 = 0;
-  } else {
-    if (size < 0) size = strlen(t->text);
-    fc->data = t->text; t->text = 0;
-    fc->size = size;
-    fc->is_too_big = 0;
-    fc->orig_size = -1;
-    fc->is_base64 = base64;
-  }
+
+  if (size < 0) size = strlen(t->text);
+  fc->data = t->text; t->text = NULL;
+  fc->size = size;
+  fc->is_too_big = oversized;
+  fc->orig_size = orig_size;
+  fc->is_base64 = base64;
 
   return 0;
 
@@ -850,6 +848,7 @@ parse_testing_report(struct xml_tree *t, testing_report_xml_t r)
   struct xml_attr *a_max_score = 0;
   struct xml_tree *t2;
   int i, j;
+  int was_group_scores = 0;
 
   if (t->tag != TR_T_TESTING_REPORT) {
     xml_err_top_level(t, TR_T_TESTING_REPORT);
@@ -1323,6 +1322,44 @@ parse_testing_report(struct xml_tree *t, testing_report_xml_t r)
       was_ttcells = 1;
       if (parse_ttcells(t2, r) < 0) return -1;
       break;
+    case TR_T_GROUP_SCORES:
+      if (was_group_scores) {
+        xml_err(t2, "duplicated element <group-scores>");
+        return -1;
+      }
+      was_group_scores = 1;
+      r->has_group_scores = 1;
+      r->group_count = 0;
+      for (struct xml_tree *t3 = t2->first_down; t3; t3 = t3->right) {
+        if (t3->tag == TR_T_GROUP_SCORE) {
+          ++r->group_count;
+        }
+      }
+      if (r->group_count > 15) {
+        xml_err(t2, "too many group-scores");
+        return -1;
+      }
+      if (r->group_count > 0) {
+        XCALLOC(r->group_scores, r->group_count);
+        int j = 0;
+        for (struct xml_tree *t3 = t2->first_down; t3; t3 = t3->right) {
+          if (t3->tag == TR_T_GROUP_SCORE) {
+            if (!t3->text) {
+              xml_err(t3, "invalid group-score");
+              return -1;
+            }
+            char *ep = NULL;
+            errno = 0;
+            long v = strtol(t3->text, &ep, 10);
+            if (errno || *ep || ep == t3->text || (int) v != v || v < 0) {
+              xml_err(t3, "invalid group-score");
+              return -1;
+            }
+            r->group_scores[j++] = (int) v;
+          }
+        }
+      }
+      break;
     default:
       xml_err_elem_not_allowed(t2);
       return -1;
@@ -1403,6 +1440,7 @@ testing_report_free(testing_report_xml_t r)
   xfree(r->cpu_mhz); r->cpu_mhz = 0;
   xfree(r->errors); r->errors = 0;
   xfree(r->compiler_output); r->compiler_output = 0;
+  xfree(r->group_scores); r->group_scores = NULL; r->group_count = 0; r->has_group_scores = 0;
 
   if (r->tt_rows) {
     for (i = 0; i < r->tt_row_count; ++i) {
@@ -1557,9 +1595,9 @@ unparse_file_content(
     fprintf(out, "      <%s", elem_map[elem_index]);
     if (fc->is_too_big) {
       unparse_bool_attr(out, TR_A_TOO_BIG, 1);
+    }
+    if (fc->orig_size >= 0) {
       fprintf(out, " %s=\"%lld\"", attr_map[TR_A_ORIGINAL_SIZE], fc->orig_size);
-      fprintf(out, " />\n");
-      return;
     }
 
     fprintf(out, " %s=\"%lld\"", attr_map[TR_A_SIZE], fc->size);
@@ -1693,6 +1731,14 @@ testing_report_unparse_xml(
 
   if (r->uuid.v[0] || r->uuid.v[1] || r->uuid.v[2] || r->uuid.v[3]) {
     fprintf(out, "  <%s>%s</%s>\n", elem_map[TR_T_UUID], ej_uuid_unparse(&r->uuid, NULL), elem_map[TR_T_UUID]);
+  }
+
+  if (r->has_group_scores > 0) {
+    fprintf(out, "  <%s>\n", elem_map[TR_T_GROUP_SCORES]);
+    for (int i = 0; i < r->group_count; ++i) {
+      fprintf(out, "    <%s>%d</%s>\n", elem_map[TR_T_GROUP_SCORE], r->group_scores[i], elem_map[TR_T_GROUP_SCORE]);
+    }
+    fprintf(out, "  </%s>\n", elem_map[TR_T_GROUP_SCORES]);
   }
 
   unparse_string_elem(out, &ab, TR_T_COMMENT, r->comment);

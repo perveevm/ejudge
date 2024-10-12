@@ -1,6 +1,6 @@
 /* -*- c -*- */
 
-/* Copyright (C) 2012-2021 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2012-2023 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -738,6 +738,7 @@ merge_problem_section(
         { CNTSPROB_binary_input, META_PROBLEM_CONFIG_SECTION_binary_input },
         { CNTSPROB_binary, META_PROBLEM_CONFIG_SECTION_binary },
         { CNTSPROB_ignore_exit_code, META_PROBLEM_CONFIG_SECTION_ignore_exit_code },
+        { CNTSPROB_ignore_term_signal, META_PROBLEM_CONFIG_SECTION_ignore_term_signal },
         { CNTSPROB_olympiad_mode, META_PROBLEM_CONFIG_SECTION_olympiad_mode },
         { CNTSPROB_score_latest, META_PROBLEM_CONFIG_SECTION_score_latest },
         { CNTSPROB_score_latest_or_unmarked, META_PROBLEM_CONFIG_SECTION_score_latest_or_unmarked },
@@ -759,6 +760,7 @@ merge_problem_section(
         { CNTSPROB_disable_user_submit, META_PROBLEM_CONFIG_SECTION_disable_user_submit },
         { CNTSPROB_disable_tab, META_PROBLEM_CONFIG_SECTION_disable_tab },
         { CNTSPROB_unrestricted_statement, META_PROBLEM_CONFIG_SECTION_unrestricted_statement },
+        { CNTSPROB_statement_ignore_ip, META_PROBLEM_CONFIG_SECTION_statement_ignore_ip },
         { CNTSPROB_enable_submit_after_reject, META_PROBLEM_CONFIG_SECTION_enable_submit_after_reject },
         { CNTSPROB_hide_file_names, META_PROBLEM_CONFIG_SECTION_hide_file_names },
         { CNTSPROB_hide_real_time_limit, META_PROBLEM_CONFIG_SECTION_hide_real_time_limit },
@@ -1068,6 +1070,7 @@ generate_makefile(struct sid_state *ss,
     prepare_set_prob_value(CNTSPROB_binary_input, tmp_prob, abstr, global);
     prepare_set_prob_value(CNTSPROB_binary, tmp_prob, abstr, global);
     prepare_set_prob_value(CNTSPROB_ignore_exit_code, tmp_prob, abstr, global);
+    prepare_set_prob_value(CNTSPROB_ignore_term_signal, tmp_prob, abstr, global);
     prepare_set_prob_value(CNTSPROB_valuer_cmd, tmp_prob, abstr, global);
     prepare_set_prob_value(CNTSPROB_interactor_cmd, tmp_prob, abstr, global);
     prepare_set_prob_value(CNTSPROB_style_checker_cmd, tmp_prob, abstr, global);

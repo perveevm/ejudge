@@ -2,7 +2,7 @@
 #ifndef __SERVE_STATE_H__
 #define __SERVE_STATE_H__
 
-/* Copyright (C) 2006-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2006-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -18,10 +18,12 @@
 
 #include "ejudge/ej_types.h"
 #include "ejudge/ej_limits.h"
+#include "ejudge/notify_plugin.h"
 #include "ejudge/opcaps.h"
 #include "ejudge/watched_file.h"
 #include "ejudge/problem_plugin.h"
 #include "ejudge/contest_plugin.h"
+#include "ejudge/mixed_id.h"
 
 #include <time.h>
 #include <sys/time.h>
@@ -190,6 +192,8 @@ struct serve_group_member
 };
 
 #define EJ_SERVE_STATE_TOTAL_PROBS 28
+
+struct notify_plugin_data;
 
 struct serve_state
 {
@@ -379,6 +383,17 @@ struct serve_state
 
   // serial number for the testing user
   int exec_user_serial;
+
+  // global notification driver id
+  unsigned char notify_driver;
+  // global notification queue kind
+  unsigned char notify_kind;
+  // global notification queue id
+  ej_mixed_id_t notify_queue;
+  // encoded queue id
+  unsigned char notify_queue_buf[64];
+  // notify plugin
+  struct notify_plugin_data *notify_plugin;
 };
 typedef struct serve_state *serve_state_t;
 
@@ -482,7 +497,11 @@ int serve_state_load_contest(
         struct userlist_clnt *ul_conn,
         struct teamdb_db_callbacks *teamdb_callbacks,
         const struct contest_desc **p_cnts,
-        int no_users_flag);
+        int no_users_flag,
+        void (*load_plugin_func)(
+                serve_state_t cs,
+                struct problem_extra_info *extra,
+                const struct section_problem_data *prob));
 
 int serve_count_unread_clars(const serve_state_t state, int user_id,
                              time_t start_time);
@@ -578,7 +597,11 @@ serve_run_request(
         int not_ok_is_cf,
         const unsigned char *inp_text,
         size_t inp_size,
-        struct run_entry *ure);
+        struct run_entry *ure,
+        const unsigned char *src_text,
+        size_t src_size,
+        const unsigned char *prop_text,
+        size_t prop_size);
 
 int serve_is_valid_status(serve_state_t state, int status, int mode);
 
@@ -645,6 +668,14 @@ serve_telegram_check_failed(
         const serve_state_t cs,
         int run_id,
         const struct run_entry *re);
+void
+serve_telegram_registered(
+        const struct ejudge_cfg *config,
+        const struct contest_desc *cnts,
+        long long chat_id,
+        const char *login_str,
+        const char *password_str,
+        const char *error_message);
 
 void
 serve_rejudge_run(
@@ -885,14 +916,16 @@ int
 serve_is_problem_started(
         const serve_state_t state,
         int user_id,
-        const struct section_problem_data *prob);
+        const struct section_problem_data *prob,
+        time_t point_in_time);
 int
 serve_is_problem_deadlined(
         const serve_state_t state,
         int user_id,
         const unsigned char *user_login,
         const struct section_problem_data *prob,
-        time_t *p_deadline);
+        time_t *p_deadline,
+        time_t point_in_time);
 int
 serve_is_problem_started_2(
         const serve_state_t state,

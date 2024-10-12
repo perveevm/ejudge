@@ -1,6 +1,6 @@
 /* -*- mode: c; c-basic-offset: 4 -*- */
 
-/* Copyright (C) 2021-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2021-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -46,6 +46,10 @@
 #include <linux/seccomp.h>
 #include <linux/filter.h>
 #include <stddef.h>
+#include <sys/socket.h>
+#include <netinet/ip.h>
+#include <net/if.h>
+#include <arpa/inet.h>
 
 #include "config.h"
 
@@ -90,6 +94,7 @@
 static char const sandbox_dir[] = "/sandbox";
 static char const alternatives_dir[] = "/etc/alternatives";
 static char const compile_dir[] = "/home/judges/compile";
+static char const etc_java_dir[] = "/etc/java";
 
 static char safe_dir_path[PATH_MAX];
 static char proc_path[PATH_MAX] = "/proc";
@@ -133,6 +138,11 @@ static int enable_prc_count = 0;
 static int enable_ipc_count = 0;
 static int enable_subdir_mode = 0;
 static int enable_compile_mode = 0;
+static int enable_run = 0;
+static int enable_loopback = 0;
+static int enable_vm_limit = 1;
+static int enable_mem_limit_detect = 0;
+static int enable_security_detect = 0;
 
 static int enable_seccomp = 1;
 static int enable_sys_execve = 0;
@@ -179,7 +189,7 @@ enum { DEFAULT_LIMIT_CPU_TIME_MS = 1000 };
 static int limit_umask = -1;
 static int limit_open_files = -1;
 static long long limit_stack_size = -1;
-static long long limit_vm_size = DEFAULT_LIMIT_VM_SIZE;
+static long long limit_vm_size = -1;
 static long long limit_rss_size = -1;
 static long long limit_file_size = -1;
 static int limit_processes = 5;
@@ -258,20 +268,30 @@ get_user_ids(void)
 {
     // don't use getpwnam because it depends on PAM, etc
     char exec_user_str[64];
+    char compile_user_str[64];
     if (exec_user_serial > 0) {
         if (snprintf(exec_user_str, sizeof(exec_user_str), "%s%d", EXEC_USER, exec_user_serial) >= sizeof(exec_user_str))
             ffatal("invalid user %s%d", EXEC_USER, exec_user_serial);
+        if (snprintf(compile_user_str, sizeof(compile_user_str), "%s%d", COMPILE_USER, exec_user_serial) >= sizeof(compile_user_str))
+            ffatal("invalid user %s%d", COMPILE_USER, exec_user_serial);
     } else {
         if (snprintf(exec_user_str, sizeof(exec_user_str), "%s", EXEC_USER) >= sizeof(exec_user_str))
             ffatal("invalid user %s", EXEC_USER);
+        if (snprintf(compile_user_str, sizeof(compile_user_str), "%s", COMPILE_USER) >= sizeof(compile_user_str))
+            ffatal("invalid user %s", COMPILE_USER);
     }
     char exec_group_str[64];
+    char compile_group_str[64];
     if (exec_user_serial > 0) {
         if (snprintf(exec_group_str, sizeof(exec_group_str), "%s%d", EXEC_GROUP, exec_user_serial) >= sizeof(exec_group_str))
             ffatal("invalid group %s%d", EXEC_GROUP, exec_user_serial);
+        if (snprintf(compile_group_str, sizeof(compile_group_str), "%s%d", COMPILE_GROUP, exec_user_serial) >= sizeof(compile_group_str))
+            ffatal("invalid group %s%d", COMPILE_GROUP, exec_user_serial);
     } else {
         if (snprintf(exec_group_str, sizeof(exec_group_str), "%s", EXEC_GROUP) >= sizeof(exec_group_str))
             ffatal("invalid group %s", EXEC_GROUP);
+        if (snprintf(compile_group_str, sizeof(compile_group_str), "%s", COMPILE_GROUP) >= sizeof(compile_group_str))
+            ffatal("invalid group %s", COMPILE_GROUP);
     }
 
     FILE *f = fopen("/etc/passwd", "r");
@@ -294,7 +314,7 @@ get_user_ids(void)
         int *dest_uid = NULL;
         if (!strcmp(user_name, exec_user_str)) dest_uid = &exec_uid;
         else if (!strcmp(user_name, PRIMARY_USER)) dest_uid = &primary_uid;
-        else if (!strcmp(user_name, COMPILE_USER)) dest_uid = &compile_uid;
+        else if (!strcmp(user_name, compile_user_str)) dest_uid = &compile_uid;
         if (dest_uid) {
             char *eptr = NULL;
             errno = 0;
@@ -329,7 +349,7 @@ get_user_ids(void)
         int *dest_gid = NULL;
         if (!strcmp(group_name, exec_group_str)) dest_gid = &exec_gid;
         else if (!strcmp(group_name, PRIMARY_GROUP)) dest_gid = &primary_gid;
-        else if (!strcmp(group_name, COMPILE_GROUP)) dest_gid = &compile_gid;
+        else if (!strcmp(group_name, compile_group_str)) dest_gid = &compile_gid;
         if (dest_gid) {
             char *eptr = NULL;
             errno = 0;
@@ -598,10 +618,18 @@ reconfigure_fs(void)
     if ((r = mount(empty_bind_path, "/boot", NULL, MS_BIND, NULL)) < 0) {
         ffatal("failed to mount /boot: %s", strerror(errno));
     }
+    if ((r = mount(empty_bind_path, "/srv", NULL, MS_BIND, NULL)) < 0) {
+        ffatal("failed to mount /srv: %s", strerror(errno));
+    }
+    struct stat stb;
+    if (lstat("/data", &stb) >= 0 && S_ISDIR(stb.st_mode)) {
+        if ((r = mount(empty_bind_path, "/data", NULL, MS_BIND, NULL)) < 0) {
+            ffatal("failed to mount /data: %s", strerror(errno));
+        }
+    }
 
     char bind_path[PATH_MAX];
     if (snprintf(bind_path, sizeof(bind_path), "%s/root", safe_dir_path) >= sizeof(bind_path)) abort();
-    struct stat stb;
     if (lstat(bind_path, &stb) >= 0 && S_ISDIR(stb.st_mode)) {
         if ((r = mount(bind_path, "/root", NULL, MS_BIND, NULL)) < 0) {
             ffatal("failed to mount %s as /root: %s", bind_path, strerror(errno));
@@ -621,12 +649,27 @@ reconfigure_fs(void)
                     ffatal("failed to mount %s to %s: %s", alternatives_dir, alt_path, strerror(errno));
                 }
             }
+            char java_path[PATH_MAX];
+            int need_etc_java = 0;
+            if (lstat(etc_java_dir, &stb) >= 0 && S_ISDIR(stb.st_mode)) {
+                // need to preserve /etc/java
+                need_etc_java = 1;
+                if (snprintf(java_path, sizeof(java_path), "%s/java", bind_path) >= (int) sizeof(java_path)) abort();
+                if ((r = mount(etc_java_dir, java_path, NULL, MS_BIND, NULL)) < 0) {
+                    ffatal("failed to mount %s to %s: %s", etc_java_dir, java_path, strerror(errno));
+                }
+            }
             if ((r = mount(bind_path, "/etc", NULL, MS_BIND, NULL)) < 0) {
                 ffatal("failed to mount %s as /etc: %s", bind_path, strerror(errno));
             }
             if (need_alternatives) {
                 if ((r = mount(alt_path, alternatives_dir, NULL, MS_BIND, NULL)) < 0) {
                     ffatal("failed to mount %s to %s: %s", alt_path, alternatives_dir, strerror(errno));
+                }
+            }
+            if (need_etc_java) {
+                if ((r = mount(java_path, etc_java_dir, NULL, MS_BIND, NULL)) < 0) {
+                    ffatal("failed to mount %s to %s: %s", java_path, etc_java_dir, strerror(errno));
                 }
             }
         } else {
@@ -659,8 +702,10 @@ reconfigure_fs(void)
     if ((r = mount("mqueue", "/dev/mqueue", "mqueue", MS_NOSUID | MS_NODEV | MS_NOEXEC | MS_RELATIME, NULL)) < 0) {
         ffatal("failed to mount /dev/mqueue: %s", strerror(errno));
     }
-    if ((r = mount("/tmp", "/run", NULL, MS_BIND, NULL)) < 0){
-        ffatal("failed to mount /run: %s", strerror(errno));
+    if (!enable_run) {
+        if ((r = mount("/tmp", "/run", NULL, MS_BIND, NULL)) < 0){
+            ffatal("failed to mount /run: %s", strerror(errno));
+        }
     }
     if ((r = mount("/tmp", "/dev/shm", NULL, MS_BIND, NULL)) < 0){
         ffatal("failed to mount /dev/shm: %s", strerror(errno));
@@ -760,6 +805,44 @@ reconfigure_fs(void)
 
     free(mi);
     free(mnt_s);
+}
+
+static void
+net_interface_up(
+        const unsigned char *ifname,
+        const unsigned char *ip,
+        const unsigned char *netmask)
+{
+    int sfd = socket(PF_INET, SOCK_DGRAM, IPPROTO_IP);
+    if (sfd < 0) {
+        ffatal("socket() failed: %s", strerror(errno));
+    }
+
+    struct ifreq ifr = {};
+    strncpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
+
+    struct sockaddr_in sa = {};
+    sa.sin_family = AF_INET;
+    sa.sin_port = 0;
+    sa.sin_addr.s_addr = inet_addr(ip);
+    memcpy(&ifr.ifr_addr, &sa, sizeof(sa));
+
+    if (ioctl(sfd, SIOCSIFADDR, &ifr) < 0) {
+        ffatal("cannot set ip addr '%s' on '%s'", ip, ifname);
+    }
+
+    sa.sin_addr.s_addr = inet_addr(netmask);
+    memcpy(&ifr.ifr_addr, &sa, sizeof(sa));
+    if (ioctl(sfd, SIOCSIFNETMASK, &ifr) < 0) {
+        ffatal("cannot set netmask '%s' on '%s'", netmask, ifname);
+    }
+
+    ifr.ifr_flags |= IFF_UP | IFF_BROADCAST | IFF_RUNNING | IFF_MULTICAST;
+    if (ioctl(sfd, SIOCSIFFLAGS, &ifr) < 0) {
+        ffatal("cannot set flags on '%s'", ifname);
+    }
+
+    close(sfd);
 }
 
 static int
@@ -1716,6 +1799,7 @@ static void
 apply_language_profiles(void)
 {
     if (!language_name || !*language_name) return;
+    if (enable_compile_mode) return;
 
     if (!strcmp(language_name, "javac7")
         || !strcmp(language_name, "javac")
@@ -1793,6 +1877,14 @@ apply_language_profiles(void)
     } else if (!strcmp(language_name, "ruby")) {
         enable_sys_fork = 1;
         enable_sys_execve = 1;
+    } else if (!strcmp(language_name, "postgres")) {
+        enable_sys_fork = 1;
+        enable_sys_execve = 1;
+        enable_proc = 1;
+        enable_sys = 1;
+        enable_etc = 1;
+        enable_net_ns = 0;
+        limit_processes = 20;
     }
 }
 
@@ -1843,13 +1935,13 @@ extract_size(const char **ppos, int init_offset, const char *opt_name)
     }
     pos = eptr;
     if (*pos == 'k' || *pos == 'K') {
-        if (__builtin_mul_overflow(v, 1024LL, &v)) fatal("size overflow for option %s", opt_name);
+        if (__builtin_mul_overflow(v, 1024LL, &v)) ffatal("size overflow for option %s", opt_name);
         ++pos;
     } else if (*pos == 'm' || *pos == 'M') {
-        if (__builtin_mul_overflow(v, 1048576LL, &v)) fatal("size overflow for option %s", opt_name);
+        if (__builtin_mul_overflow(v, 1048576LL, &v)) ffatal("size overflow for option %s", opt_name);
         ++pos;
     } else if (*pos == 'g' || *pos == 'G') {
-        if (__builtin_mul_overflow(v, 1073741824LL, &v)) fatal("size overflow for option %s", opt_name);
+        if (__builtin_mul_overflow(v, 1073741824LL, &v)) ffatal("size overflow for option %s", opt_name);
         ++pos;
     }
     if ((size_t) v != v) ffatal("size overflow for option %s", opt_name);
@@ -1880,6 +1972,11 @@ extract_size(const char **ppos, int init_offset, const char *opt_name)
  *   md     - enable /dev filesystem
  *   mD     - enable subdirectory mode
  *   mC     - switch to ejcompile user instead of ejexec
+ *   mr     - preserve original /run directory
+ *   ml     - setup lo inteface inside the container
+ *   mV     - explicitly disable setting of VM size limit
+ *   mM     - enable memory limit error detection
+ *   mE     - enable security violation detection
  *   w<DIR> - working directory (cwd by default)
  *   rn     - redirect to/from /dev/null for standard streams
  *   rm     - merge stdout and stderr output
@@ -1914,6 +2011,7 @@ int
 main(int argc, char *argv[])
 {
     int argi = 1;
+    int limit_vm_set = 0;
 
     {
         char *p = strrchr(argv[0], '/');
@@ -2012,6 +2110,21 @@ main(int argc, char *argv[])
             } else if (*opt == 'm' && opt[1] == 'C') {
                 enable_compile_mode = 1;
                 opt += 2;
+            } else if (*opt == 'm' && opt[1] == 'r') {
+                enable_run = 1;
+                opt += 2;
+            } else if (*opt == 'm' && opt[1] == 'l') {
+                enable_loopback = 1;
+                opt += 2;
+            } else if (*opt == 'm' && opt[1] == 'V') {
+                enable_vm_limit = 0;
+                opt += 2;
+            } else if (*opt == 'm' && opt[1] == 'M') {
+                enable_mem_limit_detect = 1;
+                opt += 2;
+            } else if (*opt == 'm' && opt[1] == 'E') {
+                enable_security_detect = 1;
+                opt += 2;
             } else if (*opt == 'w') {
                 working_dir = extract_string(&opt, 1, "w");
             } else if (*opt == 'r' && opt[1] == 'n') {
@@ -2079,6 +2192,7 @@ main(int argc, char *argv[])
                 limit_stack_size = extract_size(&opt, 2, "ls");
             } else if (*opt == 'l' && opt[1] == 'v') {
                 limit_vm_size = extract_size(&opt, 2, "lv");
+                limit_vm_set = 1;
             } else if (*opt == 'l' && opt[1] == 'R') {
                 limit_rss_size = extract_size(&opt, 2, "lR");
             } else if (*opt == 'l' && opt[1] == 'f') {
@@ -2162,6 +2276,10 @@ main(int argc, char *argv[])
         while (*p) *p++ = 0;
     }
 
+    if (!limit_vm_set && limit_rss_size <= 0 && !enable_compile_mode) {
+        limit_vm_size = DEFAULT_LIMIT_VM_SIZE;
+    }
+
     get_user_ids();
 
     slave_uid = exec_uid;
@@ -2182,9 +2300,6 @@ main(int argc, char *argv[])
         }
         slave_uid = compile_uid;
         slave_gid = compile_gid;
-        if (limit_vm_size == DEFAULT_LIMIT_VM_SIZE) {
-            limit_vm_size = -1;
-        }
         if (limit_cpu_time_ms == DEFAULT_LIMIT_CPU_TIME_MS) {
             limit_cpu_time_ms = 60000;
         }
@@ -2284,6 +2399,10 @@ main(int argc, char *argv[])
         sigemptyset(&bs); sigaddset(&bs, SIGCHLD);
         sigprocmask(SIG_BLOCK, &bs, NULL);
 
+        if (enable_loopback) {
+            net_interface_up("lo", "127.0.0.1", "255.0.0.0");
+        }
+
         if (enable_seccomp) {
             tune_seccomp();
         }
@@ -2362,7 +2481,7 @@ main(int argc, char *argv[])
 
             /* not yet supported: RLIMIT_MEMLOCK, RLIMIT_MSGQUEUE, RLIMIT_NICE, RLIMIT_RTPRIO, RLIMIT_SIGPENDING */
 
-            if (limit_vm_size > 0) {
+            if (enable_vm_limit > 0 && limit_vm_size > 0) {
                 struct rlimit lim = { .rlim_cur = limit_vm_size, .rlim_max = limit_vm_size };
                 if (setrlimit(RLIMIT_AS, &lim) < 0) {
                     fprintf(stderr, "rlimit for RLIMIT_AS %lld failed: %s", limit_vm_size, strerror(errno));
@@ -2546,6 +2665,8 @@ main(int argc, char *argv[])
         long long prc_stop_time_us = 0;
         long long prc_vm_size = -1;
         int prc_time_exceeded = 0;
+        int prc_out_of_memory = 0;
+        int prc_security_violation = 0;
 
         int flag = 1;
         while (flag) {
@@ -2704,7 +2825,26 @@ main(int argc, char *argv[])
             real_time_us = limit_real_time_ms * 1000LL;
         }
 
-        if (prc_time_exceeded) {
+        // heuristics to detect OOM condition
+        if (!prc_time_exceeded && !prc_real_time_exceeded
+            && enable_mem_limit_detect
+            && enable_cgroup && limit_rss_size > 0
+            /* && WIFSIGNALED(prc_status) && WTERMSIG(prc_status) == SIGKILL */
+            && (long long) prc_usage.ru_maxrss * 1024 > limit_rss_size) {
+            prc_out_of_memory = 1;
+        }
+
+        // treat termination by SIGSYS as security violation
+        if (enable_security_detect
+            && WIFSIGNALED(prc_status) && WTERMSIG(prc_status) == SIGSYS) {
+            prc_security_violation = 1;
+        }
+
+        if (prc_security_violation) {
+            dprintf(response_fd, "v");
+        } else if (prc_out_of_memory) {
+            dprintf(response_fd, "m");
+        } else if (prc_time_exceeded) {
             dprintf(response_fd, "t");
         } else if (prc_real_time_exceeded) {
             dprintf(response_fd, "r");

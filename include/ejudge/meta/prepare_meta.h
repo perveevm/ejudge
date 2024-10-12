@@ -71,6 +71,9 @@ enum
   CNTSGLOB_enable_eoln_select,
   CNTSGLOB_start_on_first_login,
   CNTSGLOB_enable_virtual_restart,
+  CNTSGLOB_preserve_line_numbers,
+  CNTSGLOB_enable_remote_cache,
+  CNTSGLOB_enable_run_props,
   CNTSGLOB_name,
   CNTSGLOB_root_dir,
   CNTSGLOB_serve_socket,
@@ -305,6 +308,9 @@ enum
   CNTSGLOB_max_input_size,
   CNTSGLOB_max_submit_num,
   CNTSGLOB_max_submit_total,
+  CNTSGLOB_enable_language_import,
+  CNTSGLOB_language_import,
+  CNTSGLOB_notification_spec,
 
   CNTSGLOB_LAST_FIELD,
 };
@@ -317,6 +323,8 @@ const char *cntsglob_get_name(int tag);
 const void *cntsglob_get_ptr(const struct section_global_data *ptr, int tag);
 void *cntsglob_get_ptr_nc(struct section_global_data *ptr, int tag);
 int cntsglob_lookup_field(const char *name);
+void cntsglob_copy(struct section_global_data *dst, const struct section_global_data *src);
+void cntsglob_free(struct section_global_data *ptr);
 
 struct meta_methods;
 extern const struct meta_methods cntsglob_methods;
@@ -350,6 +358,7 @@ enum
   CNTSPROB_binary_input,
   CNTSPROB_binary,
   CNTSPROB_ignore_exit_code,
+  CNTSPROB_ignore_term_signal,
   CNTSPROB_olympiad_mode,
   CNTSPROB_score_latest,
   CNTSPROB_score_latest_or_unmarked,
@@ -371,6 +380,7 @@ enum
   CNTSPROB_disable_user_submit,
   CNTSPROB_disable_tab,
   CNTSPROB_unrestricted_statement,
+  CNTSPROB_statement_ignore_ip,
   CNTSPROB_restricted_statement,
   CNTSPROB_enable_submit_after_reject,
   CNTSPROB_hide_file_names,
@@ -412,6 +422,9 @@ enum
   CNTSPROB_enable_user_input,
   CNTSPROB_enable_vcs,
   CNTSPROB_enable_iframe_statement,
+  CNTSPROB_enable_src_for_testing,
+  CNTSPROB_disable_vm_size_limit,
+  CNTSPROB_enable_group_merge,
   CNTSPROB_examinator_num,
   CNTSPROB_real_time_limit,
   CNTSPROB_time_limit,
@@ -434,6 +447,7 @@ enum
   CNTSPROB_stand_column,
   CNTSPROB_group_name,
   CNTSPROB_internal_name,
+  CNTSPROB_plugin_entry_name,
   CNTSPROB_uuid,
   CNTSPROB_problem_dir,
   CNTSPROB_test_dir,
@@ -471,6 +485,7 @@ enum
   CNTSPROB_custom_compile_cmd,
   CNTSPROB_custom_lang_name,
   CNTSPROB_extra_src_dir,
+  CNTSPROB_standard_valuer,
   CNTSPROB_test_pat,
   CNTSPROB_corr_pat,
   CNTSPROB_info_pat,
@@ -505,6 +520,7 @@ enum
   CNTSPROB_interactor_env,
   CNTSPROB_style_checker_env,
   CNTSPROB_test_checker_env,
+  CNTSPROB_test_generator_env,
   CNTSPROB_init_env,
   CNTSPROB_start_env,
   CNTSPROB_check_cmd,
@@ -512,6 +528,7 @@ enum
   CNTSPROB_interactor_cmd,
   CNTSPROB_style_checker_cmd,
   CNTSPROB_test_checker_cmd,
+  CNTSPROB_test_generator_cmd,
   CNTSPROB_init_cmd,
   CNTSPROB_start_cmd,
   CNTSPROB_solution_src,
@@ -536,12 +553,15 @@ enum
   CNTSPROB_open_tests,
   CNTSPROB_open_tests_count,
   CNTSPROB_open_tests_val,
+  CNTSPROB_open_tests_group,
   CNTSPROB_final_open_tests,
   CNTSPROB_final_open_tests_count,
   CNTSPROB_final_open_tests_val,
+  CNTSPROB_final_open_tests_group,
   CNTSPROB_token_open_tests,
   CNTSPROB_token_open_tests_count,
   CNTSPROB_token_open_tests_val,
+  CNTSPROB_token_open_tests_group,
   CNTSPROB_max_vm_size,
   CNTSPROB_max_data_size,
   CNTSPROB_max_stack_size,
@@ -572,6 +592,8 @@ const char *cntsprob_get_name(int tag);
 const void *cntsprob_get_ptr(const struct section_problem_data *ptr, int tag);
 void *cntsprob_get_ptr_nc(struct section_problem_data *ptr, int tag);
 int cntsprob_lookup_field(const char *name);
+void cntsprob_copy(struct section_problem_data *dst, const struct section_problem_data *src);
+void cntsprob_free(struct section_problem_data *ptr);
 
 struct meta_methods;
 extern const struct meta_methods cntsprob_methods;
@@ -604,6 +626,11 @@ enum
   CNTSLANG_disable_auto_testing,
   CNTSLANG_disable_testing,
   CNTSLANG_enable_custom,
+  CNTSLANG_enable_ejudge_env,
+  CNTSLANG_preserve_line_numbers,
+  CNTSLANG_default_disabled,
+  CNTSLANG_enabled,
+  CNTSLANG_disable_auto_update,
   CNTSLANG_max_vm_size,
   CNTSLANG_max_stack_size,
   CNTSLANG_max_file_size,
@@ -622,6 +649,11 @@ enum
   CNTSLANG_compile_server_id,
   CNTSLANG_multi_header_suffix,
   CNTSLANG_container_options,
+  CNTSLANG_compiler_container_options,
+  CNTSLANG_clean_up_cmd,
+  CNTSLANG_run_env_file,
+  CNTSLANG_clean_up_env_file,
+  CNTSLANG_version,
   CNTSLANG_unhandled_vars,
   CNTSLANG_disabled_by_config,
 
@@ -636,6 +668,8 @@ const char *cntslang_get_name(int tag);
 const void *cntslang_get_ptr(const struct section_language_data *ptr, int tag);
 void *cntslang_get_ptr_nc(struct section_language_data *ptr, int tag);
 int cntslang_lookup_field(const char *name);
+void cntslang_copy(struct section_language_data *dst, const struct section_language_data *src);
+void cntslang_free(struct section_language_data *ptr);
 
 struct meta_methods;
 extern const struct meta_methods cntslang_methods;
@@ -670,6 +704,7 @@ enum
   CNTSTESTER_clear_env,
   CNTSTESTER_time_limit_adjustment,
   CNTSTESTER_time_limit_adj_millis,
+  CNTSTESTER_enable_ejudge_env,
   CNTSTESTER_run_dir,
   CNTSTESTER_run_queue_dir,
   CNTSTESTER_run_exe_dir,
@@ -699,6 +734,8 @@ const char *cntstester_get_name(int tag);
 const void *cntstester_get_ptr(const struct section_tester_data *ptr, int tag);
 void *cntstester_get_ptr_nc(struct section_tester_data *ptr, int tag);
 int cntstester_lookup_field(const char *name);
+void cntstester_copy(struct section_tester_data *dst, const struct section_tester_data *src);
+void cntstester_free(struct section_tester_data *ptr);
 
 struct meta_methods;
 extern const struct meta_methods cntstester_methods;

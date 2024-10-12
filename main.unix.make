@@ -1,6 +1,6 @@
 # -*- Makefile -*-
 
-# Copyright (C) 2014-2023 Alexander Chernov <cher@ejudge.ru> */
+# Copyright (C) 2014-2024 Alexander Chernov <cher@ejudge.ru> */
 
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -174,13 +174,23 @@ PB_OBJECTS = $(PB_CFILES:.c=.o) libcommon.a libplatform.a libcommon.a
 VC_CFILES = bin/ej-vcs-compile.c
 VC_OBJECTS = $(VC_CFILES:.c=.o) libcommon.a libplatform.a libcommon.a
 
+PGE_CFILES = bin/ej-postgres-exec.c
+PGE_OBJECTS = $(PGE_CFILES:.c=.o)
+
+PGC_CFILES = bin/ej-postgres-cleanup.c
+PGC_OBJECTS = $(PGC_CFILES:.c=.o)
+
 INSTALLSCRIPT = ejudge-install.sh
 BINTARGETS = ejudge-jobs-cmd ejudge-edit-users ejudge-setup ejudge-configure-compilers ejudge-control ejudge-execute ejudge-contests-cmd ejudge-suid-setup ejudge-change-contests
-SERVERBINTARGETS = ej-compile ej-run ej-nwrun ej-ncheck ej-batch ej-serve ej-users ej-users-control ej-jobs ej-jobs-control ej-super-server ej-super-server-control ej-contests ej-contests-control uudecode ej-convert-clars ej-convert-runs ej-fix-db ej-super-run ej-super-run-control ej-normalize ej-polygon ej-import-contest ej-page-gen ej-parblock ej-convert-status ej-convert-xuser ej-agent ej-convert-variant ej-vcs-compile
+SERVERBINTARGETS = ej-compile ej-run ej-nwrun ej-ncheck ej-batch ej-serve ej-users ej-users-control ej-jobs ej-jobs-control ej-super-server ej-super-server-control ej-contests ej-contests-control uudecode ej-convert-clars ej-convert-runs ej-fix-db ej-super-run ej-super-run-control ej-normalize ej-polygon ej-import-contest ej-page-gen ej-parblock ej-convert-status ej-convert-xuser ej-agent ej-convert-variant ej-vcs-compile ej-postgres-exec ej-postgres-cleanup
 SUIDBINTARGETS = ej-suid-chown ej-suid-exec ej-suid-ipcrm ej-suid-kill ej-suid-container ej-suid-update-scripts
 CGITARGETS = cgi-bin/users${CGI_PROG_SUFFIX} cgi-bin/serve-control${CGI_PROG_SUFFIX} cgi-bin/new-client${CGI_PROG_SUFFIX}
 TARGETS = ${SERVERBINTARGETS} ${BINTARGETS} ${CGITARGETS} tools/newrevinfo ${SUIDBINTARGETS} ej-compile-control
-STYLEFILES = style/logo.gif style/priv.css style/unpriv.css style/unpriv3.css style/ejudge3.css style/priv.js style/priv_prob_dlg.js style/unpriv.js style/filter_expr.html style/sprintf.js style/ejudge3_ss.css style/ejudge_mobile.css style/jquery.min.js style/jquery.timepicker.css style/jquery.timepicker.min.js style/prism.js style/prism.css style/Roboto-Regular.ttf style/Roboto-Bold.ttf style/Roboto-Italic.ttf style/Roboto-BoldItalic.ttf style/croppie.css style/croppie.js style/jquery-3.6.0.js style/jquery-ui.css style/jquery-ui.js
+STYLEFILES = style/logo.gif style/priv.css style/unpriv.css style/unpriv3.css style/ejudge3.css style/priv.js \
+  style/priv_prob_dlg.js style/unpriv.js style/filter_expr.html style/sprintf.js style/ejudge3_ss.css style/ejudge_mobile.css \
+  style/jquery.min.js style/jquery.timepicker.css style/jquery.timepicker.min.js style/prism.js style/prism.css \
+  style/Roboto-Regular.ttf style/Roboto-Bold.ttf style/Roboto-Italic.ttf style/Roboto-BoldItalic.ttf \
+  style/croppie.css style/croppie.js style/jquery-3.6.0.js style/jquery-ui.css style/jquery-ui.js style/jquery-ui.min.css style/jquery-ui.min.js style/jquery-ui.icon-font.css style/jquery-3.7.1.js
 
 all: prereq_all local_all subdirs_all mo
 local_all: $(TARGETS) ejudge-config
@@ -218,9 +228,11 @@ subdirs_all:
 	$(MAKE) -C plugins/telegram DESTDIR="${DESTDIR}" all
 	$(MAKE) -C plugins/auth-base DESTDIR="${DESTDIR}" all
 	$(MAKE) -C plugins/auth-google DESTDIR="${DESTDIR}" all
+	$(MAKE) -C plugins/auth-oidc DESTDIR="${DESTDIR}" all
 	$(MAKE) -C plugins/auth-vk DESTDIR="${DESTDIR}" all
 	$(MAKE) -C plugins/auth-yandex DESTDIR="${DESTDIR}" all
 	$(MAKE) -C plugins/notify-redis DESTDIR="${DESTDIR}" all
+	$(MAKE) -C plugins/notify-redis-streams DESTDIR="${DESTDIR}" all
 	$(MAKE) -C csp/contests DESTDIR="${DESTDIR}" all
 	$(MAKE) -C csp/super-server DESTDIR="${DESTDIR}" all
 
@@ -261,6 +273,8 @@ local_install: ${TARGETS} ejudge-config po mo
 	for i in style/*.png; do install -m 0644 $$i "${DESTDIR}${datadir}/ejudge/style"; done
 	tar x -C "${DESTDIR}${datadir}/ejudge/style" -f style/jquery-ui.tbz
 	tar x -C "${DESTDIR}${datadir}/ejudge/style" -f style/jqgrid.tbz
+	tar x -C "${DESTDIR}${datadir}/ejudge/style" -f style/font.tbz
+	tar x -C "${DESTDIR}${datadir}/ejudge/style" -f style/mathjax-3.2.2.tbz
 	install -d "${DESTDIR}${datadir}/ejudge/style/icons"
 	install -d "${DESTDIR}${datadir}/ejudge/style/images"
 	for i in style/icons/*.png; do install -m 0644 $$i "${DESTDIR}${datadir}/ejudge/style/icons"; done
@@ -301,9 +315,11 @@ install: local_install
 	$(MAKE) -C plugins/telegram DESTDIR="${DESTDIR}" install
 	$(MAKE) -C plugins/auth-base DESTDIR="${DESTDIR}" install
 	$(MAKE) -C plugins/auth-google DESTDIR="${DESTDIR}" install
+	$(MAKE) -C plugins/auth-oidc DESTDIR="${DESTDIR}" install
 	$(MAKE) -C plugins/auth-vk DESTDIR="${DESTDIR}" install
 	$(MAKE) -C plugins/auth-yandex DESTDIR="${DESTDIR}" install
 	$(MAKE) -C plugins/notify-redis DESTDIR="${DESTDIR}" install
+	$(MAKE) -C plugins/notify-redis-streams DESTDIR="${DESTDIR}" install
 	$(MAKE) -C csp/contests DESTDIR="${DESTDIR}" install
 	$(MAKE) -C csp/super-server DESTDIR="${DESTDIR}" install
 	#if [ ! -f "${INSTALLSCRIPT}" ]; then ./ejudge-setup -b; fi
@@ -431,6 +447,12 @@ ej-collect-emails: ${CE_OBJECTS}
 ej-vcs-compile: ${VC_OBJECTS}
 	${LD} ${LDFLAGS} $^ -o $@ ${LDLIBS} ${EXPAT_LIB} -ldl ${LIBUUID}
 
+ej-postgres-exec: ${PGE_OBJECTS}
+	${LD} ${LDFLAGS} $^ -o $@ ${LDLIBS} ${EXPAT_LIB} -ldl ${LIBUUID}
+
+ej-postgres-cleanup: ${PGC_OBJECTS}
+	${LD} ${LDFLAGS} $^ -o $@ ${LDLIBS} ${EXPAT_LIB} -ldl ${LIBUUID}
+
 slice-userlist: ${SU_OBJECTS}
 	${LD} ${LDFLAGS} $^ -o $@ ${LDLIBS} ${EXPAT_LIB}
 
@@ -507,9 +529,11 @@ subdir_clean:
 	$(MAKE) -C plugins/telegram DESTDIR="${DESTDIR}" clean
 	$(MAKE) -C plugins/auth-base DESTDIR="${DESTDIR}" clean
 	$(MAKE) -C plugins/auth-google DESTDIR="${DESTDIR}" clean
+	$(MAKE) -C plugins/auth-oidc DESTDIR="${DESTDIR}" clean
 	$(MAKE) -C plugins/auth-vk DESTDIR="${DESTDIR}" clean
 	$(MAKE) -C plugins/auth-yandex DESTDIR="${DESTDIR}" clean
 	$(MAKE) -C plugins/notify-redis DESTDIR="${DESTDIR}" clean
+	$(MAKE) -C plugins/notify-redis-streams DESTDIR="${DESTDIR}" clean
 	$(MAKE) -C csp/contests DESTDIR="${DESTDIR}" clean
 	$(MAKE) -C csp/super-server DESTDIR="${DESTDIR}" clean
 	$(MAKE) -C cfront clean
@@ -546,9 +570,11 @@ subdir_distclean :
 	$(MAKE) -C plugins/telegram DESTDIR="${DESTDIR}" distclean
 	$(MAKE) -C plugins/auth-base DESTDIR="${DESTDIR}" distclean
 	$(MAKE) -C plugins/auth-google DESTDIR="${DESTDIR}" distclean
+	$(MAKE) -C plugins/auth-oidc DESTDIR="${DESTDIR}" distclean
 	$(MAKE) -C plugins/auth-vk DESTDIR="${DESTDIR}" distclean
 	$(MAKE) -C plugins/auth-yandex DESTDIR="${DESTDIR}" distclean
 	$(MAKE) -C plugins/notify-redis DESTDIR="${DESTDIR}" distclean
+	$(MAKE) -C plugins/notify-redis-streams DESTDIR="${DESTDIR}" distclean
 	$(MAKE) -C csp/contests DESTDIR="${DESTDIR}" distclean
 	$(MAKE) -C csp/super-server DESTDIR="${DESTDIR}" distclean
 	$(MAKE) -C cfront distclean

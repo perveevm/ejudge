@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2011-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2011-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -15,6 +15,8 @@
  */
 
 #include "ejudge/config.h"
+#include "ejudge/ej_types.h"
+#include "ejudge/http_request.h"
 #include "ejudge/version.h"
 #include "ejudge/ej_limits.h"
 #include "ejudge/super_html.h"
@@ -40,6 +42,8 @@
 #include "ejudge/ej_process.h"
 #include "ejudge/problem_config.h"
 #include "ejudge/mime_type.h"
+#include "ejudge/random.h"
+#include "ejudge/cJSON.h"
 
 #include "ejudge/xalloc.h"
 #include "ejudge/osdeps.h"
@@ -48,6 +52,7 @@
 #include <printf.h>
 #include <limits.h>
 #include <errno.h>
+#include <stdio.h>
 #include <sys/types.h>
 #include <pwd.h>
 #include <unistd.h>
@@ -4477,6 +4482,7 @@ super_serve_op_IMPORT_FROM_POLYGON_ACTION(
   int enable_api_flag = 0;
   int verbose_flag = 0;
   int ignore_main_solution_flag = 0;
+  int enable_rss_limit_flag = 0;
 
   if (!ss->edited_cnts || !ss->global) {
     FAIL(SSERV_ERR_NO_EDITED_CNTS);
@@ -4633,6 +4639,7 @@ super_serve_op_IMPORT_FROM_POLYGON_ACTION(
   if (hr_cgi_param(phr, "fetch_latest_available", &s) > 0) fetch_latest_available_flag = 1;
   if (hr_cgi_param(phr, "binary_input", &s) > 0) binary_input_flag = 1;
   if (hr_cgi_param(phr, "enable_iframe_statement", &s) > 0) enable_iframe_statement_flag = 1;
+  if (hr_cgi_param(phr, "enable_rss_limit", &s) > 0) enable_rss_limit_flag = 1;
 
   if (hr_cgi_param(phr, "language_priority", &s) > 0 && *s) {
     if (!strcmp(s, "ru,en")
@@ -4724,6 +4731,7 @@ super_serve_op_IMPORT_FROM_POLYGON_ACTION(
   pp->ignore_solutions = ignore_solutions_flag;
   pp->binary_input = binary_input_flag;
   pp->enable_iframe_statement = enable_iframe_statement_flag;
+  pp->enable_rss_limit = enable_rss_limit_flag;
   pp->verbose = verbose_flag;
   pp->create_mode = 1;
   if (upload_mode <= 0) {
@@ -5143,6 +5151,12 @@ do_import_problem(
   if (cfg->max_rss_size != (size_t) -1L && cfg->max_rss_size) {
     prob->max_rss_size = cfg->max_rss_size;
   }
+  if (cfg->disable_vm_size_limit > 0) {
+    prob->disable_vm_size_limit = 1;
+  }
+  if (cfg->enable_group_merge > 0) {
+    prob->enable_group_merge = 1;
+  }
   if (cfg->test_pat && cfg->test_pat[0]) {
     xstrdup3(&prob->test_pat, cfg->test_pat);
   }
@@ -5171,6 +5185,23 @@ do_import_problem(
   if (cfg->interactor_cmd && cfg->interactor_cmd[0]) {
     xstrdup3(&prob->interactor_cmd, cfg->interactor_cmd);
   }
+  if (cfg->standard_valuer && cfg->standard_valuer[0]) {
+    xstrdup3(&prob->standard_valuer, cfg->standard_valuer);
+  } else if (cfg->valuer_cmd && cfg->valuer_cmd[0]) {
+    xstrdup3(&prob->valuer_cmd, cfg->valuer_cmd);
+  }
+  if (cfg->xml_file && cfg->xml_file[0]) {
+    xstrdup3(&prob->xml_file, cfg->xml_file);
+  }
+  if (cfg->test_score_list && cfg->test_score_list[0]) {
+    xstrdup3(&prob->test_score_list, cfg->test_score_list);
+  }
+  if (cfg->open_tests && cfg->open_tests[0]) {
+    xstrdup3(&prob->open_tests, cfg->open_tests);
+  }
+  if (cfg->final_open_tests && cfg->final_open_tests[0]) {
+    xstrdup3(&prob->final_open_tests, cfg->final_open_tests);
+  }
 
 cleanup:
   if (f) fclose(f);
@@ -5188,7 +5219,8 @@ super_serve_op_DOWNLOAD_CLEANUP_AND_IMPORT_ACTION(
   struct sid_state *ss = phr->ss;
   struct update_state *us = ss->update_state;
   FILE *f = NULL;
-  int exit_code = -1, count = 0, successes = 0, failures = 0;
+  int exit_code = -1, count = 0, failures = 0;
+  __attribute__((unused)) int successes = 0;
   struct ss_download_status *statuses = NULL;
 
   if (!us) {
@@ -5285,6 +5317,7 @@ super_serve_op_UPDATE_FROM_POLYGON_ACTION(
   int verbose_flag = 0;
   int binary_input_flag = 0;
   int enable_iframe_statement_flag = 0;
+  int enable_rss_limit_flag = 0;
 
   if (hr_cgi_param(phr, "verbose", &s) > 0) verbose_flag = 1;
 
@@ -5391,6 +5424,7 @@ super_serve_op_UPDATE_FROM_POLYGON_ACTION(
   if (hr_cgi_param(phr, "fetch_latest_available", &s) > 0) fetch_latest_available_flag = 1;
   if (hr_cgi_param(phr, "binary_input", &s) > 0) binary_input_flag = 1;
   if (hr_cgi_param(phr, "enable_iframe_statement", &s) > 0) enable_iframe_statement_flag = 1;
+  if (hr_cgi_param(phr, "enable_rss_limit_flag", &s) > 0) enable_rss_limit_flag = 1;
 
   if ((r = hr_cgi_param(phr, "polygon_url", &s)) < 0) {
     fprintf(log_f, "polygon url is invalid\n");
@@ -5476,6 +5510,7 @@ super_serve_op_UPDATE_FROM_POLYGON_ACTION(
   pp->file_group = xstrdup2(cnts->file_group);
   pp->binary_input = binary_input_flag;
   pp->enable_iframe_statement = enable_iframe_statement_flag;
+  pp->enable_rss_limit = enable_rss_limit_flag;
   XCALLOC(pp->id, polygon_count + 1);
   for (int prob_id = 1, ind = 0; prob_id < ss->prob_a; ++prob_id) {
     const struct section_problem_data *prob = ss->probs[prob_id];
@@ -5689,4 +5724,151 @@ cleanup:
   xfree(out_text);
   xfree(cfg_file_text);
   return 0;
+}
+
+void
+super_html_json_result(
+        FILE *fout,
+        struct http_request_info *phr,
+        int ok,
+        int err_num,
+        unsigned err_id,
+        const unsigned char *err_msg,
+        cJSON *jr)
+{
+  phr->json_reply = 1;
+  if (!ok) {
+    if (err_num < 0) err_num = -err_num;
+    if (!err_id) {
+      random_init();
+      err_id = random_u32();
+    }
+    if (!err_msg || !*err_msg) {
+      err_msg = NULL;
+      if (err_num > 0 && err_num < SSERV_ERR_LAST) {
+        err_msg = super_proto_error_messages[err_num];
+        if (err_msg && !*err_msg) {
+          err_msg = NULL;
+        }
+      }
+    }
+    cJSON_AddFalseToObject(jr, "ok");
+    cJSON *jerr = cJSON_CreateObject();
+    if (err_num > 0) {
+      cJSON_AddNumberToObject(jerr, "num", err_num);
+    }
+    if (err_id) {
+      char xbuf[64];
+      sprintf(xbuf, "%08x", err_id);
+      cJSON_AddStringToObject(jerr, "log_id", xbuf);
+    }
+    if (err_msg) {
+      cJSON_AddStringToObject(jerr, "message", err_msg);
+    }
+    cJSON_AddItemToObject(jr, "error", jerr);
+    // FIXME: log event
+  } else {
+    cJSON_AddTrueToObject(jr, "ok");
+  }
+  cJSON_AddNumberToObject(jr, "server_time", (double) phr->current_time);
+  if (phr->request_id > 0) {
+    cJSON_AddNumberToObject(jr, "request_id", (double) phr->request_id);
+  }
+  if (phr->action_str) {
+    cJSON_AddStringToObject(jr, "action", phr->action_str);
+  } else if (phr->action > 0 && phr->action < SSERV_CMD_LAST && super_proto_cmd_names[phr->action]) {
+    cJSON_AddStringToObject(jr, "action", super_proto_cmd_names[phr->action]);
+  }
+  /*
+  if (phr->client_state && phr->client_state->ops->get_reply_id) {
+    int reply_id = phr->client_state->ops->get_reply_id(phr->client_state);
+    cJSON_AddNumberToObject(jr, "reply_id", (double) reply_id);
+  }
+  */
+  char *jrstr = cJSON_PrintUnformatted(jr);
+  fprintf(fout, "%s\n", jrstr);
+  free(jrstr);
+}
+
+void
+super_serve_api_LOGIN_ACTION_JSON(
+        FILE *out_f,
+        struct http_request_info *phr)
+{
+  const unsigned char *user_login = NULL;
+  const unsigned char *user_password = NULL;
+  unsigned char *user_name = NULL;
+  unsigned char buf[128];
+  __attribute__((unused)) int _;
+
+  if (hr_cgi_param(phr, "login", &user_login) <= 0
+      || hr_cgi_param(phr, "password", &user_password) <= 0
+      || !user_login || !user_password || !user_login[0] || !user_password[0]) {
+    phr->err_num = SSERV_ERR_PERM_DENIED;
+    phr->status_code = 401;
+    goto done;
+  }
+
+  int user_id = 0;
+  ej_cookie_t session_id = 0;
+  ej_cookie_t client_key = 0;
+  int priv_level = 0;
+  int r;
+
+  r = userlist_clnt_priv_login(phr->userlist_clnt, ULS_PRIV_CHECK_USER_2, &phr->ip, 0, phr->ssl_flag,
+                               0, 0, USER_ROLE_ADMIN,
+                               user_login, user_password,
+                               &user_id, &session_id, &client_key, &priv_level, &user_name);
+  if (r < 0) {
+    switch (-r) {
+    case ULS_ERR_INVALID_LOGIN:
+    case ULS_ERR_INVALID_PASSWORD:
+    case ULS_ERR_BAD_CONTEST_ID:
+    case ULS_ERR_IP_NOT_ALLOWED:
+    case ULS_ERR_NO_PERMS:
+    case ULS_ERR_NOT_REGISTERED:
+    case ULS_ERR_CANNOT_PARTICIPATE:
+    case ULS_ERR_NO_COOKIE:
+      phr->err_num = SSERV_ERR_PERM_DENIED;
+      phr->status_code = 401;
+      goto done;
+    default:
+      phr->err_num = SSERV_ERR_USERLIST_DOWN;
+      phr->status_code = 500;
+      goto done;
+    }
+  }
+  if (priv_level != PRIV_LEVEL_ADMIN || user_id <= 0) {
+    phr->err_num = SSERV_ERR_PERM_DENIED;
+    phr->status_code = 401;
+    goto done;
+  }
+  opcap_t caps = 0;
+  if (ejudge_cfg_opcaps_find(phr->config, user_login, &caps) < 0) {
+    phr->err_num = SSERV_ERR_PERM_DENIED;
+    phr->status_code = 401;
+    goto done;
+  }
+  if (opcaps_check(caps, OPCAP_MASTER_LOGIN) < 0) {
+    phr->err_num = SSERV_ERR_PERM_DENIED;
+    phr->status_code = 401;
+    goto done;
+  }
+
+  cJSON *jrr = cJSON_CreateObject();
+  cJSON_AddNumberToObject(jrr, "user_id", user_id);
+  cJSON_AddStringToObject(jrr, "user_login", user_login);
+  if (user_name && user_name[0]) {
+    cJSON_AddStringToObject(jrr, "user_name", user_name);
+  }
+  _ = snprintf(buf, sizeof(buf), "%016llx-%016llx", session_id, client_key);
+  cJSON_AddStringToObject(jrr, "session", buf);
+  _ = snprintf(buf, sizeof(buf), "%016llx", session_id);
+  cJSON_AddStringToObject(jrr, "SID", buf);
+  _ = snprintf(buf, sizeof(buf), "%016llx", client_key);
+  cJSON_AddStringToObject(jrr, "EJSID", buf);
+  cJSON_AddItemToObject(phr->json_result, "result", jrr);
+
+done:;
+  free(user_name);
 }

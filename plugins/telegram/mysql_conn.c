@@ -1,6 +1,6 @@
 /* -*- mode: c; c-basic-offset: 4 -*- */
 
-/* Copyright (C) 2022-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2022-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -29,7 +29,7 @@
 
 #include <stdio.h>
 
-#define TELEGRAM_DB_VERSION 4
+#define TELEGRAM_DB_VERSION 5
 
 static struct generic_conn *
 free_func(struct generic_conn *gc)
@@ -134,6 +134,14 @@ static const char create_query_6[] =
 "    FOREIGN KEY ts_user_id_fk(user_id) REFERENCES %slogins(user_id)\n"
 ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;\n";
 
+static const char create_query_7[] =
+"CREATE TABLE %stelegram_registrations (\n"
+"    reg_key CHAR(32) NOT NULL PRIMARY KEY,\n"
+"    chat_id BIGINT NOT NULL,\n"
+"    contest_id INT NOT NULL DEFAULT 0,\n"
+"    create_time DATETIME(6) NOT NULL\n"
+") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;\n";
+
 static int
 create_database(
         struct mysql_conn *conn)
@@ -160,6 +168,9 @@ create_database(
         db_error_fail(md);
     if (mi->simple_fquery(md, create_query_6,
                           md->table_prefix,
+                          md->table_prefix) < 0)
+        db_error_fail(md);
+    if (mi->simple_fquery(md, create_query_7,
                           md->table_prefix) < 0)
         db_error_fail(md);
 
@@ -266,6 +277,12 @@ check_database(
                 return -1;
             if (mi->simple_fquery(md, "ALTER TABLE %stelegram_subscriptions MODIFY COLUMN bot_id CHAR(64) NOT NULL ;", md->table_prefix) < 0)
                 return -1;
+            break;
+        case 4:
+            if (mi->simple_fquery(md, create_query_7,
+                                  md->table_prefix) < 0) {
+                return -1;
+            }
             break;
         default:
             telegram_version = -1;
@@ -1084,6 +1101,185 @@ fail:
     return -1;
 }
 
+struct grouptocontest_internal
+{
+    unsigned char *group_id;
+    int contest_id;
+};
+enum { GROUPTOCONTEST_ROW_WIDTH = 2 };
+#define GROUPTOCONTEST_OFFSET(f) XOFFSET(struct grouptocontest_internal, f)
+static const struct common_mysql_parse_spec grouptocontest_spec[GROUPTOCONTEST_ROW_WIDTH] =
+{
+    { 1, 's', "group_id", GROUPTOCONTEST_OFFSET(group_id), 0 },
+    { 0, 'd', "contest_id", GROUPTOCONTEST_OFFSET(contest_id), 0 },
+};
+
+struct userpassword_internal
+{
+    int user_id;
+    unsigned char *login;
+    int pwdmethod;
+    unsigned char *password;
+    int contest_id;
+    int status;
+    int banned;
+    int invisible;
+    int locked;
+    int disqualified;
+    int privileged;
+};
+enum { USERPASSWORD_ROW_WIDTH = 11 };
+#define USERPASSWORD_OFFSET(f) XOFFSET(struct userpassword_internal, f)
+static const struct common_mysql_parse_spec userpassword_spec[USERPASSWORD_ROW_WIDTH] =
+{
+    { 0, 'd', "user_id", USERPASSWORD_OFFSET(user_id), 0 },
+    { 1, 's', "login", USERPASSWORD_OFFSET(login), 0 },
+    { 0, 'd', "pwdmethod", USERPASSWORD_OFFSET(pwdmethod), 0 },
+    { 1, 's', "password", USERPASSWORD_OFFSET(password), 0 },
+    { 0, 'd', "contest_id", USERPASSWORD_OFFSET(contest_id), 0 },
+    { 0, 'd', "status", USERPASSWORD_OFFSET(status), 0 },
+    { 0, 'd', "banned", USERPASSWORD_OFFSET(banned), 0 },
+    { 0, 'd', "invisible", USERPASSWORD_OFFSET(invisible), 0 },
+    { 0, 'd', "locked", USERPASSWORD_OFFSET(locked), 0 },
+    { 0, 'd', "disqualified", USERPASSWORD_OFFSET(disqualified), 0 },
+    { 0, 'd', "privileged", USERPASSWORD_OFFSET(privileged), 0 },
+};
+
+static int
+password_get_func(
+        struct generic_conn *gc,
+        const unsigned char *group_id,
+        const unsigned char *student_id,
+        unsigned char **login,
+        unsigned char **password)
+{
+    if (gc->vt->open(gc) < 0) return -1;
+
+    struct mysql_conn *conn = (struct mysql_conn *) gc;
+    struct common_mysql_iface *mi = conn->mi;
+    struct common_mysql_state *md = conn->md;
+    char *cmd_s = NULL;
+    size_t cmd_z = 0;
+    FILE *cmd_f = NULL;
+    struct grouptocontest_internal gtci = {};
+    unsigned char *in_login = NULL;
+    struct userpassword_internal upi = {};
+    __attribute__((unused)) int _;
+
+    mi->lock(md);
+    cmd_f = open_memstream(&cmd_s, &cmd_z);
+    fprintf(cmd_f, "SELECT * FROM %sgrouptocontests WHERE group_id = ", md->table_prefix);
+    mi->write_escaped_string(md, cmd_f, NULL, group_id);
+    fprintf(cmd_f, " ;");
+    fclose(cmd_f); cmd_f = NULL;
+    if (mi->query(md, cmd_s, cmd_z, GROUPTOCONTEST_ROW_WIDTH) < 0) {
+        db_error_fail(md);
+    }
+    free(cmd_s); cmd_s = NULL; cmd_z = 0;
+    if (md->row_count <= 0) {
+        mi->unlock(md);
+        return 0;
+    }
+    if (mi->next_row(md) < 0) db_error_fail(md);
+    if (mi->parse_spec(md, -1, md->row, md->lengths, GROUPTOCONTEST_ROW_WIDTH, grouptocontest_spec, &gtci) < 0) {
+        goto fail;
+    }
+    free(gtci.group_id); gtci.group_id = NULL;
+    mi->free_res(md);
+
+    {
+        char *s = NULL;
+        _ = asprintf(&s, "s%s", student_id);
+        in_login = s;
+    }
+
+    cmd_f = open_memstream(&cmd_s, &cmd_z);
+    fprintf(cmd_f, "SELECT logins.user_id, logins.login, logins.pwdmethod, logins.password, cntsregs.contest_id, cntsregs.status, cntsregs.banned, cntsregs.invisible, cntsregs.locked, cntsregs.disqualified, cntsregs.privileged FROM logins LEFT JOIN cntsregs ON logins.user_id = cntsregs.user_id WHERE logins.login = ");
+    mi->write_escaped_string(md, cmd_f, NULL, in_login);
+    fprintf(cmd_f, " AND cntsregs.contest_id = %d;", gtci.contest_id);
+    fclose(cmd_f); cmd_f = NULL;
+    if (mi->query(md, cmd_s, cmd_z, USERPASSWORD_ROW_WIDTH) < 0) {
+        db_error_fail(md);
+    }
+    free(cmd_s); cmd_s = NULL; cmd_z = 0;
+    if (md->row_count <= 0) {
+        free(in_login);
+        mi->unlock(md);
+        return 0;
+    }
+    if (mi->next_row(md) < 0) db_error_fail(md);
+    if (mi->parse_spec(md, -1, md->row, md->lengths, USERPASSWORD_ROW_WIDTH, userpassword_spec, &upi) < 0) {
+        goto fail;
+    }
+    mi->free_res(md);
+    free(in_login); in_login = NULL;
+
+    if (upi.pwdmethod != 0 || upi.status != 0 || upi.banned != 0 || upi.invisible != 0 || upi.locked != 0 || upi.disqualified != 0 || upi.privileged != 0) {
+        free(upi.login);
+        free(upi.password);
+        mi->unlock(md);
+        return 0;
+    }
+
+    *login = upi.login; upi.login = NULL;
+    *password = upi.password; upi.password = NULL;
+    mi->unlock(md);
+    return 1;
+
+fail:;
+    free(cmd_s);
+    free(gtci.group_id);
+    free(in_login);
+    free(upi.login);
+    free(upi.password);
+    mi->unlock(md);
+    return -1;
+}
+
+static int
+registration_save_func(
+        struct generic_conn *gc,
+        const unsigned char *reg_key,
+        long long chat_id,
+        int contest_id)
+{
+    if (gc->vt->open(gc) < 0) return -1;
+
+    struct mysql_conn *conn = (struct mysql_conn *) gc;
+    struct common_mysql_iface *mi = conn->mi;
+    struct common_mysql_state *md = conn->md;
+    char *cmd_s = NULL;
+    size_t cmd_z = 0;
+    FILE *cmd_f = NULL;
+
+    mi->lock(md);
+    cmd_f = open_memstream(&cmd_s, &cmd_z);
+    fprintf(cmd_f, "INSERT INTO %stelegram_registrations VALUES ( ",
+            md->table_prefix);
+    fprintf(cmd_f, "'%s', %lld, %d, NOW(6)", reg_key, chat_id, contest_id);
+    fprintf(cmd_f, "); ");
+    fclose(cmd_f); cmd_f = NULL;
+
+    if (mi->simple_query(md, cmd_s, cmd_z) < 0) goto fail;
+    free(cmd_s); cmd_s = NULL; cmd_z = 0;
+
+    cmd_f = open_memstream(&cmd_s, &cmd_z);
+    fprintf(cmd_f, "DELETE FROM %stelegram_registrations WHERE ADDDATE(create_time, INTERVAL 5 MINUTE) <= NOW(6);", md->table_prefix);
+    fclose(cmd_f); cmd_f = NULL;
+
+    if (mi->simple_query(md, cmd_s, cmd_z) < 0) goto fail;
+    free(cmd_s); cmd_s = NULL; cmd_z = 0;
+
+    mi->unlock(md);
+    return 0;
+
+fail:;
+    if (cmd_f) fclose(cmd_f);
+    free(cmd_s);
+    mi->unlock(md);
+    return -1;
+}
+
 static struct generic_conn_iface mysql_iface =
 {
     free_func,
@@ -1104,6 +1300,8 @@ static struct generic_conn_iface mysql_iface =
     chat_state_save_func,
     subscription_fetch_func,
     subscription_save_func,
+    password_get_func,
+    registration_save_func,
 };
 
 struct generic_conn *

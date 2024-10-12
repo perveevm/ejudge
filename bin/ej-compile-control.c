@@ -1,6 +1,6 @@
 /* -*- mode: c; c-basic-offset: 4 -*- */
 
-/* Copyright (C) 2006-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2006-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -310,7 +310,9 @@ start_process(
         const char *ip_address,
         const char *halt_command,
         const char *reboot_command,
-        const char *heartbeat_instance_id)
+        const char *heartbeat_instance_id,
+        const char *lang_id_map,
+        const char *local_cache)
 {
     int pid = fork();
     if (pid < 0) {
@@ -359,6 +361,7 @@ start_process(
     char *args[64];
     char lbuf[64];
     char ebuf[64];
+    char ybuf[64];
     int argi = 0;
     args[argi++] = (char*) exepath;
     if (is_parallel) args[argi++] = "-p";
@@ -400,8 +403,21 @@ start_process(
         args[argi++] = "-rc";
         args[argi++] = (char*) reboot_command;
     }
+    if (lang_id_map && *lang_id_map) {
+        args[argi++] = "--lang-id-map";
+        args[argi++] = (char*) lang_id_map;
+    }
+    if (local_cache && *local_cache) {
+        args[argi++] = "--local-cache";
+        args[argi++] = (char*) local_cache;
+    }
     if (verbose_mode) {
         args[argi++] = "-v";
+    }
+    if (serial > 0) {
+        args[argi++] = "-y";
+        snprintf(ybuf, sizeof(ybuf), "%d", serial);
+        args[argi++] = ybuf;
     }
     args[argi++] = "-S";
     args[argi++] = "conf/compile.cfg";
@@ -927,6 +943,8 @@ int main(int argc, char *argv[])
     const char *halt_command = NULL;
     const char *reboot_command = NULL;
     const char *heartbeat_instance_id = NULL;
+    const char *lang_id_map = NULL;
+    const char *local_cache = NULL;
 
     if (argc < 1) {
         system_error("no arguments");
@@ -990,6 +1008,18 @@ int main(int argc, char *argv[])
                     system_error("argument expected for -rc");
                 }
                 reboot_command = argv[aidx + 1];
+                aidx += 2;
+            } else if (!strcmp(argv[aidx], "--lang-id-map")) {
+                if (aidx + 1 >= argc) {
+                    system_error("argument expected for --lang-id-map");
+                }
+                lang_id_map = argv[aidx + 1];
+                aidx += 2;
+            } else if (!strcmp(argv[aidx], "--local-cache")) {
+                if (aidx + 1 >= argc) {
+                    system_error("argument expected for --local-cache");
+                }
+                local_cache = argv[aidx + 1];
                 aidx += 2;
             } else if (!strcmp(argv[aidx], "--timeout")) {
                 if (aidx + 1 >= argc) {
@@ -1116,18 +1146,20 @@ int main(int argc, char *argv[])
     }
 
     int compile_parallelism = 1;
-    compile_parallelism = ejudge_cfg_get_host_option_int(config, host_names, "compile_parallelism", 1, 0);
-    if (compile_parallelism <= 0 || compile_parallelism > 128) {
+    compile_parallelism = ejudge_cfg_get_host_option_int(config, host_names, "compile_parallelism", 1, -1);
+    if (compile_parallelism < 0 || compile_parallelism > 128) {
         system_error("invalid value of compile_parallelism host option");
     }
 
-    ejudge_xml_fds = malloc(compile_parallelism * sizeof(ejudge_xml_fds[0]));
-    memset(ejudge_xml_fds, -1, compile_parallelism * sizeof(ejudge_xml_fds[0]));
-    if (primary_uid != compile_uid) {
-        for (int i = 0; i < compile_parallelism; ++i) {
-            ejudge_xml_fds[i] = open(ejudge_xml_path, O_RDONLY);
-            if (ejudge_xml_fds[i] < 0) {
-                system_error("cannot open '%s'", ejudge_xml_path);
+    if (compile_parallelism > 0) {
+        ejudge_xml_fds = malloc(compile_parallelism * sizeof(ejudge_xml_fds[0]));
+        memset(ejudge_xml_fds, -1, compile_parallelism * sizeof(ejudge_xml_fds[0]));
+        if (primary_uid != compile_uid) {
+            for (int i = 0; i < compile_parallelism; ++i) {
+                ejudge_xml_fds[i] = open(ejudge_xml_path, O_RDONLY);
+                if (ejudge_xml_fds[i] < 0) {
+                    system_error("cannot open '%s'", ejudge_xml_path);
+                }
             }
         }
     }
@@ -1313,26 +1345,28 @@ int main(int argc, char *argv[])
             }
 
             for (int i = 0; i < compile_parallelism; ++i) {
-                int ret = start_process(config, EJ_COMPILE_PROGRAM, log_fd, workdir, &ev, ej_compile_path, compile_parallelism > 1, 1 /* FIXME */, ejudge_xml_fds, compile_parallelism, i, agent, instance_id, queue, verbose_mode, ip_address, halt_command, reboot_command, heartbeat_instance_id);
+                int ret = start_process(config, EJ_COMPILE_PROGRAM, log_fd, workdir, &ev, ej_compile_path, compile_parallelism > 1, 1 /* FIXME */, ejudge_xml_fds, compile_parallelism, i, agent, instance_id, queue, verbose_mode, ip_address, halt_command, reboot_command, heartbeat_instance_id, lang_id_map, local_cache);
                 if (ret < 0) {
                     emergency_stop();
                     return EXIT_SYSTEM_ERROR;
                 }
             }
 
-            int sleep_count = 0;
-            // wait 1s max
-            while (sleep_count < START_WAIT_COUNT) {
-                pv_free(&pv);
-                usleep(100000);
-                if (find_all(EJ_COMPILE_PROGRAM, EJ_COMPILE_PROGRAM_DELETED, NULL, &pv) < 0) {
-                    system_error("cannot enumerate processes");
+            if (compile_parallelism > 0) {
+                int sleep_count = 0;
+                // wait 1s max
+                while (sleep_count < START_WAIT_COUNT) {
+                    pv_free(&pv);
+                    usleep(100000);
+                    if (find_all(EJ_COMPILE_PROGRAM, EJ_COMPILE_PROGRAM_DELETED, NULL, &pv) < 0) {
+                        system_error("cannot enumerate processes");
+                    }
+                    if (pv.u == compile_parallelism) break;
+                    ++sleep_count;
                 }
-                if (pv.u == compile_parallelism) break;
-                ++sleep_count;
-            }
-            if (sleep_count >= START_WAIT_COUNT) {
-                system_error("failed to start ej-compile, please see the logs");
+                if (sleep_count >= START_WAIT_COUNT) {
+                    system_error("failed to start ej-compile, please see the logs");
+                }
             }
         }
         break;

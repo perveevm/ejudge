@@ -1,6 +1,6 @@
 /* -*- c -*- */
 
-/* Copyright (C) 2012-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2012-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -882,7 +882,7 @@ do_generate_makefile(
   unsigned char test_pr_pat[PATH_MAX];
   unsigned char tgzdir_pr_pat[PATH_MAX];
   unsigned long languages = 0;
-  unsigned long enabled_languages = 0;
+  __attribute__((unused)) unsigned long enabled_languages = 0;
   unsigned char tmp_path[PATH_MAX];
   unsigned char *compiler_path = NULL;
   const unsigned char *compiler_flags = NULL;
@@ -912,7 +912,7 @@ do_generate_makefile(
   ejudge_lib_dir[0] = 0;
 #if defined EJUDGE_LIB_DIR
   if (!strncmp(EJUDGE_LIB_DIR, EJUDGE_PREFIX_DIR, strlen(EJUDGE_PREFIX_DIR))) {
-    snprintf(ejudge_lib_dir, sizeof(ejudge_lib_dir), "${EJUDGE_PREFIX_DIR}%s", EJUDGE_LIB_DIR + strlen(EJUDGE_PREFIX_DIR));
+    snprintf(ejudge_lib_dir, sizeof(ejudge_lib_dir), "${EJUDGE_PREFIX_DIR}%s", &EJUDGE_LIB_DIR[strlen(EJUDGE_PREFIX_DIR)]);
   } else {
     snprintf(ejudge_lib_dir, sizeof(ejudge_lib_dir), "%s", EJUDGE_LIB_DIR);
   }
@@ -923,7 +923,7 @@ do_generate_makefile(
   ejudge_lib32_dir[0] = 0;
 #if defined EJUDGE_LIB32_DIR
   if (!strncmp(EJUDGE_LIB32_DIR, EJUDGE_PREFIX_DIR, strlen(EJUDGE_PREFIX_DIR))) {
-    snprintf(ejudge_lib32_dir, sizeof(ejudge_lib32_dir), "${EJUDGE_PREFIX_DIR}%s", EJUDGE_LIB32_DIR + strlen(EJUDGE_PREFIX_DIR));
+    snprintf(ejudge_lib32_dir, sizeof(ejudge_lib32_dir), "${EJUDGE_PREFIX_DIR}%s", &EJUDGE_LIB32_DIR[strlen(EJUDGE_PREFIX_DIR)]);
   } else {
     snprintf(ejudge_lib32_dir, sizeof(ejudge_lib32_dir), "%s", EJUDGE_LIB32_DIR);
   }
@@ -1482,17 +1482,20 @@ build_generate_makefile(
 
   if (global->advanced_layout <= 0) FAIL(SSERV_ERR_INV_CONTEST);
 
-  get_advanced_layout_path(cnts_prob_path, sizeof(cnts_prob_path), global, NULL, NULL, 0);
-  if (stat(cnts_prob_path, &stbuf) < 0) {
-    fprintf(log_f, "contest problem directory '%s' does not exist", cnts_prob_path);
-    FAIL(SSERV_ERR_FS_ERROR);
-  }
-  if (!S_ISDIR(stbuf.st_mode)) {
-    fprintf(log_f, "contest problem directory '%s' must be directory", cnts_prob_path);
-    FAIL(SSERV_ERR_FS_ERROR);
+  if (!prob->problem_dir || !prob->problem_dir[0]) {
+    get_advanced_layout_path(cnts_prob_path, sizeof(cnts_prob_path), global, NULL, NULL, 0);
+    if (stat(cnts_prob_path, &stbuf) < 0) {
+      fprintf(log_f, "contest problem directory '%s' does not exist", cnts_prob_path);
+      FAIL(SSERV_ERR_FS_ERROR);
+    }
+    if (!S_ISDIR(stbuf.st_mode)) {
+      fprintf(log_f, "contest problem directory '%s' must be directory", cnts_prob_path);
+      FAIL(SSERV_ERR_FS_ERROR);
+    }
   }
 
   get_advanced_layout_path(problem_path, sizeof(problem_path), global, prob, NULL, variant);
+
   get_advanced_layout_path(tmp_makefile_path, sizeof(tmp_makefile_path), global, prob, "tmp_Makefile", variant);
   get_advanced_layout_path(makefile_path, sizeof(makefile_path), global, prob, DFLT_P_MAKEFILE, variant);
 

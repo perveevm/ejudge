@@ -23,6 +23,9 @@ enum
   META_COMPILE_REQUEST_PACKET_use_container,
   META_COMPILE_REQUEST_PACKET_vcs_mode,
   META_COMPILE_REQUEST_PACKET_not_ok_is_cf,
+  META_COMPILE_REQUEST_PACKET_preserve_numbers,
+  META_COMPILE_REQUEST_PACKET_enable_remote_cache,
+  META_COMPILE_REQUEST_PACKET_enable_run_props,
   META_COMPILE_REQUEST_PACKET_submit_id,
   META_COMPILE_REQUEST_PACKET_uuid,
   META_COMPILE_REQUEST_PACKET_judge_uuid,
@@ -62,6 +65,8 @@ const char *meta_compile_request_packet_get_name(int tag);
 const void *meta_compile_request_packet_get_ptr(const struct compile_request_packet *ptr, int tag);
 void *meta_compile_request_packet_get_ptr_nc(struct compile_request_packet *ptr, int tag);
 int meta_compile_request_packet_lookup_field(const char *name);
+void meta_compile_request_packet_copy(struct compile_request_packet *dst, const struct compile_request_packet *src);
+void meta_compile_request_packet_free(struct compile_request_packet *ptr);
 
 struct meta_methods;
 extern const struct meta_methods meta_compile_request_packet_methods;

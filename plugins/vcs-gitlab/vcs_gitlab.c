@@ -254,12 +254,14 @@ gitlab_webhook_handler(
         goto done;
     }
 
+    info("cloning repository %s", ue->vcs_url);
+
     git_task = task_New();
     task_AddArg(git_task, "/usr/bin/git");
     task_AddArg(git_task, "clone");
     task_AddArg(git_task, ue->vcs_url);
     task_SetPathAsArg0(git_task);
-    task_SetEnv(git_task, "GIT_SSH_COMMAND", "ssh -i ssh_id");
+    task_SetEnv(git_task, "GIT_SSH_COMMAND", "ssh -i ssh_id -o IdentitiesOnly=yes -o StrictHostKeychecking=no");
     task_SetWorkingDir(git_task, work_dir);
     if (task_Start(git_task) < 0) {
         err("gitlab_webhook_handler: failed to start git");

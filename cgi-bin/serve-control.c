@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2004-2021 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2004-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -29,11 +29,13 @@
 #include "ejudge/super_clnt.h"
 #include "ejudge/super_proto.h"
 #include "ejudge/compat.h"
+#include "ejudge/cJSON.h"
 
 #include "ejudge/xalloc.h"
 #include "ejudge/logger.h"
 #include "ejudge/osdeps.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/types.h>
@@ -477,7 +479,7 @@ open_userlist_server(void)
   if (userlist_conn) return;
   if (!(userlist_conn = userlist_clnt_open(config->socket_path))) {
     client_put_header(stdout, 0, 0, config->charset, 1, 0,
-                      NULL_CLIENT_KEY,
+                      NULL_CLIENT_KEY, 500,
                       _("Server is down"));
     printf("<p>%s</p>",
            _("The server is down. Try again later."));
@@ -491,7 +493,7 @@ open_super_server(void)
   if (super_serve_fd >= 0) return;
   if ((super_serve_fd = super_clnt_open(config->super_serve_socket)) < 0) {
     client_put_header(stdout, 0, 0, config->charset, 1, 0,
-                      NULL_CLIENT_KEY,
+                      NULL_CLIENT_KEY, 500,
                       _("Server is down"));
     printf("<p>%s</p>",
            _("The server is down. Try again later."));
@@ -505,7 +507,7 @@ static void
 fatal_server_error(int r)
 {
   client_put_header(stdout, 0, 0, config->charset, 1, 0,
-                    NULL_CLIENT_KEY, _("Server error"));
+                    NULL_CLIENT_KEY, 500, _("Server error"));
   printf("<p>Server error: %s</p>", userlist_strerror(-r));
   client_put_footer(stdout, 0);
   exit(0);
@@ -516,7 +518,7 @@ static void
 permission_denied(void)
 {
   client_put_header(stdout,0,0,config->charset,1,0,
-                    NULL_CLIENT_KEY, _("Permission denied"));
+                    NULL_CLIENT_KEY, 403, _("Permission denied"));
   printf("<p>%s</p>", _("You do not have permissions to use this service"));
   client_put_footer(stdout, 0);
   exit(0);
@@ -527,7 +529,7 @@ static void
 invalid_login(void)
 {
   client_put_header(stdout, 0, 0, config->charset, 1, 0,
-                    NULL_CLIENT_KEY,
+                    NULL_CLIENT_KEY, 403,
                     _("Invalid login"));
   printf("<p>%s</p>",
          "Invalid login. You have typed invalid login, invalid password,"
@@ -564,7 +566,7 @@ display_login_page(char *argv[])
   r = super_clnt_http_request(super_serve_fd, 1, (unsigned char**) argv,
                               (unsigned char **) environ,
                               param_num, param_names,
-                              param_sizes, params, 0, 0);
+                              param_sizes, params, 0 /* api_mode */, 0, 0);
   if (r < 0) {
     operation_status_page(-1, -1, "Invalid request");
   }
@@ -734,7 +736,7 @@ operation_status_page(int userlist_code,
   va_list args;
 
   if (userlist_code == -1 && super_code == -1) {
-    client_put_header(stdout, 0, 0, config->charset, 1, 0, NULL_CLIENT_KEY, "Operation failed");
+    client_put_header(stdout, 0, 0, config->charset, 1, 0, NULL_CLIENT_KEY, 400, "Operation failed");
     va_start(args, format);
     vsnprintf(msg, sizeof(msg), format, args);
     va_end(args);
@@ -743,21 +745,21 @@ operation_status_page(int userlist_code,
     exit(0);
   }
   if (userlist_code == -1 && super_code < -1) {
-    client_put_header(stdout, 0, 0, config->charset, 1, 0, NULL_CLIENT_KEY, "Operation failed");
+    client_put_header(stdout, 0, 0, config->charset, 1, 0, NULL_CLIENT_KEY, 400, "Operation failed");
     printf("<h2><font color=\"red\">super-serve error: %s</font></h2>\n",
            super_proto_strerror(-super_code));
     client_put_footer(stdout, 0);
     exit(0);
   }
   if (userlist_code < -1 && super_code == -1) {
-    client_put_header(stdout, 0, 0, config->charset, 1, 0, NULL_CLIENT_KEY, "Operation failed");
+    client_put_header(stdout, 0, 0, config->charset, 1, 0, NULL_CLIENT_KEY, 400, "Operation failed");
     printf("<h2><font color=\"red\">userlist-server error: %s</font></h2>\n",
            userlist_strerror(-userlist_code));
     client_put_footer(stdout, 0);
     exit(0);
   }
   if (userlist_code < -1 && super_code < -1) {
-    client_put_header(stdout, 0, 0, config->charset, 1, 0, NULL_CLIENT_KEY, "Operation failed");
+    client_put_header(stdout, 0, 0, config->charset, 1, 0, NULL_CLIENT_KEY, 400, "Operation failed");
     printf("<h2><font color=\"red\">Unknown error: %d, %d</font></h2>\n",
            userlist_code, super_code);
     client_put_footer(stdout, 0);
@@ -1232,7 +1234,7 @@ action_http_request(char **argv)
   r = super_clnt_http_request(super_serve_fd, 1, (unsigned char**) argv,
                               (unsigned char **) environ,
                               param_num, param_names,
-                              param_sizes, params, 0, 0);
+                              param_sizes, params, 0 /* api_mode */, 0, 0);
   if (r < 0) {
     operation_status_page(-1, -1, "Invalid request");
   }
@@ -1285,6 +1287,108 @@ static const int next_action_map[SSERV_CMD_LAST] =
   [SSERV_CMD_LANG_UPDATE_VERSIONS] = SSERV_CMD_CNTS_EDIT_CUR_LANGUAGES_PAGE,
 };
 
+static void
+client_json_reply(
+        FILE *out,
+        int status,
+        int ok,
+        int err_num,
+        const unsigned char *err_msg,
+        cJSON *jr)
+{
+  fprintf(out, "Content-Type: %s; charset=%s\n"
+          "Cache-Control: no-cache\n"
+          "Status: %d\n"
+          "Pragma: no-cache\n\n", "application/json", DEFAULT_CHARSET, status);
+  if (!ok) {
+    if (err_num < 0) err_num = -err_num;
+    if (!err_msg || !*err_msg) {
+      err_msg = NULL;
+      if (err_num > 0 && err_num < SSERV_ERR_LAST) {
+        err_msg = super_proto_error_messages[err_num];
+        if (err_msg && !*err_msg) {
+          err_msg = NULL;
+        }
+      }
+    }
+    cJSON_AddFalseToObject(jr, "ok");
+    cJSON *jerr = cJSON_CreateObject();
+    if (err_num > 0) {
+      cJSON_AddNumberToObject(jerr, "num", err_num);
+    }
+    if (err_msg) {
+      cJSON_AddStringToObject(jerr, "message", err_msg);
+    }
+    cJSON_AddItemToObject(jr, "error", jerr);
+  } else {
+    cJSON_AddTrueToObject(jr, "ok");
+  }
+  cJSON_AddNumberToObject(jr, "server_time", (double) time(NULL));
+  char *jrstr = cJSON_PrintUnformatted(jr);
+  fprintf(out, "%s\n", jrstr);
+  free(jrstr);
+}
+
+static void
+process_api_mode(char **argv)
+{
+  const unsigned char *script_name = getenv("SCRIPT_NAME");
+  if (!script_name) return;
+
+  const unsigned char *script_ptr = script_name;
+  if (!strncmp(script_ptr, "/cgi-bin", 8)) {
+    script_ptr += 8;
+  }
+  if (!strncmp(script_ptr, "/serve-control", 14)) {
+    script_ptr += 14;
+  } else {
+    return;
+  }
+#if defined CGI_PROG_SUFFIX
+  if (sizeof(CGI_PROG_SUFFIX) > 1) {
+    if (!strncmp(script_ptr, CGI_PROG_SUFFIX, sizeof(CGI_PROG_SUFFIX) - 1)) {
+      script_ptr += sizeof(CGI_PROG_SUFFIX) - 1;
+    }
+  }
+#endif
+  if (script_ptr[0] != '/') {
+    return;
+  }
+  if (!strncmp(script_ptr, "/api/v1/", 8)) {
+    script_ptr += 8;
+  } else {
+    return;
+  }
+
+  cJSON *jr = cJSON_CreateObject();
+  if (super_serve_fd < 0) {
+    super_serve_fd = super_clnt_open(config->super_serve_socket);
+    if (super_serve_fd < 0) {
+      client_json_reply(stdout, 500, 0, SSERV_ERR_CONNECT_FAILED, NULL, jr);
+      exit(0);
+    }
+  }
+
+  int param_num, i, r;
+  unsigned char **param_names, **params;
+  size_t *param_sizes;
+  param_num = cgi_get_param_num();
+  XALLOCAZ(param_names, param_num);
+  XALLOCAZ(param_sizes, param_num);
+  XALLOCAZ(params, param_num);
+  for (i = 0; i < param_num; i++) {
+    cgi_get_nth_param_bin(i, &param_names[i], &param_sizes[i], &params[i]);
+  }
+  r = super_clnt_http_request(super_serve_fd, 1, (unsigned char**) argv,
+                              (unsigned char **) environ,
+                              param_num, param_names,
+                              param_sizes, params, 1, NULL, NULL);
+  if (r < 0) {
+    client_json_reply(stdout, 500, 0, SSERV_ERR_OPERATION_FAILED, NULL, jr);
+  }
+  exit(0);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1294,6 +1398,8 @@ main(int argc, char *argv[])
   if (!check_source_ip()) {
     client_access_denied(config->charset, 0);
   }
+
+  process_api_mode(argv);
 
   authentificate(argv);
   read_state_params();

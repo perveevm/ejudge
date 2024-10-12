@@ -53,13 +53,6 @@ enum
   SSSS_serve_parse_errors,
   SSSS_cfg,
   SSSS_global,
-  SSSS_lang_a,
-  SSSS_langs,
-  SSSS_loc_cs_map,
-  SSSS_cs_loc_map,
-  SSSS_lang_opts,
-  SSSS_lang_libs,
-  SSSS_lang_flags,
   SSSS_aprob_u,
   SSSS_aprob_a,
   SSSS_aprobs,
@@ -76,6 +69,14 @@ enum
   SSSS_enable_extra_col,
   SSSS_disable_compilation_server,
   SSSS_enable_win32_languages,
+  SSSS_lang_a,
+  SSSS_langs,
+  SSSS_loc_cs_map,
+  SSSS_cs_loc_map,
+  SSSS_lang_opts,
+  SSSS_lang_libs,
+  SSSS_lang_flags,
+  SSSS_cscs,
   SSSS_cs_langs_loaded,
   SSSS_cs_lang_total,
   SSSS_cs_cfg,
@@ -83,6 +84,13 @@ enum
   SSSS_cs_lang_names,
   SSSS_extra_cs_cfgs_total,
   SSSS_extra_cs_cfgs,
+  SSSS_serv_langs,
+  SSSS_lang_extra,
+  SSSS_serv_extra,
+  SSSS_enable_language_import_changed,
+  SSSS_orig_enable_language_import,
+  SSSS_global_compile_server_id_changed,
+  SSSS_orig_global_compile_server_id,
   SSSS_cur_lang,
   SSSS_cur_prob,
   SSSS_prob_show_adv,
@@ -126,6 +134,8 @@ const char *ss_sid_state_get_name(int tag);
 const void *ss_sid_state_get_ptr(const struct sid_state *ptr, int tag);
 void *ss_sid_state_get_ptr_nc(struct sid_state *ptr, int tag);
 int ss_sid_state_lookup_field(const char *name);
+void ss_sid_state_copy(struct sid_state *dst, const struct sid_state *src);
+void ss_sid_state_free(struct sid_state *ptr);
 
 struct meta_methods;
 extern const struct meta_methods ss_sid_state_methods;

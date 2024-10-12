@@ -3,7 +3,7 @@
 #ifndef __CONTESTS_H__
 #define __CONTESTS_H__
 
-/* Copyright (C) 2002-2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2002-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -139,6 +139,7 @@ enum
     CONTEST_COMMENT,
     CONTEST_OAUTH_RULES,
     CONTEST_OAUTH_RULE,
+    CONTEST_SPECIAL_FLOW_OPTIONS,
 
     CONTEST_LAST_TAG
   };
@@ -193,6 +194,10 @@ enum
     CONTEST_A_DISABLE_EMAIL_CHECK,
     CONTEST_A_ENABLE_REMINDERS,
     CONTEST_A_DISABLE_STANDALONE_REG,
+    CONTEST_A_ENABLE_TELEGRAM_REGISTRATION,
+    CONTEST_A_ENABLE_SPECIAL_FLOW,
+    CONTEST_A_ENABLE_USER_FINISH,
+    CONTEST_A_DISABLE_USER_FINISH,
 
     CONTEST_LAST_ATTR
   };
@@ -344,6 +349,10 @@ struct contest_desc
   ejbytebool_t enable_oauth;
   ejbytebool_t enable_reminders;
   ejbytebool_t disable_standalone_reg;
+  ejbytebool_t enable_telegram_registration;
+  ejbytebool_t enable_special_flow;
+  ejbytebool_t enable_user_finish;
+  ejbytebool_t disable_user_finish;
 
   time_t         reg_deadline;
   time_t         sched_time;
@@ -434,6 +443,7 @@ struct contest_desc
   unsigned char *avatar_plugin;
   unsigned char *content_plugin;
   unsigned char *content_url_prefix;
+  unsigned char *special_flow_options;
 
   struct xml_tree *slave_rules;
   struct xml_tree *oauth_rules;
