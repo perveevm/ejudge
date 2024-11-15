@@ -2,7 +2,7 @@
 #ifndef __PROBLEM_CONFIG_H__
 #define __PROBLEM_CONFIG_H__
 
-/* Copyright (C) 2012-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2012-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or
@@ -71,6 +71,7 @@ struct problem_config_section
   ejintbool_t disable_user_submit;
   ejintbool_t disable_tab;
   ejintbool_t unrestricted_statement;
+  ejintbool_t statement_ignore_ip;
   ejintbool_t enable_submit_after_reject;
   ejintbool_t hide_file_names;
   ejintbool_t hide_real_time_limit;
@@ -106,6 +107,8 @@ struct problem_config_section
   ejintbool_t enable_control_socket;
   ejintbool_t enable_iframe_statement;
   ejintbool_t copy_exe_to_tgzdir;
+  ejintbool_t ignore_term_signal;
+  ejintbool_t enable_group_merge;
 
   int id;
   int real_time_limit;
@@ -132,6 +135,7 @@ struct problem_config_section
   int max_open_file_count;
   int max_process_count;
   int tests_to_accept;
+  int disable_vm_size_limit;
 
   time_t deadline;
   time_t start_date;
@@ -152,6 +156,7 @@ struct problem_config_section
   unsigned char *long_name_en;
   unsigned char *stand_name;
   unsigned char *internal_name;
+  unsigned char *plugin_entry_name;
   unsigned char *test_dir;
   unsigned char *test_sfx;
   unsigned char *corr_sfx;
@@ -180,6 +185,7 @@ struct problem_config_section
   unsigned char *interactor_cmd;
   unsigned char *style_checker_cmd;
   unsigned char *test_checker_cmd;
+  unsigned char *test_generator_cmd;
   unsigned char *init_cmd;
   unsigned char *start_cmd;
   unsigned char *solution_src;
@@ -200,6 +206,7 @@ struct problem_config_section
   unsigned char *container_options;
   unsigned char *iframe_statement;
   unsigned char *extra_src_dir;
+  unsigned char *standard_valuer;
 
   char **test_sets;
   char **date_penalty;
@@ -224,6 +231,7 @@ struct problem_config_section
   ejenvlist_t interactor_env;
   ejenvlist_t style_checker_env;
   ejenvlist_t test_checker_env;
+  ejenvlist_t test_generator_env;
   ejenvlist_t init_env;
   ejenvlist_t start_env;
   ejenvlist_t statement_env;

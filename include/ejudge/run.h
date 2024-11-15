@@ -2,7 +2,7 @@
 #ifndef __RUN_H__
 #define __RUN_H__
 
-/* Copyright (C) 2010-2022 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2010-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -25,7 +25,21 @@ struct section_global_data;
 struct section_problem_data;
 struct super_run_in_packet;
 
-struct testinfo
+struct run_test_file
+{
+  unsigned char *data;          /* the file content */
+  ssize_t orig_size;            /* the original file size */
+  ssize_t stored_size;          /* the stored (maybe truncated) size */
+  unsigned char is_here;        /* the file content is here */
+  unsigned char is_binary;      /* if this file is binary */
+  unsigned char is_too_long;    /* the content is too long */
+  unsigned char is_too_wide;    /* the content contains too long lines */
+  unsigned char is_fixed;       /* the content is changed in some way */
+  unsigned char is_base64;      /* content is base-64 encoded */
+  unsigned char is_archived;    /* content is in a separate archive */
+};
+
+struct run_test_info
 {
   int            status;        /* the execution status */
   int            code;          /* the process exit code */
@@ -36,22 +50,12 @@ struct testinfo
   long           real_time;     /* execution real time */
   unsigned long  max_memory_used;
   long long      max_rss;
-  char          *input;         /* the input */
-  long           input_size;
   int            has_input_digest;
   unsigned char  input_digest[32];
-  char          *output;        /* the output */
-  long           output_size;
-  char          *error;         /* the error */
-  long           error_size;
-  char          *correct;       /* the correct result */
-  long           correct_size;
   int            has_correct_digest;
   unsigned char  correct_digest[32];
   int            has_info_digest;
   unsigned char  info_digest[32];
-  char          *chk_out;       /* checker's output */
-  long           chk_out_size;
   unsigned char *args;          /* command-line arguments */
   unsigned char *comment;       /* judge's comment */
   unsigned char *team_comment;  /* team's comment */
@@ -67,14 +71,18 @@ struct testinfo
   int user_tests_passed;
   int user_nominal_score;
   /* test checker on user input */
-  char *test_checker;
-  long  test_checker_size;
+  struct run_test_file input;
+  struct run_test_file output;
+  struct run_test_file correct;
+  struct run_test_file error;
+  struct run_test_file chk_out;
+  struct run_test_file test_checker;
 };
 
-struct testinfo_vector
+struct run_test_info_vector
 {
   int reserved, size;
-  struct testinfo *data;
+  struct run_test_info *data;
 };
 
 struct run_listener;
@@ -111,6 +119,7 @@ struct serve_state;
 struct section_tester_data;
 struct ejudge_cfg;
 struct AgentClient;
+struct run_properties;
 
 void
 run_tests(
@@ -120,15 +129,10 @@ run_tests(
         const struct super_run_in_packet *srp,
         struct run_reply_packet *reply_pkt,
         struct AgentClient *agent,
-        int accept_testing,
-        int accept_partial,
-        int cur_variant,
         char const *exe_name,
         char const *new_base,
         char *report_path,                /* path to the report */
         char *full_report_path,           /* path to the full output dir */
-        const unsigned char *user_spelling,
-        const unsigned char *problem_spelling,
         const unsigned char *mirror_dir,
         int utf8_mode,
         struct run_listener *listener,
@@ -136,6 +140,8 @@ run_tests(
         const struct remap_spec *remaps,
         int user_input_mode,
         const unsigned char *inp_data,
-        size_t inp_size);
+        size_t inp_size,
+        const unsigned char *src_path,
+        const struct run_properties *run_props);
 
 #endif /* __RUN_H__ */

@@ -1,13 +1,13 @@
 # -*- mode: po; coding: UTF-8 -*-
 # ejudge messages catalog
-# Copyright (C) 2002-2023 Alexander Chernov <cher@ejudge.ru>
+# Copyright (C) 2002-2024 Alexander Chernov <cher@ejudge.ru>
 #
 msgid ""
 msgstr ""
 "Project-Id-Version: ejudge 3\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2023-06-10 07:29+0300\n"
-"PO-Revision-Date: 2022-01-12 13:17+0300\n"
+"POT-Creation-Date: 2024-10-02 00:48+0300\n"
+"PO-Revision-Date: 2024-03-17 14:09+0300\n"
 "Last-Translator: Alexander Chernov <cher@ejudge.ru>\n"
 "Language-Team: Russian <ru@li.org>\n"
 "Language: ru\n"
@@ -42,6 +42,10 @@ msgstr " / <b>%d посылок вызвано на защиту</b>"
 #, c-format
 msgid " / <b>%d unread message(s)</b>"
 msgstr " / <b>%d непрочитанных сообщений</b>"
+
+#, c-format
+msgid " memory-limit exceeded"
+msgstr "превышен лимит по памяти"
 
 msgid " or standard input"
 msgstr " или стандартный поток ввода"
@@ -86,6 +90,10 @@ msgid "/&lt;User_Name&gt;/&lt;Problem&gt;/&lt;File&gt;"
 msgstr "/&lt;Имя_Польз.&gt;/&lt;Задача&gt;/&lt;Файл&gt;"
 
 #, c-format
+msgid "; max used memory:"
+msgstr "; максимальная память:"
+
+#, c-format
 msgid "<b>====== Test #%d =======</b>\n"
 msgstr "<b>====== Тест #%d =======</b>\n"
 
@@ -114,12 +122,20 @@ msgid "<big>%d total tests runs, %d passed, %d failed.<br>\n"
 msgstr "<big>Всего тестов: %d, пройдено: %d, не пройдено: %d.<br>\n"
 
 #, c-format
+msgid "<big>Failed test: %d.</big>\n"
+msgstr "<big>Ошибка на тесте %d.</big>\n"
+
+#, c-format
 msgid "<big>Failed test: %d.<br/><br/></big>\n"
 msgstr "<big>Ошибка на тесте %d.<br/><br/></big>\n"
 
 #, c-format
 msgid "<big>Failed test: %d.<br><br></big>\n"
 msgstr "<big>Ошибка на тесте %d.<br><br></big>\n"
+
+#, c-format
+msgid "<big>Score gained: %d (out of %d).</big>\n"
+msgstr "<big>Получено баллов: %d (из %d).</big>\n"
 
 msgid "<font color=\"green\">OK</font>"
 msgstr "<font color=\"green\">OK</font>"
@@ -469,6 +485,9 @@ msgid "Allow viewing the judge comment of the valuer"
 msgstr ""
 "Разрешить просмотр комментария для судей, полученного от программы оценивания"
 
+msgid "Already exists"
+msgstr "Уже существует"
+
 #, c-format
 msgid "An e-mail messages is sent to the address <tt>%s</tt>."
 msgstr ""
@@ -509,6 +528,12 @@ msgstr "Апр"
 
 msgid "Archive creation with tar failed"
 msgstr "При создании архива программой tar произошла ошибка"
+
+msgid "Are you sure you want to finish your contest?"
+msgstr "Вы уверены, что хотите завершить турнир?"
+
+msgid "Are you sure you want to stop your virtual contest?"
+msgstr "Вы уверены, что хотите завершить виртуальный турнир?"
 
 msgid "Area"
 msgstr "Район"
@@ -1241,6 +1266,9 @@ msgstr "Не показывать до начала турнира?"
 msgid "Down all"
 msgstr "Вниз все"
 
+msgid "Download"
+msgstr "Загрузить"
+
 msgid "Download OK and PR runs"
 msgstr "Загрузить только посылки в статусе OK и PR"
 
@@ -1511,8 +1539,20 @@ msgstr "Финальные правила видимости тестов"
 msgid "Final visibility rules are active"
 msgstr "Финальные правила видимости тестов активны"
 
+msgid "Finish contest"
+msgstr "Завершить турнир"
+
+msgid "Finish contest?"
+msgstr "Завершить турнир?"
+
+msgid "Finish exam"
+msgstr "Завершить экзамен"
+
 msgid "Finish session"
 msgstr "Завершить сеанс работы"
+
+msgid "Finish the contest"
+msgstr "Завершить турнир"
 
 msgid "Finish the exam"
 msgstr "Завершить экзамен"
@@ -1651,6 +1691,12 @@ msgstr "Группа (класс)"
 
 msgid "Group (En)"
 msgstr "Группа (класс) (Англ.)"
+
+msgid "Group Info"
+msgstr "Информация о группах тестов"
+
+msgid "Group scores"
+msgstr "Балл за группы"
 
 msgid "Guest"
 msgstr "Гость"
@@ -1914,6 +1960,9 @@ msgstr ""
 msgid "In reply to"
 msgstr "В ответ на"
 
+msgid "Include hidden (#) runs"
+msgstr "Добавить скрытые (#) посылки"
+
 msgid "Incomplete?"
 msgstr "Неполная регистрация?"
 
@@ -2156,6 +2205,9 @@ msgstr "Нельзя отвечать на сообщения судей"
 
 msgid "Jan"
 msgstr "Янв"
+
+msgid "Job status"
+msgstr "Статус задачи"
 
 msgid "Judge"
 msgstr "Судья"
@@ -2401,6 +2453,10 @@ msgstr "Максимальное число пользователей было"
 
 msgid "Max problem submit count is exceeded"
 msgstr "Превышено максимальное число посылок по задаче"
+
+#, c-format
+msgid "Max running time:"
+msgstr "Макс. время работы:"
 
 #, c-format
 msgid ""
@@ -2741,6 +2797,9 @@ msgstr "Дата открытия"
 
 msgid "Open for participation"
 msgstr "Открыт для участия"
+
+msgid "Open tests"
+msgstr "Информация об открытых тестах"
 
 msgid "Operation completed"
 msgstr "Операция завершена"
@@ -3524,8 +3583,8 @@ msgstr ""
 "\n"
 
 #, c-format
-msgid "Score gained: %d (out of %d).<br/><br/></big>\n"
-msgstr "Получено баллов: %d (из %d).<br/><br/></big>\n"
+msgid "Score gained: %d (out of %d).</big>\n"
+msgstr "Получено баллов: %d (из %d).</big>\n"
 
 #, c-format
 msgid "Score gained: %d (out of %d).<br><br></big>\n"
@@ -3686,6 +3745,9 @@ msgstr "Установить статус регистрации в PENDING, т�
 
 msgid "Set the registration status of the selected users to REJECTED"
 msgstr "Установить статус регистрации в REJECTED, то есть отказать в участии"
+
+msgid "Set up github/gitlab integration and push solution"
+msgstr "Настройте интеграцию с github/gitlab и засылайте решение"
 
 msgid "Settings"
 msgstr "Настройки"
@@ -4405,6 +4467,9 @@ msgstr "Использовать регистрационное имя поль�
 msgid "Use user Name"
 msgstr "Использовать имя участника"
 
+msgid "Used memory RSS (KiB)"
+msgstr "Использовано памяти (RSS) (KiB)"
+
 msgid "User"
 msgstr "Участник"
 
@@ -4443,6 +4508,12 @@ msgstr "Условие отбора участников"
 msgid "User info"
 msgstr "Информация о пользователе"
 
+msgid "User is banned"
+msgstr "Пользователь заблокирован"
+
+msgid "User is locked"
+msgstr "Пользователь заперт"
+
 msgid "User is simple registered"
 msgstr "Пользователь создан по упрощённой процедуре регистрации"
 
@@ -4463,6 +4534,9 @@ msgstr "Имя участника"
 
 msgid "User name (for standings)"
 msgstr "Имя участника (для таблицы результатов)"
+
+msgid "User not registered for contest"
+msgstr "Пользователь не зарегистрирован на турнир"
 
 msgid ""
 "User quota exceeded. This clarification request is too large, you already "
@@ -5166,6 +5240,10 @@ msgstr "этот пользователь не может участвовать
 
 msgid "this user is not registered for this contest"
 msgstr "этот пользователь не зарегистрирован на данный турнир"
+
+#, c-format
+msgid "time-limit exceeded"
+msgstr "превышено максимальное время работы"
 
 msgid "transitive user contest sharing"
 msgstr "транзитивное разделение пользователей турнира"

@@ -18,6 +18,8 @@
     mcd = metrics.data;
     sip = server_info_get_processes();
 
+    info("audit:%s:%d:%d", phr->action_str, phr->user_id, phr->contest_id);
+
     l10n_setlocale(phr->locale_id);
     title = _("Server information");
 %><%@include "priv_header.csp"
@@ -78,6 +80,10 @@
     <tr>
         <td class="b1">Submitted runs:</td>
         <td class="b1"><s:v value="mcd->runs_submitted" /></td>
+    </tr>
+    <tr>
+        <td class="b1">Submitted submits:</td>
+        <td class="b1"><s:v value="mcd->submits_submitted" /></td>
     </tr>
     <tr>
         <td class="b1">Time spent on compilation (ms):</td>
@@ -159,8 +165,22 @@
     if (mcd->append_run_count > 0) {
 %>
     <tr>
-        <td class="b1">Average INSERT time (μs):</td>
+        <td class="b1">Average INSERT INTO runs time (μs):</td>
         <td class="b1"><s:v value="mcd->append_run_us / mcd->append_run_count" /></td>
+    </tr>
+<%
+    }
+%>
+    <tr>
+        <td class="b1">'<tt>INSERT INTO submits</tt>' operations:</td>
+        <td class="b1"><s:v value="mcd->append_submit_count" /></td>
+    </tr>
+<%
+    if (mcd->append_submit_count > 0) {
+%>
+    <tr>
+        <td class="b1">Average INSERT INTO submits time (μs):</td>
+        <td class="b1"><s:v value="mcd->append_submit_us / mcd->append_submit_count" /></td>
     </tr>
 <%
     }

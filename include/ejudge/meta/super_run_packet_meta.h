@@ -66,6 +66,17 @@ enum
   META_SUPER_RUN_IN_GLOBAL_PACKET_bson_available,
   META_SUPER_RUN_IN_GLOBAL_PACKET_lang_container_options,
   META_SUPER_RUN_IN_GLOBAL_PACKET_not_ok_is_cf,
+  META_SUPER_RUN_IN_GLOBAL_PACKET_prepended_size,
+  META_SUPER_RUN_IN_GLOBAL_PACKET_cached_on_remote,
+  META_SUPER_RUN_IN_GLOBAL_PACKET_src_sfx,
+  META_SUPER_RUN_IN_GLOBAL_PACKET_src_file,
+  META_SUPER_RUN_IN_GLOBAL_PACKET_enable_ejudge_env,
+  META_SUPER_RUN_IN_GLOBAL_PACKET_clean_up_cmd,
+  META_SUPER_RUN_IN_GLOBAL_PACKET_run_env_file,
+  META_SUPER_RUN_IN_GLOBAL_PACKET_clean_up_env_file,
+  META_SUPER_RUN_IN_GLOBAL_PACKET_has_run_props,
+  META_SUPER_RUN_IN_GLOBAL_PACKET_prop_file,
+  META_SUPER_RUN_IN_GLOBAL_PACKET_prop_sfx,
 
   META_SUPER_RUN_IN_GLOBAL_PACKET_LAST_FIELD,
 };
@@ -78,6 +89,8 @@ const char *meta_super_run_in_global_packet_get_name(int tag);
 const void *meta_super_run_in_global_packet_get_ptr(const struct super_run_in_global_packet *ptr, int tag);
 void *meta_super_run_in_global_packet_get_ptr_nc(struct super_run_in_global_packet *ptr, int tag);
 int meta_super_run_in_global_packet_lookup_field(const char *name);
+void meta_super_run_in_global_packet_copy(struct super_run_in_global_packet *dst, const struct super_run_in_global_packet *src);
+void meta_super_run_in_global_packet_free(struct super_run_in_global_packet *ptr);
 
 struct meta_methods;
 extern const struct meta_methods meta_super_run_in_global_packet_methods;
@@ -99,6 +112,7 @@ enum
   META_SUPER_RUN_IN_PROBLEM_PACKET_combined_stdin,
   META_SUPER_RUN_IN_PROBLEM_PACKET_combined_stdout,
   META_SUPER_RUN_IN_PROBLEM_PACKET_ignore_exit_code,
+  META_SUPER_RUN_IN_PROBLEM_PACKET_ignore_term_signal,
   META_SUPER_RUN_IN_PROBLEM_PACKET_binary_input,
   META_SUPER_RUN_IN_PROBLEM_PACKET_binary_output,
   META_SUPER_RUN_IN_PROBLEM_PACKET_real_time_limit_ms,
@@ -132,6 +146,7 @@ enum
   META_SUPER_RUN_IN_PROBLEM_PACKET_test_score_list,
   META_SUPER_RUN_IN_PROBLEM_PACKET_score_tests,
   META_SUPER_RUN_IN_PROBLEM_PACKET_standard_checker,
+  META_SUPER_RUN_IN_PROBLEM_PACKET_standard_valuer,
   META_SUPER_RUN_IN_PROBLEM_PACKET_valuer_sets_marked,
   META_SUPER_RUN_IN_PROBLEM_PACKET_interactor_time_limit_ms,
   META_SUPER_RUN_IN_PROBLEM_PACKET_interactor_real_time_limit_ms,
@@ -146,12 +161,14 @@ enum
   META_SUPER_RUN_IN_PROBLEM_PACKET_valuer_env,
   META_SUPER_RUN_IN_PROBLEM_PACKET_interactor_env,
   META_SUPER_RUN_IN_PROBLEM_PACKET_test_checker_env,
+  META_SUPER_RUN_IN_PROBLEM_PACKET_test_generator_env,
   META_SUPER_RUN_IN_PROBLEM_PACKET_init_env,
   META_SUPER_RUN_IN_PROBLEM_PACKET_start_env,
   META_SUPER_RUN_IN_PROBLEM_PACKET_check_cmd,
   META_SUPER_RUN_IN_PROBLEM_PACKET_valuer_cmd,
   META_SUPER_RUN_IN_PROBLEM_PACKET_interactor_cmd,
   META_SUPER_RUN_IN_PROBLEM_PACKET_test_checker_cmd,
+  META_SUPER_RUN_IN_PROBLEM_PACKET_test_generator_cmd,
   META_SUPER_RUN_IN_PROBLEM_PACKET_init_cmd,
   META_SUPER_RUN_IN_PROBLEM_PACKET_start_cmd,
   META_SUPER_RUN_IN_PROBLEM_PACKET_solution_cmd,
@@ -178,6 +195,8 @@ enum
   META_SUPER_RUN_IN_PROBLEM_PACKET_test_count,
   META_SUPER_RUN_IN_PROBLEM_PACKET_copy_exe_to_tgzdir,
   META_SUPER_RUN_IN_PROBLEM_PACKET_checker_extra_files,
+  META_SUPER_RUN_IN_PROBLEM_PACKET_disable_vm_size_limit,
+  META_SUPER_RUN_IN_PROBLEM_PACKET_enable_group_merge,
 
   META_SUPER_RUN_IN_PROBLEM_PACKET_LAST_FIELD,
 };
@@ -190,6 +209,8 @@ const char *meta_super_run_in_problem_packet_get_name(int tag);
 const void *meta_super_run_in_problem_packet_get_ptr(const struct super_run_in_problem_packet *ptr, int tag);
 void *meta_super_run_in_problem_packet_get_ptr_nc(struct super_run_in_problem_packet *ptr, int tag);
 int meta_super_run_in_problem_packet_lookup_field(const char *name);
+void meta_super_run_in_problem_packet_copy(struct super_run_in_problem_packet *dst, const struct super_run_in_problem_packet *src);
+void meta_super_run_in_problem_packet_free(struct super_run_in_problem_packet *ptr);
 
 struct meta_methods;
 extern const struct meta_methods meta_super_run_in_problem_packet_methods;
@@ -210,6 +231,7 @@ enum
   META_SUPER_RUN_IN_TESTER_PACKET_enable_memory_limit_error,
   META_SUPER_RUN_IN_TESTER_PACKET_kill_signal,
   META_SUPER_RUN_IN_TESTER_PACKET_clear_env,
+  META_SUPER_RUN_IN_TESTER_PACKET_enable_ejudge_env,
   META_SUPER_RUN_IN_TESTER_PACKET_time_limit_adjustment_ms,
   META_SUPER_RUN_IN_TESTER_PACKET_errorcode_file,
   META_SUPER_RUN_IN_TESTER_PACKET_error_file,
@@ -228,6 +250,8 @@ const char *meta_super_run_in_tester_packet_get_name(int tag);
 const void *meta_super_run_in_tester_packet_get_ptr(const struct super_run_in_tester_packet *ptr, int tag);
 void *meta_super_run_in_tester_packet_get_ptr_nc(struct super_run_in_tester_packet *ptr, int tag);
 int meta_super_run_in_tester_packet_lookup_field(const char *name);
+void meta_super_run_in_tester_packet_copy(struct super_run_in_tester_packet *dst, const struct super_run_in_tester_packet *src);
+void meta_super_run_in_tester_packet_free(struct super_run_in_tester_packet *ptr);
 
 struct meta_methods;
 extern const struct meta_methods meta_super_run_in_tester_packet_methods;

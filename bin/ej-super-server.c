@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2003-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2003-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -16,6 +16,7 @@
 
 #include "ejudge/config.h"
 #include "ejudge/ej_types.h"
+#include "ejudge/http_request.h"
 #include "ejudge/version.h"
 #include "ejudge/ejudge_cfg.h"
 #include "ejudge/contests.h"
@@ -1275,88 +1276,6 @@ super_serve_find_problem(struct sid_state *ss, const unsigned char *name)
 }
 
 void
-super_serve_clear_edited_contest(struct sid_state *p)
-{
-  int i;
-
-  contests_free(p->edited_cnts); p->edited_cnts = 0;
-  xfree(p->users_header_text); p->users_header_text = 0;
-  xfree(p->users_footer_text); p->users_footer_text = 0;
-  xfree(p->register_header_text); p->register_header_text = 0;
-  xfree(p->register_footer_text); p->register_footer_text = 0;
-  xfree(p->team_header_text); p->team_header_text = 0;
-  xfree(p->team_menu_1_text); p->team_menu_1_text = 0;
-  xfree(p->team_menu_2_text); p->team_menu_2_text = 0;
-  xfree(p->team_menu_3_text); p->team_menu_3_text = 0;
-  xfree(p->team_separator_text); p->team_separator_text = 0;
-  xfree(p->team_footer_text); p->team_footer_text = 0;
-  xfree(p->priv_header_text); p->priv_header_text = 0;
-  xfree(p->priv_footer_text); p->priv_footer_text = 0;
-  xfree(p->copyright_text); p->copyright_text = 0;
-  xfree(p->welcome_text); p->welcome_text = 0;
-  xfree(p->reg_welcome_text); p->reg_welcome_text = 0;
-  xfree(p->register_email_text); p->register_email_text = 0;
-
-  p->edit_page = 0;
-
-  xfree(p->serve_parse_errors); p->serve_parse_errors = 0;
-  prepare_free_config(p->cfg); p->cfg = 0;
-  p->global = 0;
-  xfree(p->langs); p->langs = 0;
-  xfree(p->loc_cs_map); p->loc_cs_map = 0;
-  xfree(p->cs_loc_map); p->cs_loc_map = 0;
-  xfree(p->aprobs); p->aprobs = 0;
-  p->aprob_u = p->aprob_a = 0;
-  xfree(p->aprob_flags); p->aprob_flags = 0;
-  p->prob_a = 0;
-  xfree(p->probs); p->probs = 0;
-  xfree(p->prob_flags); p->prob_flags = 0;
-  xfree(p->testers); p->testers = 0;
-  xfree(p->atesters); p->atesters = 0;
-  p->tester_total = 0;
-  p->atester_total = 0;
-  p->enable_stand2 = 0;
-  p->enable_plog = 0;
-  p->enable_extra_col = 0;
-  p->disable_compilation_server = 0;
-  p->enable_win32_languages = 0;
-
-  for (i = 0; i < p->lang_a; i++) {
-    xfree(p->lang_opts[i]);
-    xfree(p->lang_libs[i]);
-  }
-  for (i = 0; i < p->cs_lang_total; i++)
-    xfree(p->cs_lang_names[i]);
-  p->cs_langs_loaded = p->cs_lang_total = 0;
-  prepare_free_config(p->cs_cfg); p->cs_cfg = 0;
-  if (p->extra_cs_cfgs) {
-    for (int i = 0; p->extra_cs_cfgs[i]; ++i) {
-      prepare_free_config(p->extra_cs_cfgs[i]);
-      p->extra_cs_cfgs[i] = 0;
-    }
-    xfree(p->extra_cs_cfgs);
-  }
-  p->extra_cs_cfgs = 0;
-  p->extra_cs_cfgs_total = 0;
-  xfree(p->cs_langs); p->cs_langs = 0;
-  xfree(p->cs_lang_names); p->cs_lang_names = 0;
-  xfree(p->lang_opts); p->lang_opts = 0;
-  xfree(p->lang_libs); p->lang_libs = 0;
-  xfree(p->lang_flags); p->lang_flags = 0;
-
-  xfree(p->contest_start_cmd_text); p->contest_start_cmd_text = 0;
-  xfree(p->stand_header_text); p->stand_header_text = 0;
-  xfree(p->stand_footer_text); p->stand_footer_text = 0;
-  xfree(p->stand2_header_text); p->stand2_header_text = 0;
-  xfree(p->stand2_footer_text); p->stand2_footer_text = 0;
-  xfree(p->plog_header_text); p->plog_header_text = 0;
-  xfree(p->plog_footer_text); p->plog_footer_text = 0;
-  xfree(p->compile_home_dir); p->compile_home_dir = 0;
-
-  p->lang_a = 0;
-}
-
-void
 super_serve_move_edited_contest(struct sid_state *dst, struct sid_state *src)
 {
   dst->edited_cnts = src->edited_cnts; src->edited_cnts = 0;
@@ -1453,9 +1372,12 @@ static int contest_mngmt_cmd(const struct contest_desc *cnts,
                              int user_id,
                              const unsigned char *user_login);
 static void
-cmd_simple_command(struct client_state *p, int len,
-                   struct prot_super_pkt_simple_cmd *pkt)
+cmd_simple_command(
+        struct client_state *p,
+        int len,
+        struct prot_super_packet *pp)
 {
+  struct prot_super_pkt_simple_cmd *pkt = (struct prot_super_pkt_simple_cmd *) pp;
   int r;
   const struct contest_desc *cnts;
   struct contest_desc *rw_cnts;
@@ -1526,9 +1448,12 @@ cmd_simple_command(struct client_state *p, int len,
 }
 
 static void
-cmd_simple_top_command(struct client_state *p, int len,
-                       struct prot_super_pkt_simple_cmd *pkt)
+cmd_simple_top_command(
+        struct client_state *p,
+        int len,
+        struct prot_super_packet *pp)
 {
+  struct prot_super_pkt_simple_cmd *pkt = (struct prot_super_pkt_simple_cmd *) pp;
   int r;
   struct sid_state *sstate;
 
@@ -1579,9 +1504,12 @@ cmd_simple_top_command(struct client_state *p, int len,
 }
 
 static void
-cmd_set_value(struct client_state *p, int len,
-              struct prot_super_pkt_set_param *pkt)
+cmd_set_value(
+        struct client_state *p,
+        int len,
+        struct prot_super_packet *pp)
 {
+  struct prot_super_pkt_set_param *pkt = (struct prot_super_pkt_set_param *) pp;
   unsigned char *param2_ptr;
   size_t param2_len, total_len;
   struct sid_state *sstate;
@@ -1730,12 +1658,21 @@ cmd_control_server(struct client_state *p, int len,
 static void
 cmd_http_request_continuation(struct http_request_info *phr);
 
+struct trie_data;
+extern const struct trie_data super_actions_trie;
+
+int
+trie_check_16(
+        const struct trie_data *td,
+        const unsigned char *str);
+
 static void
 cmd_http_request(
         struct client_state *p,
         int pkt_size,
-        struct prot_super_pkt_http_request *pkt)
+        struct prot_super_packet *pp)
 {
+  struct prot_super_pkt_http_request *pkt = (struct prot_super_pkt_http_request *) pp;
   enum
   {
     MAX_PARAM_NUM = 10000,
@@ -1901,8 +1838,67 @@ cmd_http_request(
   phr->param_sizes = my_param_sizes;
   phr->params = params;
   phr->system_login = userlist_login;
-  phr->userlist_clnt = userlist_clnt;
   phr->config = config;
+
+  struct timeval ctv;
+  gettimeofday(&ctv, NULL);
+  phr->current_time = ctv.tv_sec;
+  phr->current_time_us = ctv.tv_sec * 1000000LL + ctv.tv_usec;
+
+  if (open_connection() < 0) {
+    send_reply(p, SSERV_ERR_USERLIST_DOWN);
+    goto cleanup;
+  }
+  phr->userlist_clnt = userlist_clnt;
+
+  if (pkt->api_mode > 0) {
+    super_html_api_request(&out_t, &out_z, phr);
+    q = client_state_new_autoclose(p, out_t, out_z);
+    (void) q;
+    info("cmd_api_request: %zu, %d", out_z, phr->status_code);
+    send_reply(p, SSERV_RPL_OK);
+    goto cleanup;
+  }
+
+/*
+  const unsigned char *script_name = hr_getenv(phr, "SCRIPT_NAME");
+  if (script_name) {
+    const unsigned char *script_ptr = script_name;
+    if (!strncmp(script_ptr, "/cgi-bin", 8)) {
+      script_ptr += 8;
+    }
+    if (!strncmp(script_ptr, "/serve-control", 14)) {
+      script_ptr += 14;
+    }
+#if defined CGI_PROG_SUFFIX
+    if (sizeof(CGI_PROG_SUFFIX) > 1) {
+      if (!strncmp(script_ptr, CGI_PROG_SUFFIX, sizeof(CGI_PROG_SUFFIX) - 1)) {
+        script_ptr += sizeof(CGI_PROG_SUFFIX) - 1;
+      }
+    }
+#endif
+    if (script_ptr[0] == '/') {
+      if (!strncmp(script_ptr, "/api/v1/", 8)) {
+        script_ptr += 8;
+      }
+      const unsigned char *q = script_ptr;
+      while (*q && *q != '/') {
+        ++q;
+      }
+      ptrdiff_t action_len = q - script_ptr;
+      unsigned char *action_str = alloca(action_len + 1);
+      memcpy(action_str, script_ptr, action_len);
+      action_str[action_len] = 0;
+      int action = trie_check_16(&super_actions_trie, action_str);
+      if (action >= SSERV_CMD_HTTP_REQUEST_FIRST) {
+        phr->action_str = action_str;
+        phr->action = action;
+        super_html_api_request(&out_t, &out_z, phr);
+        api_request_handled = 1;
+      }
+    }
+  }
+*/
 
   const unsigned char *s = 0;
   if (hr_cgi_param(phr, "login_page", &s) > 0) {
@@ -1924,13 +1920,13 @@ cmd_http_request(
 
     phr->user_id = p->user_id;
     phr->priv_level = p->priv_level;
-    phr->login = p->login;
-    phr->name = p->name;
-    phr->html_login = p->html_login;
-    phr->html_name = p->html_name;
+    phr->login = p->login; p->login = NULL;
+    phr->name = p->name; p->name = NULL;
+    phr->html_login = p->html_login; p->html_login = NULL;
+    phr->html_name = p->html_name; p->html_name = NULL;
     phr->ip = p->ip;
     phr->ssl_flag = p->ssl;
-    phr->ss = sid_state_get(p->cookie, &p->ip, p->user_id, p->login, p->name);
+    phr->ss = sid_state_get(p->cookie, &p->ip, p->user_id, phr->login, phr->name);
   }
 
   super_html_http_request(&out_t, &out_z, phr);
@@ -1945,10 +1941,14 @@ cmd_http_request(
   (void) q;
   info("cmd_http_request: %zu", out_z);
   send_reply(p, SSERV_RPL_OK);
+
+cleanup:;
+  xfree(phr->login);
+  xfree(phr->name);
+  xfree(phr->html_login);
+  xfree(phr->html_name);
   xfree(phr->redirect);
   xfree(phr);
-
-  //cleanup:
 }
 
 static void
@@ -1969,7 +1969,7 @@ cmd_http_request_continuation(struct http_request_info *phr)
 
 struct packet_handler
 {
-  void (*func)();
+  void (*func)(struct client_state *, int len, struct prot_super_packet *);
 };
 static const struct packet_handler packet_handlers[SSERV_CMD_LAST] =
 {

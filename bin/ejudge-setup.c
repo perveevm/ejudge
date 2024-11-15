@@ -1,6 +1,6 @@
 /* -*- mode:c -*- */
 
-/* Copyright (C) 2004-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2004-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -2673,6 +2673,8 @@ generate_serve_cfg(FILE *f)
   fprintf(f, "compile_max_file_size = 32M\n");
   fprintf(f, "\n");
 
+  fprintf(f, "enable_language_import\n\n");
+
   for (i = 0; i < lang_num; i++) {
     p = langs[i];
     if (!p->cfg) continue;
@@ -2686,7 +2688,7 @@ generate_serve_cfg(FILE *f)
     }
     s = shellconfig_get(p->cfg, "long_name");
     if (!s) s = "";
-    fprintf(f, "long_name = \"%s ", s);
+    fprintf(f, "# long_name = \"%s ", s);
     s = shellconfig_get(p->cfg, "version");
     if (!s) s = "";
     fprintf(f, "%s\"\n", s);

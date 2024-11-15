@@ -2,7 +2,7 @@
 #ifndef __HTTP_REQUEST_H__
 #define __HTTP_REQUEST_H__
 
-/* Copyright (C) 2014-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2014-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -91,8 +91,6 @@ struct http_request_info
   struct new_session_info *nsi;       // cached session data
   opcap_t caps;
   opcap_t dbcaps;
-  unsigned char *script_part;
-  unsigned char *body_attr;
   int online_users;
 
   // array of split components of URL:
@@ -153,7 +151,15 @@ struct http_request_info
   struct userlist_user *user_info;
   unsigned char disable_log;
 
-  unsigned char data[0];
+  const unsigned char *action_str;
+  int status_code;
+
+  // for API actions producing JSON
+  struct cJSON *json_result;
+  unsigned char *err_msg;
+  int err_num;
+
+  __attribute__((aligned(16))) unsigned char data[0];
 };
 
 const unsigned char*
@@ -321,6 +327,8 @@ void
 hr_print_help_url(FILE *f, int action);
 void
 hr_print_help_url_2(FILE *f, const unsigned char *topic);
+void
+hr_print_help_url_3(FILE *f, const unsigned char *topic);
 
 int
 hr_cgi_param_h64(

@@ -1,6 +1,6 @@
 /* -*- c -*- */
 
-/* Copyright (C) 2014-2021 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2014-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -312,6 +312,14 @@ hr_cgi_param_jsbool_opt(
             return 1;
         }
         if (!strcasecmp(s, "true")) {
+            if (p_val) *p_val = 1;
+            return 1;
+        }
+        if (!strcasecmp(s, "no")) {
+            if (p_val) *p_val = 0;
+            return 1;
+        }
+        if (!strcasecmp(s, "yes")) {
             if (p_val) *p_val = 1;
             return 1;
         }
@@ -834,6 +842,16 @@ hr_print_help_url_2(FILE *f, const unsigned char *topic)
 {
   if (topic) {
     fprintf(f, "<a target=\"_blank\" href=\"http://ejudge.ru/wiki/index.php/%s\">%s</a>", topic, "Help");
+  } else {
+    fprintf(f, "&nbsp;");
+  }
+}
+
+void
+hr_print_help_url_3(FILE *f, const unsigned char *topic)
+{
+  if (topic) {
+    fprintf(f, "<a target=\"_blank\" href=\"http://ejudge.ru/wiki/index.php/%s\"><span class=\"ui-icon ui-icon-help-plain\"></span></a>", topic);
   } else {
     fprintf(f, "&nbsp;");
   }

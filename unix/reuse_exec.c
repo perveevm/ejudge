@@ -109,6 +109,7 @@ struct tTask
   int    enable_process_group;  /* create a new process group */
   int    enable_kill_all;       /* kill all processes (using -1 for kill) */
   int    enable_subdir;         /* process is started in a subdirectory of the working directory */
+  int    disable_vm_size_limit; /* disable vm_size limit */
   ssize_t max_core_size;        /* maximum size of core files */
   ssize_t max_file_size;        /* maximum size of created files */
   ssize_t max_locked_mem_size;  /* maximum size of locked memory */
@@ -1028,11 +1029,13 @@ task_EnableMemoryLimitError(tTask *tsk)
   ASSERT(tsk);
 
 #ifdef __linux__
+  /*
   if (linux_fix_time_flag < 0) linux_set_fix_flag();
   ASSERT(linux_ms_time_limit >= 0);
   ASSERT(linux_fix_time_flag >= 0);
 
   if (linux_ptrace_code <= 0) return -1;
+  */
 
   tsk->enable_memory_limit_error = 1;
   return 0;
@@ -1048,11 +1051,13 @@ task_EnableSecurityViolationError(tTask *tsk)
   ASSERT(tsk);
 
 #ifdef __linux__
+  /*
   if (linux_fix_time_flag < 0) linux_set_fix_flag();
   ASSERT(linux_ms_time_limit >= 0);
   ASSERT(linux_fix_time_flag >= 0);
 
   if (linux_ptrace_code <= 0) return -1;
+  */
 
   tsk->enable_security_violation_error = 1;
   return 0;
@@ -1294,6 +1299,15 @@ task_SetVMSize(tTask *tsk, size_t size)
   ASSERT(tsk);
   if (size == ~(size_t) 0) return -1;
   tsk->max_vm_size = size;
+  return 0;
+}
+
+int
+task_DisableVMSizeLimit(tTask *tsk)
+{
+  task_init_module();
+  ASSERT(tsk);
+  tsk->disable_vm_size_limit = 1;
   return 0;
 }
 
@@ -1713,6 +1727,15 @@ task_StartContainer(tTask *tsk)
   }
   if (tsk->enable_subdir) {
     fprintf(spec_f, "mD");
+  }
+  if (tsk->disable_vm_size_limit) {
+    fprintf(spec_f, "mV");
+  }
+  if (tsk->enable_memory_limit_error) {
+    fprintf(spec_f, "mM");
+  }
+  if (tsk->enable_security_violation_error) {
+    fprintf(spec_f, "mE");
   }
 
   if (tsk->max_stack_size > 0) {
@@ -2171,7 +2194,7 @@ task_Start(tTask *tsk)
     if (tsk->max_data_size > 0) {
       set_limit(comm_fd + 1, RLIMIT_DATA, tsk->max_data_size);
     }
-    if (tsk->max_vm_size > 0) {
+    if (tsk->disable_vm_size_limit <= 0 && tsk->max_vm_size > 0) {
       set_limit(comm_fd + 1, RLIMIT_AS, tsk->max_vm_size);
     }
     if (tsk->max_core_size >= 0) {
@@ -2547,7 +2570,13 @@ task_WaitContainer(tTask *tsk)
   int prc_exit_status = *resp_p;
   int prc_exit_code = 0;
   int prc_term_signal = 0;
-  if (*resp_p == 't') {
+  if (*resp_p == 'v') {
+    // security violation
+    ++resp_p;
+  } else if (*resp_p == 'm') {
+    // memory limit exceeded
+    ++resp_p;
+  } else if (*resp_p == 't') {
     // time-limit exceeded
     ++resp_p;
   } else if (*resp_p == 'r') {
@@ -2685,7 +2714,13 @@ task_WaitContainer(tTask *tsk)
 
   tsk->was_memory_limit = 0;
   tsk->was_security_violation = 0;
-  if (prc_exit_status == 't') {
+  if (prc_exit_status == 'v') {
+    tsk->state = TSK_SIGNALED;
+    tsk->was_security_violation = 1;
+  } else if (prc_exit_status == 'm') {
+    tsk->state = TSK_SIGNALED;
+    tsk->was_memory_limit = 1;
+  } else if (prc_exit_status == 't') {
     tsk->state = TSK_SIGNALED;
     tsk->was_timeout = 1;
     tsk->was_real_timeout = 0;

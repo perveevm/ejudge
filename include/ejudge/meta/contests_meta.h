@@ -37,6 +37,10 @@ enum
   CNTS_enable_oauth,
   CNTS_enable_reminders,
   CNTS_disable_standalone_reg,
+  CNTS_enable_telegram_registration,
+  CNTS_enable_special_flow,
+  CNTS_enable_user_finish,
+  CNTS_disable_user_finish,
   CNTS_reg_deadline,
   CNTS_sched_time,
   CNTS_open_time,
@@ -123,6 +127,7 @@ enum
   CNTS_avatar_plugin,
   CNTS_content_plugin,
   CNTS_content_url_prefix,
+  CNTS_special_flow_options,
   CNTS_slave_rules,
   CNTS_oauth_rules,
   CNTS_user_contest_num,
@@ -139,6 +144,8 @@ const char *contest_desc_get_name(int tag);
 const void *contest_desc_get_ptr(const struct contest_desc *ptr, int tag);
 void *contest_desc_get_ptr_nc(struct contest_desc *ptr, int tag);
 int contest_desc_lookup_field(const char *name);
+void contest_desc_copy(struct contest_desc *dst, const struct contest_desc *src);
+void contest_desc_free(struct contest_desc *ptr);
 
 struct meta_methods;
 extern const struct meta_methods contest_desc_methods;

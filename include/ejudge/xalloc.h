@@ -1,7 +1,7 @@
 #ifndef __REUSE_XALLOC_H__
 #define __REUSE_XALLOC_H__
 
-/* Copyright (C) 1996-2017 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 1996-2024 Alexander Chernov <cher@ejudge.ru> */
 /* Created: Fri Nov  1 18:58:50 1996 by cher (Alexander Chernov) */
 
 /*
@@ -44,6 +44,7 @@ char *xmemdup(char const *, size_t size);
 #define XMEMMOVE(d,s,c) (memmove((d),(s),(c)*sizeof(*(d))))
 #define XMEMZERO(d,c)   (memset((d),0,(c)*sizeof(*(d))))
 #define XEXPAND2(a)     (xexpand2(&(a),sizeof((a).v[0])))
+#define XMEMCPY(d,s,c)  (memcpy((d),(s),(c)*sizeof(*(d))))
 
 #define XOFFSET(type,field)       ((long) &((type*) 0)->field)
 #define XDEREF(type,base,offset)  (((type*) (((char*) &(base)) + (offset))))
@@ -83,9 +84,9 @@ typedef struct genarray_t
 } genarray_t;
 
 void  xexpand(strarray_t *);
-void  xexpand2(/* array, elsize */);
-void  xexpand3(/* array, elsize */);
-void  xexpand4(/* array, elsize, newsize */);
+void  xexpand2(void *, size_t);
+void  xexpand3(genarray_t *, size_t);
+void  xexpand4(genarray_t *, size_t, size_t);
 
 void  xstrarrayfree(strarray_t *);
 

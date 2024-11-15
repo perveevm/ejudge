@@ -1,6 +1,6 @@
 /* -*- mode: c; c-basic-offset: 4 -*- */
 
-/* Copyright (C) 2022-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2022-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -444,6 +444,7 @@ static int
 save_func(
         struct statusdb_state *sds,
         const struct ejudge_cfg *config,
+        int contest_id,
         const struct contest_desc *cnts,
         const struct section_global_data *global,
         int flags,
@@ -522,7 +523,7 @@ save_func(
     // skip the last field 'last_update_time'
     mi->unparse_spec_2(md, cmd_f, STATUS_ROW_WIDTH, status_spec,
                        (1ULL << (STATUS_ROW_WIDTH - 1)), &stint);
-    fprintf(cmd_f, ", last_update_time = NOW(6)) ON DUPLICATE KEY UPDATE ");
+    fprintf(cmd_f, ", NOW(6)) ON DUPLICATE KEY UPDATE ");
     // skip the first field 'contest_id' and the last field 'last_update_time'
     mi->unparse_spec_3(md, cmd_f, STATUS_ROW_WIDTH, status_spec,
                        (1ULL << (STATUS_ROW_WIDTH - 1)) | 1,

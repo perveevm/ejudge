@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2003-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2003-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -130,6 +130,7 @@ enum
   RUNLOG_A_NOTIFY_DRIVER,
   RUNLOG_A_NOTIFY_KIND,
   RUNLOG_A_NOTIFY_QUEUE,
+  RUNLOG_A_GROUP_SCORES,
 
   RUNLOG_LAST_ATTR,
 };
@@ -208,6 +209,7 @@ static const char * const attr_map[] =
   [RUNLOG_A_NOTIFY_DRIVER]    = "notify_driver",
   [RUNLOG_A_NOTIFY_KIND]      = "notify_kind",
   [RUNLOG_A_NOTIFY_QUEUE]     = "notify_queue",
+  [RUNLOG_A_GROUP_SCORES]     = "group_scores",
 
   [RUNLOG_LAST_ATTR] = 0,
 };
@@ -893,7 +895,7 @@ unparse_runlog_xml(
     for (i = 1; i <= max_user_id; i++) {
       if (teamdb_lookup(state->teamdb_state, i) <= 0) continue;
       if ((flags = teamdb_get_flags(state->teamdb_state, i)) < 0) continue;
-      if ((flags & (TEAM_BANNED | TEAM_INVISIBLE))) continue;
+      if ((flags & (TEAM_BANNED | TEAM_INVISIBLE | TEAM_DISQUALIFIED))) continue;
       val1 = teamdb_get_name(state->teamdb_state, i);
       if (html_armor_needed(val1, &alen1)) {
         while (alen1 >= asize1) asize1 *= 2;
@@ -1010,7 +1012,7 @@ unparse_runlog_xml(
       continue;
     }
     flags = teamdb_get_flags(state->teamdb_state, pp->user_id);
-    if (external_mode && (flags & (TEAM_BANNED | TEAM_INVISIBLE)))
+    if (external_mode && (flags & (TEAM_BANNED | TEAM_INVISIBLE | TEAM_DISQUALIFIED)))
       continue;
     fprintf(f, "    <%s", elem_map[RUNLOG_T_RUN]);
     fprintf(f, " %s=\"%d\"", attr_map[RUNLOG_A_RUN_ID], pp->run_id);
@@ -1158,6 +1160,18 @@ unparse_runlog_xml(
         val1 = astr1;
       }
       fprintf(f, " %s=\"%s\"", attr_map[RUNLOG_A_NOTIFY_QUEUE], val1);
+    }
+    if (state->global->enable_runlog_merge > 0 && pp->group_scores) {
+      const int *p = run_get_group_scores(state->runlog_state, pp->group_scores);
+      if (p) {
+        int count = *p++;
+        fprintf(f, " %s=\"", attr_map[RUNLOG_A_GROUP_SCORES]);
+        for (int i = 0; i < count; ++i) {
+          if (i > 0) putc(' ', f);
+          fprintf(f, "%d", p[i]);
+        }
+        fprintf(f, "\"");
+      }
     }
     if (!source_mode || !run_is_normal_status(pp->status)) {
       fprintf(f, "/>\n");

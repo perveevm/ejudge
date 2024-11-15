@@ -1,6 +1,6 @@
 /* -*- c -*- */
 
-/* Copyright (C) 2010-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2010-2024 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -300,7 +300,7 @@ load_contest_extra(int contest_id)
   }
 
   extra = &contest_extras[contest_id];
-  if (serve_state_load_contest(extra, ejudge_config, contest_id, NULL, NULL, 0, 1) < 0) {
+  if (serve_state_load_contest(extra, ejudge_config, contest_id, NULL, NULL, 0, 1, NULL) < 0) {
     fprintf(stderr, "get_contest_extra: failed to load contest %d\n", contest_id);
     return NULL;
   }
@@ -699,7 +699,11 @@ process_compile_packet(
                         0 /* not_ok_is_cf */,
                         NULL /* inp_text */,
                         0 /* inp_size*/,
-                        NULL /* ure */);
+                        NULL /* ure */,
+                        NULL /* src_text*/,
+                        0 /* src_size */,
+                        NULL /* prop_text */,
+                        0 /* prop_size */);
   if (r < 0) abort();
 
   return 0;
