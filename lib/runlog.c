@@ -954,10 +954,6 @@ run_get_attempts(
     ASSERT(re->user_id == sample_re->user_id);
     if (i >= runid) break;
 
-    if (group_merge_flag > 0 && re->group_scores) {
-      group_scores_merge_1(p_group_count, p_group_scores, run_get_group_scores(state, re->group_scores));
-    }
-
     if (re->status == RUN_VIRTUAL_START || re->status == RUN_VIRTUAL_STOP) continue;
     if (re->prob_id != sample_re->prob_id) continue;
     if ((re->status == RUN_COMPILE_ERR) && skip_ce_flag) continue;
