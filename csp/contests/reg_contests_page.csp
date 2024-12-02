@@ -39,7 +39,7 @@
 
           </div>
         </div>
-        <div id="l11"><img src="<s:config name="style-prefix" />logo3.png" alt="logo"/></div>
+        <div id="l11"><img src="<s:config name="style-prefix" />logo1.svg" width="100px" alt="logo"/></div>
         <div id="l13" class="m-25">
 
 <h2><s:_>Select one of available contests</s:_></h2>

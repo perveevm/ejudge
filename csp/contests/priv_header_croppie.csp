@@ -12,7 +12,7 @@
 <body>
 <div id="main-cont"><div id="container">
 <div id="header">
-<div id="logo"><img src='<s:config name="style-prefix" />logo3.png' alt="logo"/></div>
+<div id="logo"><img src='<s:config name="style-prefix" />logo1.svg' width="100px" alt="logo"/></div>
 <% if (enable_main_menu) { %>
     <div id="main-menu">
         <ul><li><s:a ac="main-page"><s:_>Main page</s:_></s:a></li></ul>
