@@ -121,6 +121,6 @@
 #define IS_INVALID_BOOL_2(v) ((v) > 1)
 
 /** max number of supported test groups for group merge mode */
-#define EJ_MAX_TEST_GROUP 15
+#define EJ_MAX_TEST_GROUP 55
 
 #endif /* __EJ_LIMITS_H__ */
