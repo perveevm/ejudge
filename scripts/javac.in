@@ -39,6 +39,13 @@ then
     exec "${EJUDGE_BUILD_SCRIPT}" $@
 fi
 
+if [ "${EJUDGE_OPT_BUILD_SCRIPT}" != "" -a -x "${EJUDGE_OPT_BUILD_SCRIPT}" ]
+then
+    export EJUDGE_LANGUAGE="javac"
+    export EJUDGE_COMPILER="${JAVACRUN}"
+    exec "${EJUDGE_OPT_BUILD_SCRIPT}" $@
+fi
+
 # avoid setting JAVA_HOME if it is already set
 # actually, setting of JAVA_HOME breaks some systems, so don't do it
 MY_JAVA_HOME="${JAVA_HOME}"
@@ -47,6 +54,57 @@ then
     MY_JAVA_HOME="${JAVADIR}"
     PATH="${MY_JAVA_HOME}/bin:${PATH}"
     export PATH
+fi
+
+D=`dirname "${JAVARUN}"`
+if [ "$D" = "." ]
+then
+    JARRUN=jar
+else
+    JARRUN="${D}/jar"
+fi
+
+solution_file=""
+if [ "${EJUDGE_SOLUTION_FILE_JAVA}" != "" ]
+then
+    solution_file="${EJUDGE_SOLUTION_FILE_JAVA}"
+elif [ "${EJUDGE_SOLUTION_FILE}" != "" ]
+then
+    solution_file="${EJUDGE_SOLUTION_FILE}"
+fi
+start_file=""
+if [ "${EJUDGE_START_FILE_JAVA}" != "" ]
+then
+    start_file="${EJUDGE_START_FILE_JAVA}"
+elif [ "${EJUDGE_START_FILE}" != "" ]
+then
+    start_file="${EJUDGE_START_FILE}"
+fi
+
+if [ "${solution_file}" != "" -a "${start_file}" != "" ]
+then
+    if ! mv "${infile}" "${solution_file}.java"
+    then
+        echo "failed to rename source file" >&2
+        exit 1
+    fi
+
+    CPOPT=
+    if [ "${EJUDGE_CLASSPATH}" != "" ]
+    then
+        CPOPT=" -cp ${EJUDGE_CLASSPATH} "
+    fi
+
+    "${JAVACRUN}" --target "${JAVAVER}" ${CPOPT} *.java || exit 1
+
+    MOPT=
+    if [ "${EJUDGE_CLASSPATH}" != "" ]
+    then
+        echo "Class-Path: ${EJUDGE_CLASSPATH}" > manifest.txt
+        MOPT=" -m manifest.txt "
+    fi
+
+    exec "${JARRUN}" -c -f "${outfile}" ${MOPT} -e "${start_file}" *.class
 fi
 
 rm -f *.class
@@ -86,14 +144,6 @@ then
 fi
 
 "${JAVACRUN}" --target "${JAVAVER}" ${CPOPT} *.java || exit 1
-
-D=`dirname "${JAVARUN}"`
-if [ "$D" = "." ]
-then
-    JARRUN=jar
-else
-    JARRUN="${D}/jar"
-fi
 
 MOPT=
 if [ "${EJUDGE_CLASSPATH}" != "" ]

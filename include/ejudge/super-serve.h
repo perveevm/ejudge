@@ -2,7 +2,7 @@
 #ifndef __SUPER_SERVE_H__
 #define __SUPER_SERVE_H__
 
-/* Copyright (C) 2004-2023 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2004-2025 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -116,6 +116,7 @@ struct sid_state
   struct sid_state *next;
   struct sid_state *prev;
   ej_cookie_t sid;
+  ej_cookie_t client_key;
   ej_ip_t remote_addr;
   time_t init_time;
   unsigned long flags;
@@ -275,13 +276,39 @@ int super_serve_start_serve_test_mode(const struct contest_desc *cnts,
                                       unsigned char **p_log,
                                       int pass_socket);
 
+struct sid_state *sid_state_find(ej_cookie_t sid, ej_cookie_t client_key);
+struct sid_state*
+sid_state_add(
+        ej_cookie_t sid,
+        ej_cookie_t client_key,
+        const ej_ip_t *remote_addr,
+        int user_id,
+        const unsigned char *user_login,
+        const unsigned char *user_name);
+        struct sid_state*
+sid_state_get(
+        ej_cookie_t sid,
+        ej_cookie_t client_key,
+        const ej_ip_t *remote_addr,
+        int user_id,
+        const unsigned char *user_login,
+        const unsigned char *user_name);
+void
+sid_state_clear(const struct ejudge_cfg *config, struct sid_state *p);
+struct sid_state*
+sid_state_delete(const struct ejudge_cfg *config, struct sid_state *p);
+void
+sid_state_cleanup(const struct ejudge_cfg *config, time_t current_time);
+void
+super_serve_sid_state_cleanup(const struct ejudge_cfg *config, time_t current_time);
+
 int super_serve_sid_state_get_max_edited_cnts(void);
 const struct sid_state* super_serve_sid_state_get_cnts_editor(int contest_id);
 struct sid_state* super_serve_sid_state_get_cnts_editor_nc(int contest_id);
 const struct sid_state* super_serve_sid_state_get_test_editor(int contest_id);
 struct sid_state* super_serve_sid_state_get_test_editor_nc(int contest_id);
 struct sid_state *super_serve_sid_state_get_first(void);
-void super_serve_sid_state_clear(ej_cookie_t sid);
+void super_serve_sid_state_clear(const struct ejudge_cfg *config, ej_cookie_t sid, ej_cookie_t client_key);
 
 struct background_process;
 void super_serve_register_process(struct background_process *prc);

@@ -1,6 +1,6 @@
 /* -*- mode: c -*- */
 
-/* Copyright (C) 2003-2024 Alexander Chernov <cher@ejudge.ru> */
+/* Copyright (C) 2003-2025 Alexander Chernov <cher@ejudge.ru> */
 
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -109,6 +109,7 @@ struct client_state
   int user_id;
   int priv_level;
   ej_cookie_t cookie;
+  ej_cookie_t client_key;
   ej_ip_t ip;
   int ssl;
   unsigned char *login;
@@ -1011,6 +1012,7 @@ get_peer_local_user(struct client_state *p)
   int r;
   int uid, priv_level, ssl;
   ej_cookie_t cookie;
+  ej_cookie_t client_key = 0;
   ej_ip_t ip;
   unsigned char *login, *name;
 
@@ -1022,7 +1024,7 @@ get_peer_local_user(struct client_state *p)
                                      p->peer_gid, p->peer_pid, 0,
                                      &uid, &priv_level,
                                      &cookie,
-                                     NULL /* FIXME: p_client_key */,
+                                     &client_key,
                                      &ip, &ssl,
                                      &login, &name);
   if (r < 0) {
@@ -1054,6 +1056,7 @@ get_peer_local_user(struct client_state *p)
 
   p->user_id = uid;
   p->cookie = cookie;
+  p->client_key = client_key;
   p->ip = ip;
   p->ssl = ssl;
   p->login = login;
@@ -1079,183 +1082,6 @@ cmd_pass_fd(struct client_state *p, int len,
   }
 
   p->state = STATE_READ_FDS;
-}
-
-static struct sid_state *sid_state_first = 0;
-static struct sid_state *sid_state_last = 0;
-static time_t sid_state_last_check_time = 0;
-#define SID_STATE_CLEANUP_TIME (24*3600)
-#define SID_STATE_CHECK_INTERVAL 3600
-
-static struct sid_state*
-sid_state_find(ej_cookie_t sid)
-{
-  struct sid_state *p;
-
-  ASSERT(sid);
-  for (p = sid_state_first; p; p = p->next)
-    if (p->sid == sid) break;
-  return p;
-}
-static struct sid_state*
-sid_state_add(
-        ej_cookie_t sid,
-        const ej_ip_t *remote_addr,
-        int user_id,
-        const unsigned char *user_login,
-        const unsigned char *user_name)
-{
-  struct sid_state *n;
-
-  ASSERT(sid);
-  XCALLOC(n, 1);
-  n->sid = sid;
-  n->remote_addr = *remote_addr;
-  n->init_time = time(0);
-  n->flags |= SID_STATE_SHOW_CLOSED;
-  n->user_id = user_id;
-  n->user_login = xstrdup(user_login);
-  n->user_name = xstrdup(user_name);
-
-  if (!sid_state_last) {
-    ASSERT(!sid_state_first);
-    sid_state_first = sid_state_last = n;
-  } else {
-    ASSERT(sid_state_first);
-    sid_state_last->next = n;
-    n->prev = sid_state_last;
-    sid_state_last = n;
-  }
-  return n;
-}
-static struct sid_state*
-sid_state_get(
-        ej_cookie_t sid,
-        const ej_ip_t *remote_addr,
-        int user_id,
-        const unsigned char *user_login,
-        const unsigned char *user_name)
-{
-  struct sid_state *p;
-
-  if (!(p = sid_state_find(sid)))
-    p = sid_state_add(sid, remote_addr, user_id, user_login, user_name);
-  return p;
-}
-static void
-sid_state_clear(struct sid_state *p)
-{
-  super_serve_clear_edited_contest(p);
-  xfree(p->user_login);
-  xfree(p->user_name);
-  xfree(p->user_filter);
-  bitset_free(&p->marked);
-  serve_state_destroy(NULL, config, p->te_state, NULL, NULL);
-  update_state_free(p->update_state);
-  XMEMZERO(p, 1);
-}
-static struct sid_state*
-sid_state_delete(struct sid_state *p)
-{
-  ASSERT(p);
-  if (!p->prev) {
-    sid_state_first = p->next;
-  } else {
-    p->prev->next = p->next;
-  }
-  if (!p->next) {
-    sid_state_last = p->prev;
-  } else {
-    p->next->prev = p->prev;
-  }
-  sid_state_clear(p);
-  xfree(p);
-  return 0;
-}
-static void
-sid_state_cleanup(void)
-{
-  time_t cur_time;
-  struct sid_state *p;
-
-  cur_time = time(0);
-  do {
-    for (p = sid_state_first; p; p = p->next) {
-      if (p->init_time + SID_STATE_CLEANUP_TIME < cur_time) {
-        sid_state_delete(p);
-        break;
-      }
-    }
-  } while (p);
-}
-int
-super_serve_sid_state_get_max_edited_cnts(void)
-{
-  struct sid_state *p;
-  int max_cnts_id = 0;
-
-  for (p = sid_state_first; p; p = p->next) {
-    if (p->edited_cnts && p->edited_cnts->id > max_cnts_id)
-      max_cnts_id = p->edited_cnts->id;
-  }
-  return max_cnts_id;
-}
-const struct sid_state*
-super_serve_sid_state_get_cnts_editor(int contest_id)
-{
-  struct sid_state *p;
-
-  for (p = sid_state_first; p; p = p->next)
-    if (p->edited_cnts && p->edited_cnts->id == contest_id)
-      return p;
-  return 0;
-}
-struct sid_state*
-super_serve_sid_state_get_cnts_editor_nc(int contest_id)
-{
-  struct sid_state *p;
-
-  for (p = sid_state_first; p; p = p->next)
-    if (p->edited_cnts && p->edited_cnts->id == contest_id)
-      return p;
-  return 0;
-}
-
-const struct sid_state*
-super_serve_sid_state_get_test_editor(int contest_id)
-{
-  struct sid_state *p;
-
-  for (p = sid_state_first; p; p = p->next)
-    if (p->te_state && p->te_state->contest_id == contest_id)
-      return p;
-  return 0;
-}
-
-struct sid_state*
-super_serve_sid_state_get_test_editor_nc(int contest_id)
-{
-  struct sid_state *p;
-
-  for (p = sid_state_first; p; p = p->next)
-    if (p->te_state && p->te_state->contest_id == contest_id)
-      return p;
-  return 0;
-}
-
-struct sid_state *
-super_serve_sid_state_get_first(void)
-{
-  return sid_state_first;
-}
-
-void
-super_serve_sid_state_clear(ej_cookie_t sid)
-{
-  struct sid_state *p = sid_state_find(sid);
-  if (p) {
-    sid_state_delete(p);
-  }
 }
 
 struct section_problem_data *
@@ -1465,7 +1291,7 @@ cmd_simple_top_command(
   if ((r = get_peer_local_user(p)) < 0) {
     return send_reply(p, r);
   }
-  sstate = sid_state_get(p->cookie, &p->ip, p->user_id, p->login, p->name);
+  sstate = sid_state_get(p->cookie, p->client_key, &p->ip, p->user_id, p->login, p->name); // FIXME!!!
 
   switch (pkt->b.id) {
   case SSERV_CMD_SHOW_HIDDEN:
@@ -1530,7 +1356,7 @@ cmd_set_value(
   if ((r = get_peer_local_user(p)) < 0) {
     return send_reply(p, r);
   }
-  sstate = sid_state_get(p->cookie, &p->ip, p->user_id, p->login, p->name);
+  sstate = sid_state_get(p->cookie, p->client_key, &p->ip, p->user_id, p->login, p->name);  /// FIXME!!!
 
   switch (pkt->b.id) {
   case SSERV_CMD_CNTS_DEFAULT_ACCESS:
@@ -1926,7 +1752,7 @@ cmd_http_request(
     phr->html_name = p->html_name; p->html_name = NULL;
     phr->ip = p->ip;
     phr->ssl_flag = p->ssl;
-    phr->ss = sid_state_get(p->cookie, &p->ip, p->user_id, phr->login, phr->name);
+    phr->ss = sid_state_get(p->cookie, p->client_key, &p->ip, p->user_id, phr->login, phr->name); /// FIXME!!!
   }
 
   super_html_http_request(&out_t, &out_z, phr);
@@ -2467,10 +2293,7 @@ do_loop(void)
 
       background_process_cleanup(&background_processes);
 
-      if (sid_state_last_check_time < current_time + SID_STATE_CHECK_INTERVAL) {
-        sid_state_cleanup();
-        sid_state_last_check_time = current_time;
-      }
+      super_serve_sid_state_cleanup(config, current_time);
 
       if (hup_flag || term_flag) break;
 
